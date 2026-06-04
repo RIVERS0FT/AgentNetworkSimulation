@@ -190,7 +190,7 @@ class LogQueryRequest(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def index():
     """仿真平台控制台首页"""
-    return HTMLResponse(content=DASHBOARD_HTML)
+    return HTMLResponse(content=_load_dashboard())
 
 
 # ═══════════════════════════════════════════════
@@ -534,6 +534,36 @@ async def parse_script_endpoint(req: ScriptParseRequest):
         ],
         "workflow": scene_def.workflow,
     }
+
+
+# ═══════════════════════════════════════════════
+# 场景文件 API
+# ═══════════════════════════════════════════════
+
+_SCENES_DIR = None  # initialized after pathlib import below
+
+
+@app.get("/api/scenes")
+async def list_scenes():
+    """列出所有可用的 .md 场景文件"""
+    if not _SCENES_DIR.exists():
+        return {"scenes": []}
+    files = sorted(
+        [f.name for f in _SCENES_DIR.iterdir() if f.suffix == '.md'],
+        key=lambda n: n.lower()
+    )
+    return {"scenes": files}
+
+
+@app.get("/api/scenes/{filename}")
+async def read_scene(filename: str):
+    """读取指定 .md 场景文件内容"""
+    path = _SCENES_DIR / filename
+    if not path.exists() or path.suffix != '.md':
+        raise HTTPException(status_code=404, detail=f"Scene '{filename}' not found")
+    content = path.read_text(encoding='utf-8')
+    name = path.stem
+    return {"filename": filename, "name": name, "content": content}
 
 
 # ═══════════════════════════════════════════════
@@ -1500,6 +1530,7 @@ async def startup_event():
 # ═══════════════════════════════════════════════
 
 import pathlib
+_SCENES_DIR = pathlib.Path(__file__).parent / 'scenes' / 'md'
 _DASHBOARD_PATH = pathlib.Path(__file__).parent / 'static' / 'dashboard.html'
 
 def _load_dashboard() -> str:
@@ -1508,7 +1539,7 @@ def _load_dashboard() -> str:
     except Exception:
         return '<h1>Dashboard not found</h1>'
 
-DASHBOARD_HTML = _load_dashboard()
+# Dashboard HTML is loaded per-request to pick up edits without restart
 
 
 # ═══════════════════════════════════════════════
@@ -1517,6 +1548,32 @@ DASHBOARD_HTML = _load_dashboard()
 
 from fastapi.staticfiles import StaticFiles
 app.mount('/static', StaticFiles(directory=str(_DASHBOARD_PATH.parent)), name='static')
+
+
+# ═══════════════════════════════════════════════
+# 战术地图 (Procedural Tactical Situation Map)
+# ═══════════════════════════════════════════════
+
+_TACTICAL_PATH = pathlib.Path(__file__).parent / 'tactical-map' / 'dist'
+
+def _load_tactical_map() -> str:
+    try:
+        return (_TACTICAL_PATH / 'index.html').read_text(encoding='utf-8')
+    except Exception:
+        return '<h1>Tactical Map not built — run: cd tactical-map && npm run build</h1>'
+
+TACTICAL_HTML = None  # reloaded on each request to pick up rebuilds
+
+@app.get("/tactical-map", response_class=HTMLResponse)
+async def tactical_map():
+    """程序化战术态势地图 — Procedural Tactical Situation Map"""
+    html = _load_tactical_map()
+    return HTMLResponse(content=html)
+
+if _TACTICAL_PATH.exists():
+    # Mount the entire dist directory to serve JS, CSS, favicon, icons, etc.
+    # Route /tactical-map (above) takes priority over this mount for exact matches.
+    app.mount('/tactical-map', StaticFiles(directory=str(_TACTICAL_PATH), html=True), name='tactical-map')
 
 
 # ═══════════════════════════════════════════════
@@ -1539,6 +1596,7 @@ if __name__ == '__main__':
     print(f'║  地址: http://{args.host}:{args.port}                          ║')
     print(f'║  API:  http://{args.host}:{args.port}/docs                      ║')
     print(f'║  控制台: http://{args.host}:{args.port}/                        ║')
+    print(f'║  战术地图: http://{args.host}:{args.port}/tactical-map          ║')
     print('╚══════════════════════════════════════════════════════════════╝')
     print()
 

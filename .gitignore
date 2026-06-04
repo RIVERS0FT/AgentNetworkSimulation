@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 data/task_queue.json
 .DS_Store
+
+# Tactical Map (React/Node)
+tactical-map/node_modules/
+tactical-map/dist/

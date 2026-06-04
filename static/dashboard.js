@@ -695,8 +695,59 @@ async function toggleSimulationTick() {
 	tick();
 }
 
+// ============== Scene Selector ==============
+async function loadSceneList() {
+  try {
+    const r = await fetch(API + '/scenes');
+    const data = await r.json();
+    const sel = document.getElementById('scene-selector');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">选择场景脚本</option>';
+    data.scenes.forEach(f => {
+      const opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = f.replace('.md', '');
+      sel.appendChild(opt);
+    });
+  } catch(e) { console.error('loadSceneList', e); }
+}
+
+function onSceneSelect() {
+  // placeholder — scene content loaded on run
+}
+
+async function runSelectedScene() {
+  const sel = document.getElementById('scene-selector');
+  const filename = sel?.value;
+  if (!filename) { logEntry('L1', '请先选择一个 .md 场景文件'); return; }
+  // Fetch scene content directly from API
+  let script;
+  try {
+    const r = await fetch(API + '/scenes/' + encodeURIComponent(filename));
+    const data = await r.json();
+    script = data.content?.trim();
+  } catch(e) { logEntry('L1', '读取场景失败: ' + e.message); return; }
+  if (!script) { logEntry('L1', '场景文件内容为空'); return; }
+
+  simRunning = true;
+  logEntry('L1', '=== 运行场景: ' + filename + ' ===');
+  try {
+    const r = await fetch(API + '/simulations/run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ scene: 'auto', script: script, name: filename.replace('.md', '') })
+    });
+    const data = await r.json();
+    logEntry('L1', '完成: ' + (data.duration_seconds || 0) + 's | Agent: ' + (data.agent_stats?.total_agents || 0) + ' 个');
+    document.getElementById('stat-sims').textContent = (parseInt(document.getElementById('stat-sims').textContent) || 0) + 1;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send('all');
+    updateConnections();
+  } catch(e) { logEntry('L1', '运行失败: ' + e.message); }
+  simRunning = false;
+}
+
 // ============== Start ==============
-render();
+if (canvas) render();
 logEntry('L1', '控制台就绪');
+loadSceneList();
 loadSettings();
 setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) ws.send('all'); }, 500);
