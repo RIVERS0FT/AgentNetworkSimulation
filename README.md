@@ -7,7 +7,7 @@
 ### 1. 安装依赖
 ```bash
 pip install -r requirements.txt
-cd web/tactical-map && npm install
+cd web && npm install
 ```
 
 ### 2. 一键启动
@@ -24,7 +24,7 @@ start.bat
 ### 开发模式（热重载）
 ```bash
 # 终端1: Vite HMR
-cd web/tactical-map && npx vite
+cd web && npx vite
 
 # 终端2: Python 后端
 python server.py
@@ -34,7 +34,6 @@ python server.py
 
 ## 架构
 - **后端**: FastAPI + Uvicorn, 消息总线, Agent 引擎 (`agent_network/`)
-- **前端**: React + Vite + TailwindCSS v4 (`web/tactical-map/`)
-- **Dashboard**: 原生 HTML/CSS/JS (`web/dashboard.*`)
+- **前端**: React + Vite + TailwindCSS v4 (`web/`)
 
 详见 [开发文档](开发文档.md) 和 [设计系统](WebStyle.md)。

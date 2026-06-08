@@ -4,9 +4,9 @@ data/task_queue.json
 .DS_Store
 
 # Tactical Map (React/Node)
-web/tactical-map/node_modules/
-web/tactical-map/dist/
-web/tactical-map/.vite/
+web/node_modules/
+web/dist/
+web/.vite/
 
 # Environment & logs
 .env

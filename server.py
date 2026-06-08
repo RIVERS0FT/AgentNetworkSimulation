@@ -1651,7 +1651,7 @@ async def health_check():
 
 import pathlib
 _SCENES_DIR = pathlib.Path(__file__).parent / 'scenes'
-_DASHBOARD_PATH = pathlib.Path(__file__).parent / 'web' / 'tactical-map' / 'dist' / 'dashboard.html'
+_DASHBOARD_PATH = pathlib.Path(__file__).parent / 'web' / 'dist' / 'dashboard.html'
 
 def _load_dashboard() -> str:
     try:
@@ -1667,20 +1667,20 @@ def _load_dashboard() -> str:
 # ═══════════════════════════════════════════════
 
 from fastapi.staticfiles import StaticFiles
-app.mount('/static', StaticFiles(directory=str(pathlib.Path(__file__).parent / 'web' / 'tactical-map' / 'dist')), name='static')
+app.mount('/static', StaticFiles(directory=str(pathlib.Path(__file__).parent / 'web' / 'dist')), name='static')
 
 
 # ═══════════════════════════════════════════════
 # 战术地图 (Procedural Tactical Situation Map)
 # ═══════════════════════════════════════════════
 
-_TACTICAL_PATH = pathlib.Path(__file__).parent / 'web' / 'tactical-map' / 'dist'
+_TACTICAL_PATH = pathlib.Path(__file__).parent / 'web' / 'dist'
 
 def _load_tactical_map() -> str:
     try:
         return (_TACTICAL_PATH / 'index.html').read_text(encoding='utf-8')
     except Exception:
-        return '<h1>Tactical Map not built — run: cd web/tactical-map && npm run build</h1>'
+        return '<h1>Tactical Map not built — run: cd web && npm run build</h1>'
 
 TACTICAL_HTML = None  # reloaded on each request to pick up rebuilds
 
