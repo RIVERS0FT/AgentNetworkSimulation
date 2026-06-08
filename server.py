@@ -36,7 +36,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -44,42 +44,29 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import uvicorn
 import asyncio
+import time
 
 # 导入平台核心模块
-from agent_network.engine import SimulationEngine
 from agent_network.agent import Agent, AgentRegistry
+from agent_network.llm_parser import parse_script, get_api_config, SceneDefinition, AgentDef
+from agent_network.container_runtime import get_runtime, ContainerRuntime
+from agent_network.logger import SimulationLogger, LogLevel
+from agent_network.event_bus import PacketRecorder
 from agent_network.tool import ToolRegistry
 from agent_network.skill import SkillRegistry
-from agent_network.event_bus import EventBus, PacketRecorder
-from agent_network.logger import SimulationLogger, LogLevel
-from agent_network.message import Message
-from agent_network.llm_parser import parse_script, get_api_config, SceneDefinition, AgentDef
-from agent_network.topology import generate_topology, run_communication_sim, compare_topologies, TopologyMetrics, Connection  # kept for internal use
-from agent_network.container_runtime import get_runtime, ContainerRuntime
-from agent_network.metrics import MetricsRegistry
-from agent_network.container_controller import ContainerController, ScalingPolicy, SchedulingRule
-from agent_network.terrain import TerrainMap, generate_map_with_llm, is_passable
-from agent_network.pathfinding import astar
 
-# 导入 AgentHub 统一管理层
-from agent_network.agent_hub import AgentHub, get_hub
-from agent_network.agent_scheduler import TaskPriority, TaskStatus, ScheduledTask
-from agent_network.task_dispatcher import RoutingStrategy
+# ── 统一 Agent 日志缓冲区 ──
+_agent_logs: List[Dict[str, Any]] = []  # 内存/容器模式共用日志
 
-# 导入 Workflow 引擎
-from agent_network.workflow import WorkflowEngine, WorkflowStep, WorkflowDAG, StepType
+# ═══════════════════════════════════════════════
+# Lifespan — 替代已弃用的 on_event
+# ═══════════════════════════════════════════════
 
-# 触发工具和技能注册
-import tools.search_tool
-import tools.map_tool
-import skills.intelligence_collection
-import skills.strategy_planning
+from contextlib import asynccontextmanager
 
-from scenes.battlefield import BattlefieldScene, MultiAgentFleetScene, ScoutAgent, CommanderAgent
-
-# ── 可选模块（惰性加载） ──
-_es_client = None
-_es_available = False
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
 
 # ═══════════════════════════════════════════════
 # FastAPI 应用初始化
@@ -89,6 +76,7 @@ app = FastAPI(
     title="AI Agent 仿真运行平台",
     description="企业级 AI Agent 仿真、推演与编排平台 API",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -99,8 +87,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注册 Prometheus /metrics 端点
-MetricsRegistry.add_metrics_route(app)
 
 # 全局服务状态
 service_state = {
@@ -160,6 +146,7 @@ class SimulationRunRequest(BaseModel):
     scene: str = "auto"  # "battlefield" | "fleet" | "auto"
     name: str = ""
     script: Optional[str] = None  # 自然语言剧本（scene=auto 时使用 LLM 解析）
+    script_json: Optional[Dict[str, Any]] = None  # 结构化场景定义（直接映射，不经过 LLM）
 
 
 class SettingsRequest(BaseModel):
@@ -363,137 +350,279 @@ def _get_effective_llm_config() -> Dict[str, str]:
 
 
 def _run_scene_definition(scene_def: SceneDefinition, engine_name: str) -> Dict[str, Any]:
-    """
-    根据 SceneDefinition 动态创建并运行场景
+    """根据 SceneDefinition 创建并运行场景（容器模式）"""
+    config = _get_effective_llm_config()
+    _agent_logs.clear()
+    return _run_with_containers(scene_def, engine_name, config)
 
-    场景流程：
-    1. 根据 AgentDef 创建 Agent（使用 ScoutAgent/CommanderAgent 子类）
-    2. 为每个 Agent 分配任务
-    3. 运行仿真引擎处理任务队列
-    """
-    from scenes.battlefield import ScoutAgent, CommanderAgent
 
-    # 清空之前的 Agent 和状态
+def _force_layout(agents: List[Any], links: List[Dict],
+                  width: float = 400, height: float = 400,
+                  margin: float = 60, iterations: int = 80) -> Dict[str, tuple]:
+    """
+    力导向布局：根据关系矩阵计算 Agent 位置。
+    - 有连线的 Agent 相互吸引（合作近、竞争远）
+    - 所有 Agent 互相排斥避免重叠
+    """
+    import math, random as _rnd
+    n = len(agents)
+    if n == 0:
+        return {}
+
+    # 初始化随机位置
+    pos = {}
+    for a in agents:
+        pos[a.agent_id] = [
+            _rnd.uniform(margin, width - margin),
+            _rnd.uniform(margin, height - margin),
+        ]
+
+    # 构建邻接表
+    edges = set()
+    for link in links:
+        f = link.get("from", "").lower()
+        t = link.get("to", "").lower()
+        val = link.get("value", 0)
+        edges.add((f, t, val))
+
+    area = width * height
+    k = math.sqrt(area / n)  # 理想间距
+
+    # 温度逐步降低
+    for it in range(iterations):
+        temp = 1.0 - it / iterations  # 1.0 → 0.0
+        temp = max(0.02, temp * temp)
+
+        # 计算排斥力
+        disp = {aid: [0.0, 0.0] for aid in pos}
+        ids = list(pos.keys())
+        for i in range(n):
+            for j in range(i + 1, n):
+                aid_i, aid_j = ids[i], ids[j]
+                dx = pos[aid_i][0] - pos[aid_j][0]
+                dy = pos[aid_i][1] - pos[aid_j][1]
+                dist = math.sqrt(dx * dx + dy * dy) or 0.01
+                # 库仑排斥力
+                force = k * k / dist
+                fx = (dx / dist) * force
+                fy = (dy / dist) * force
+                disp[aid_i][0] += fx
+                disp[aid_i][1] += fy
+                disp[aid_j][0] -= fx
+                disp[aid_j][1] -= fy
+
+        # 计算吸引力（连线）
+        for f, t, val in edges:
+            if f not in pos or t not in pos:
+                continue
+            dx = pos[t][0] - pos[f][0]
+            dy = pos[t][1] - pos[f][1]
+            dist = math.sqrt(dx * dx + dy * dy) or 0.01
+            # 胡克弹簧力：值越大（越合作）吸引力越强，负值（竞争）推远
+            spring_force = (dist - k * 0.5) / k  # 目标距离 = 0.5 * ideal
+            if val < 0:
+                spring_force = -spring_force * 0.5  # 竞争关系推远
+            else:
+                spring_force = spring_force * (abs(val) / 100 + 0.3)
+            fx = (dx / dist) * spring_force * k * 0.3
+            fy = (dy / dist) * spring_force * k * 0.3
+            disp[f][0] += fx
+            disp[f][1] -= fy
+            disp[t][0] -= fx
+            disp[t][1] += fy
+
+        # 应用位移
+        for aid in ids:
+            d = math.sqrt(disp[aid][0]**2 + disp[aid][1]**2) or 0.01
+            capped = min(d, temp * k)
+            pos[aid][0] += (disp[aid][0] / d) * capped
+            pos[aid][1] += (disp[aid][1] / d) * capped
+            # 边界约束
+            pos[aid][0] = max(margin, min(width - margin, pos[aid][0]))
+            pos[aid][1] = max(margin, min(height - margin, pos[aid][1]))
+
+    return pos
+
+
+def _run_with_containers(scene_def: SceneDefinition, engine_name: str,
+                         config: Dict[str, str]) -> Dict[str, Any]:
+    """
+    容器化运行场景：每个 Agent 运行在独立子进程中，通过 HTTP 通信。
+    Docker 可用时自动切换为 Docker 容器模式。
+    """
+    # 检测 Docker 是否可用
+    mode = "process"
+    try:
+        import docker
+        docker.from_env()
+        mode = "docker"
+        print(f"[Container] Docker detected, using container mode")
+    except Exception:
+        print(f"[Container] Docker unavailable, using subprocess mode")
+
+    runtime = get_runtime(mode=mode)
+    runtime.stop_all()  # 清理旧的容器/进程
     AgentRegistry.reset()
-    ToolRegistry.reset()
-    PacketRecorder.reset()
-    # 重新注册工具和技能（reset 清空了）
-    importlib.reload(tools.search_tool)
-    importlib.reload(tools.map_tool)
-    importlib.reload(skills.intelligence_collection)
-    importlib.reload(skills.strategy_planning)
 
-    engine = SimulationEngine(name=engine_name)
+    # 统一通信层（容器模式 — 注册用的 stub，实际通信在子进程内）
+    from agent_network.comm import RemoteBus
+    remote_bus = RemoteBus(message_bus_url="http://localhost:9000")
 
-    # 角色 → Agent 类的映射
-    agent_classes = {
-        "scout": ScoutAgent,
-        "commander": CommanderAgent,
-        "analyst": Agent,
-        "support": Agent,
-        "observer": ScoutAgent,
-        "generic": Agent,
-    }
+    # 力导向布局：根据 relationship 关系优化 Agent 位置
+    layout_pos = _force_layout(scene_def.agents, scene_def.workflow)
 
-    created_agents = []
+    created_cas = []
     for ad in scene_def.agents:
-        cls = agent_classes.get(ad.role, Agent)
-        agent = cls(
+        # 注册到 AgentRegistry（供 WebSocket 和 API 查询）
+        agent = Agent(
             agent_id=ad.agent_id,
             role=ad.role,
             name=ad.name,
             skills=ad.skills,
             tags=ad.tags,
         )
-        engine.register_agent(agent)
-        created_agents.append((agent, ad.tasks))
+        agent.set_comm(remote_bus)
+        # 用力导向布局位置
+        lx, ly = layout_pos.get(ad.agent_id, (random.uniform(50, 350), random.uniform(50, 350)))
+        agent.x = lx
+        agent.y = ly
+        agent.pending_task_descs = ad.tasks
+        agent.extra_meta = ad.extra_meta
+        AgentRegistry.register(agent)
+        agent.start()
 
-    # ── 使用 WorkflowEngine 执行工作流 ──
-    if scene_def.workflow:
-        # 将 workflow 字典转换为 WorkflowStep 对象
-        workflow_steps = scene_def.to_workflow_steps()
-
-        # 使用 WorkflowEngine 按 DAG 依赖执行
-        wf_engine = WorkflowEngine(max_workers=8)
-        wf_context = {"registry": AgentRegistry, "engine": engine}
-        wf_result = wf_engine.run(
-            steps=workflow_steps,
-            context=wf_context,
-            name=scene_def.scene_name,
+        ca = runtime.create_agent(
+            agent_id=ad.agent_id,
+            role=ad.role,
+            name=ad.name,
+            llm_config=config if config.get("api_key") else None,
+            extra_meta=ad.extra_meta if ad.extra_meta else None,
         )
+        created_cas.append((ca, agent, ad.tasks))
 
-        # 将 workflow 结果注入引擎结果
-        engine._workflow_result = wf_result
-    else:
-        # 回退：无 workflow 定义时，按 Agent 的 tasks 字段分配任务
-        for agent, tasks in created_agents:
-            for task in tasks:
-                agent.send_task(task)
+    # 等待所有 Agent 启动（子进程并行启动）
+    time.sleep(2)
+    # 批量向消息总线注册
+    for ca, agent, _ in created_cas:
+        try:
+            import requests as _req
+            _req.post("http://localhost:9000/register",
+                      params={"agent_id": ca.agent_id, "url": ca.url, "name": ca.name}, timeout=3)
+            ca.status = "running"
+        except Exception:
+            ca.status = "error"
 
-    # 运行引擎
-    result = engine.run()
+    # 运行仿真轮次
+    agent_count = len(created_cas)
+    rounds = max(2, min(5, agent_count // 2))
+    results_log = []
 
-    # 附加 workflow 执行信息
-    if scene_def.workflow:
-        wf = scene_def.to_workflow_steps()
-        result["workflow"] = {
-            "total_steps": len(wf),
-            "completed": getattr(engine, '_workflow_result', None) and engine._workflow_result.completed or 0,
-            "failed": getattr(engine, '_workflow_result', None) and engine._workflow_result.failed or 0,
-            "skipped": getattr(engine, '_workflow_result', None) and engine._workflow_result.skipped or 0,
-            "steps": [s.to_dict() for s in wf],
-            "logs": getattr(engine, '_workflow_result', None) and engine._workflow_result.logs[-20:] or [],
+    for round_num in range(rounds):
+        context = {
+            "round": round_num + 1,
+            "total_rounds": rounds,
+            "scene": scene_def.scene_name,
+            "agents": [{"id": ca.agent_id, "role": ca.role, "name": ca.name}
+                       for ca, _, _ in created_cas],
+            "tasks": {ca.agent_id: tasks for ca, _, tasks in created_cas},
         }
+        round_result = runtime.run_round(context)
+        results_log.append(round_result)
+        time.sleep(0.3)
 
-    return result
+    # 收集最终状态 — 与内存模式 engine._collect_results() 统一格式
+    registry_agents = [a.get_status() for a in AgentRegistry.list_all()]
+
+    return {
+        "simulation_name": engine_name,
+        "duration_seconds": round(rounds * 1.5, 2),
+        "agents": registry_agents,
+        "agent_stats": AgentRegistry.get_stats(),
+        "packet_stats": PacketRecorder.get_stats(),
+        "rounds": rounds,
+        "results_log": results_log,
+        "container_mode": mode,
+    }
+
+
+def _build_scene_from_script_json(sj: Dict[str, Any]) -> SceneDefinition:
+    """将 script_json 格式直接映射为 SceneDefinition（不需要 LLM）。"""
+    meta = sj.get("scenario_metadata", {})
+    title = meta.get("title", "自定义场景")
+    bg = meta.get("background_rules", "")
+    role_slots = sj.get("role_slots", [])
+
+    agents: List[AgentDef] = []
+    for slot in role_slots:
+        slot_id = slot.get("slot_id", "").lower()  # ROLE_A → role-a
+        identity = slot.get("identity", slot_id)
+        core_goal = slot.get("core_goal", "")
+        action_space = slot.get("action_space", [])
+        hidden_secret = slot.get("hidden_secret", "")
+        initial_assets = slot.get("initial_assets", {})
+
+        agent = AgentDef(
+            agent_id=slot_id,
+            role="generic",           # 非军事角色，统一 generic
+            name=identity,
+            skills=action_space[:4],   # 前4个action作为skill
+            tags=[core_goal[:30]],     # core_goal 截断为 tag
+            tasks=[core_goal],         # core_goal 作为主任务
+            extra_meta={
+                "identity": identity,
+                "core_goal": core_goal,
+                "hidden_secret": hidden_secret,
+                "initial_assets": initial_assets,
+                "action_space": action_space,
+                "background_rules": bg,  # scene system prompt
+            },
+        )
+        agents.append(agent)
+
+    # 关系矩阵 → workflow（每个关系作为一个消息步骤）
+    relationships = sj.get("initial_relationship_matrix", {}).get("links", [])
+    event_triggers = sj.get("event_triggers", [])
+
+    return SceneDefinition(
+        scene_name=title,
+        description=bg,
+        agents=agents,
+        workflow=relationships,       # 保留原始关系数据
+        event_triggers=event_triggers,  # type: ignore[call-arg]
+    )
 
 
 @app.post("/api/simulations/run")
 async def run_simulation(req: SimulationRunRequest):
-    """运行仿真场景 — 支持 auto/battlefield/fleet + LLM 解析"""
+    """运行仿真场景 — 支持 auto/battlefield/fleet + LLM 解析 + script_json 直映"""
     global service_state
 
     name = req.name or f"{req.scene}-{service_state['simulations_run'] + 1}"
 
-    # 获取脚本内容（优先使用请求中的 script 字段）
-    script_text = req.script or ""
+    # ── 优先：script_json 直接映射（不需要 LLM） ──
+    if req.script_json:
+        scene_def = _build_scene_from_script_json(req.script_json)
+        use_llm = False
 
-    # scene=auto 或提供了 script → 使用 LLM/模板解析
-    if req.scene == "auto" or script_text:
-        if not script_text:
-            script_text = req.scene  # 把 scene 名作为脚本
+    # ── 其次：自然语言 script → LLM/模板解析 ──
+    elif req.scene == "auto" or req.script:
+        script_text = req.script or req.scene
         config = _get_effective_llm_config()
         use_llm = bool(config.get("api_key"))
         scene_def = parse_script(script_text, use_llm=use_llm, config=config)
 
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _run_scene_definition, scene_def, name)
-        result["llm_parsed"] = use_llm
-        result["scene_definition"] = {
-            "scene_name": scene_def.scene_name,
-            "description": scene_def.description,
-            "agents": [{"agent_id": a.agent_id, "role": a.role, "name": a.name, "tasks": a.tasks}
-                       for a in scene_def.agents],
-        }
-    else:
-        # 传统模板场景
-        AgentRegistry.reset()
-        ToolRegistry.reset()
-        PacketRecorder.reset()
-        importlib.reload(tools.search_tool)
-        importlib.reload(tools.map_tool)
-        importlib.reload(skills.intelligence_collection)
-        importlib.reload(skills.strategy_planning)
-
-
-        engine = SimulationEngine(name=name)
-        if req.scene == "fleet":
-            scene = MultiAgentFleetScene()
-        else:
-            scene = BattlefieldScene()
-        engine.load_script(scene)
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, engine.run)
+    # ── 执行场景 ──
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _run_scene_definition, scene_def, name)
+    result["llm_parsed"] = use_llm
+    result["scene_definition"] = {
+        "scene_name": scene_def.scene_name,
+        "description": scene_def.description,
+        "agents": [{"agent_id": a.agent_id, "role": a.role, "name": a.name, "tasks": a.tasks}
+                   for a in scene_def.agents],
+        "relationships": scene_def.workflow,
+    }
+    result["relationships"] = scene_def.workflow
 
     _simulation_results.append(result)
     if len(_simulation_results) > 20:
@@ -549,7 +678,7 @@ async def list_scenes():
     if not _SCENES_DIR.exists():
         return {"scenes": []}
     files = sorted(
-        [f.name for f in _SCENES_DIR.iterdir() if f.suffix == '.md'],
+        [f.name for f in _SCENES_DIR.iterdir() if f.suffix == '.json'],
         key=lambda n: n.lower()
     )
     return {"scenes": files}
@@ -557,9 +686,12 @@ async def list_scenes():
 
 @app.get("/api/scenes/{filename}")
 async def read_scene(filename: str):
-    """读取指定 .md 场景文件内容"""
-    path = _SCENES_DIR / filename
-    if not path.exists() or path.suffix != '.md':
+    """读取指定 .json 场景文件内容"""
+    path = (_SCENES_DIR / filename).resolve()
+    # Prevent path traversal
+    if not str(path).startswith(str(_SCENES_DIR.resolve())):
+        raise HTTPException(status_code=403, detail="Invalid path")
+    if not path.exists() or path.suffix != '.json':
         raise HTTPException(status_code=404, detail=f"Scene '{filename}' not found")
     content = path.read_text(encoding='utf-8')
     name = path.stem
@@ -628,29 +760,8 @@ async def query_logs(
     event: Optional[str] = Query(None),
     index: Optional[str] = Query(None),
     limit: int = Query(default=50, le=500),
-    backend: str = Query("memory", description="查询后端: memory / es"),
 ):
-    """
-    日志查询 API — 对应架构文档第十一节
-
-    支持两种后端:
-    - memory: 内存查询（默认）
-    - es: Elasticsearch 查询（需要 ES 可用）
-
-    类似 Elasticsearch 查询:
-    GET /api/logs?agent_id=agent-001&level=ERROR&limit=100&backend=es
-    """
-    # ES 后端查询
-    if backend == "es" and _es_available and _es_client:
-        result = await _es_client.search_simple(
-            index=index or "logs-*",
-            keyword=event or "",
-            agent_id=agent_id,
-            level=level,
-            size=limit,
-        )
-        return {"backend": "elasticsearch", **result}
-
+    """日志查询 API"""
     # 内存查询
     log_level = None
     if level:
@@ -1398,6 +1509,35 @@ async def map_find_path(
 
 
 # ═══════════════════════════════════════════════
+# 统一 Agent 日志 — 内存/容器模式共用
+# ═══════════════════════════════════════════════
+
+@app.post("/api/logs/agent")
+async def agent_log_ingest(req: Request):
+    """容器模式 Agent 提交决策/执行日志"""
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    _agent_logs.append({
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "agent_id": body.get("agent_id", "?"),
+        "agent_name": body.get("agent_name", "?"),
+        "event": body.get("event", "act"),
+        "detail": body.get("detail", ""),
+    })
+    if len(_agent_logs) > 500:
+        _agent_logs.pop(0)
+    return {"status": "ok", "total_logs": len(_agent_logs)}
+
+
+@app.get("/api/logs/agent")
+async def agent_logs_get():
+    """获取 Agent 日志"""
+    return {"logs": _agent_logs[-200:], "total": len(_agent_logs)}
+
+
+# ═══════════════════════════════════════════════
 # WebSocket — 实时仿真状态推送
 # ═══════════════════════════════════════════════
 
@@ -1435,6 +1575,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "agents": agents_data,
                             "stats": AgentRegistry.get_stats(),
                             "map": _current_map,
+                            "agent_logs": _agent_logs[-50:],
                         },
                     })
                 elif data == "packets":
@@ -1463,6 +1604,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "packets": PacketRecorder.get_stats(),
                             "logs": _global_logger.get_index_stats(),
                             "map": _current_map,
+                            "agent_logs": _agent_logs[-50:],
                         },
                     })
             except asyncio.TimeoutError:
@@ -1499,28 +1641,6 @@ async def health_check():
 
 
 # ═══════════════════════════════════════════════
-# 启动事件 — 初始化可选服务
-# ═══════════════════════════════════════════════
-
-@app.on_event("startup")
-async def startup_event():
-    """初始化 Elasticsearch 连接（如果配置了）"""
-    global _es_client, _es_available
-    if os.environ.get("ES_ENABLED", "").lower() == "true":
-        try:
-            from agent_network.es_client import ESClient
-            _es_client = ESClient()
-            ok = await _es_client.initialize()
-            _es_available = ok
-            if ok:
-                print("[Server] Elasticsearch connected")
-            else:
-                print("[Server] Elasticsearch unavailable, using memory-only mode")
-        except Exception as e:
-            print(f"[Server] ES init error: {e}")
-
-
-# ═══════════════════════════════════════════════
 # Dashboard HTML
 # ═══════════════════════════════════════════════
 
@@ -1530,8 +1650,8 @@ async def startup_event():
 # ═══════════════════════════════════════════════
 
 import pathlib
-_SCENES_DIR = pathlib.Path(__file__).parent / 'scenes' / 'md'
-_DASHBOARD_PATH = pathlib.Path(__file__).parent / 'static' / 'dashboard.html'
+_SCENES_DIR = pathlib.Path(__file__).parent / 'scenes'
+_DASHBOARD_PATH = pathlib.Path(__file__).parent / 'web' / 'tactical-map' / 'dist' / 'dashboard.html'
 
 def _load_dashboard() -> str:
     try:
@@ -1547,20 +1667,20 @@ def _load_dashboard() -> str:
 # ═══════════════════════════════════════════════
 
 from fastapi.staticfiles import StaticFiles
-app.mount('/static', StaticFiles(directory=str(_DASHBOARD_PATH.parent)), name='static')
+app.mount('/static', StaticFiles(directory=str(pathlib.Path(__file__).parent / 'web' / 'tactical-map' / 'dist')), name='static')
 
 
 # ═══════════════════════════════════════════════
 # 战术地图 (Procedural Tactical Situation Map)
 # ═══════════════════════════════════════════════
 
-_TACTICAL_PATH = pathlib.Path(__file__).parent / 'tactical-map' / 'dist'
+_TACTICAL_PATH = pathlib.Path(__file__).parent / 'web' / 'tactical-map' / 'dist'
 
 def _load_tactical_map() -> str:
     try:
         return (_TACTICAL_PATH / 'index.html').read_text(encoding='utf-8')
     except Exception:
-        return '<h1>Tactical Map not built — run: cd tactical-map && npm run build</h1>'
+        return '<h1>Tactical Map not built — run: cd web/tactical-map && npm run build</h1>'
 
 TACTICAL_HTML = None  # reloaded on each request to pick up rebuilds
 

@@ -62,7 +62,8 @@ class ContainerRuntime:
                 self.mode = "process"
 
     def create_agent(self, agent_id: str, role: str, name: str,
-                     port: int = 0, llm_config: Dict = None) -> ContainerAgent:
+                     port: int = 0, llm_config: Dict = None,
+                     extra_meta: Dict = None) -> ContainerAgent:
         """创建并启动一个 Agent 容器"""
         # 自动分配端口
         if port == 0:
@@ -78,14 +79,15 @@ class ContainerRuntime:
         )
 
         if self.mode == "docker":
-            self._start_docker_container(ca, llm_config)
+            self._start_docker_container(ca, llm_config, extra_meta)
         else:
-            self._start_process(ca, llm_config)
+            self._start_process(ca, llm_config, extra_meta)
 
         self.agents[agent_id] = ca
         return ca
 
-    def _start_docker_container(self, ca: ContainerAgent, llm_config: Dict = None):
+    def _start_docker_container(self, ca: ContainerAgent, llm_config: Dict = None,
+                                 extra_meta: Dict = None):
         """启动 Docker 容器"""
         import docker
         env = {
@@ -94,7 +96,14 @@ class ContainerRuntime:
             "AGENT_NAME": ca.name,
             "PORT": str(ca.port),
             "MESSAGE_BUS_URL": self.message_bus_url,
+            "SERVER_URL": getattr(self, 'server_url', 'http://localhost:8000'),
         }
+        # 传递 script_json 身份数据
+        if extra_meta:
+            env["AGENT_CORE_GOAL"] = extra_meta.get("core_goal", "")
+            env["AGENT_HIDDEN_SECRET"] = extra_meta.get("hidden_secret", "")
+            env["AGENT_ACTION_SPACE"] = json.dumps(extra_meta.get("action_space", []), ensure_ascii=False)
+            env["AGENT_INITIAL_ASSETS"] = json.dumps(extra_meta.get("initial_assets", {}), ensure_ascii=False)
         if llm_config:
             if llm_config.get("api_key"):
                 env["LLM_API_KEY"] = llm_config["api_key"]
@@ -110,11 +119,11 @@ class ContainerRuntime:
             network_mode="bridge",
         )
         ca.container_id = container.id
-        ca.status = "running"
-        time.sleep(1)  # 等待容器启动
-        self._register_with_bus(ca)
+        ca.status = "starting"
+        # 不在单容器级别等待 — 调用方批量注册
 
-    def _start_process(self, ca: ContainerAgent, llm_config: Dict = None):
+    def _start_process(self, ca: ContainerAgent, llm_config: Dict = None,
+                        extra_meta: Dict = None):
         """使用子进程模拟容器"""
         import subprocess
         env = os.environ.copy()
@@ -123,6 +132,16 @@ class ContainerRuntime:
         env["AGENT_NAME"] = ca.name
         env["PORT"] = str(ca.port)
         env["MESSAGE_BUS_URL"] = self.message_bus_url
+        env["SERVER_URL"] = getattr(self, 'server_url', 'http://localhost:8000')
+        # 传递场景系统提示词
+        if extra_meta:
+            env["AGENT_SYSTEM_PROMPT"] = extra_meta.get("background_rules", "")
+        # 传递 script_json 身份数据
+        if extra_meta:
+            env["AGENT_CORE_GOAL"] = extra_meta.get("core_goal", "")
+            env["AGENT_HIDDEN_SECRET"] = extra_meta.get("hidden_secret", "")
+            env["AGENT_ACTION_SPACE"] = json.dumps(extra_meta.get("action_space", []), ensure_ascii=False)
+            env["AGENT_INITIAL_ASSETS"] = json.dumps(extra_meta.get("initial_assets", {}), ensure_ascii=False)
         if llm_config:
             if llm_config.get("api_key"):
                 env["LLM_API_KEY"] = llm_config["api_key"]
@@ -130,18 +149,28 @@ class ContainerRuntime:
 
         proc = subprocess.Popen(
             [sys.executable, "agent_server.py"],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        # Background threads to log subprocess output
+        import threading
+        import logging
+        _log = logging.getLogger(__name__)
+        def _reader(stream, prefix):
+            for line in iter(stream.readline, b''):
+                _log.info("%s | %s", prefix, line.decode(errors='replace').rstrip())
+            stream.close()
+        threading.Thread(target=_reader, args=(proc.stdout, f"{ca.agent_id}/out"), daemon=True).start()
+        threading.Thread(target=_reader, args=(proc.stderr, f"{ca.agent_id}/err"), daemon=True).start()
+
         self._processes.append(proc)
-        ca.status = "running"
-        time.sleep(0.5)
-        self._register_with_bus(ca)
+        ca.status = "starting"
+        # 不在此处 sleep — 由调用方统一等待所有 Agent 就绪后批量注册
 
     def _register_with_bus(self, ca: ContainerAgent):
         """向消息总线注册"""
         try:
             requests.post(f"{self.message_bus_url}/register",
-                         params={"agent_id": ca.agent_id, "url": ca.url}, timeout=3)
+                         params={"agent_id": ca.agent_id, "url": ca.url, "name": ca.name}, timeout=3)
         except Exception as e:
             print(f"[Runtime] Failed to register {ca.agent_id}: {e}")
 
@@ -174,26 +203,38 @@ class ContainerRuntime:
         self._processes.clear()
 
     def decide_all(self, context: Dict = None) -> List[Dict]:
-        """触发所有 Agent 决策，返回决策结果"""
+        """并行触发所有 Agent 决策"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         results = []
-        for ca in self.agents.values():
+        agents_list = list(self.agents.values())
+        def _decide(ca):
             try:
                 resp = requests.post(f"{ca.url}/decide",
-                                    json={"context": context or {}}, timeout=30)
-                results.append(resp.json())
+                                    json={"context": context or {}}, timeout=60)
+                return resp.json()
             except Exception as e:
-                results.append({"agent_id": ca.agent_id, "error": str(e)})
+                return {"agent_id": ca.agent_id, "error": str(e)}
+        with ThreadPoolExecutor(max_workers=len(agents_list)) as pool:
+            futures = {pool.submit(_decide, ca): ca for ca in agents_list}
+            for f in as_completed(futures):
+                results.append(f.result())
         return results
 
     def act_all(self) -> List[Dict]:
-        """触发所有 Agent 执行决策"""
+        """并行触发所有 Agent 执行决策"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         results = []
-        for ca in self.agents.values():
+        agents_list = list(self.agents.values())
+        def _act(ca):
             try:
-                resp = requests.post(f"{ca.url}/act", timeout=30)
-                results.append(resp.json())
+                resp = requests.post(f"{ca.url}/act", timeout=60)
+                return resp.json()
             except Exception as e:
-                results.append({"agent_id": ca.agent_id, "error": str(e)})
+                return {"agent_id": ca.agent_id, "error": str(e)}
+        with ThreadPoolExecutor(max_workers=len(agents_list)) as pool:
+            futures = {pool.submit(_act, ca): ca for ca in agents_list}
+            for f in as_completed(futures):
+                results.append(f.result())
         return results
 
     def run_round(self, context: Dict = None) -> Dict:

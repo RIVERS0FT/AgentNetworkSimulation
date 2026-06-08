@@ -41,75 +41,21 @@ class Action:
         return d
 
 
-ROLE_SYSTEM_PROMPTS = {
-    "scout": """你是一个侦察兵 Agent。你的职责是收集情报、侦察环境和报告发现。
+DEFAULT_SYSTEM_PROMPT = """根据你的身份、目标和可用行动，在仿真场景中做出合理决策。
 
-你可以使用以下动作：
-- search(topic): 搜索特定主题的情报
-- analyze(data): 分析收集到的数据
-- send_message(target_name, content): 向目标 Agent 发送消息
-- wait: 等待下一轮
-
-行为准则：
-- 主动搜索情报，不要等待命令
-- 发现重要信息立即报告给指挥官
-- 用简洁准确的语言描述发现
-- 如果已经搜索过某个主题，去搜索新的""",
-
-    "commander": """你是一个指挥官 Agent。你的职责是分析情报、制定计划和下达指令。
-
-你可以使用以下动作：
-- send_message(target_name, content): 向特定 Agent 下达指令
+可用动作：
+- send_message(target_agent_id, content): 向特定 Agent 发送消息（target_agent_id 必须用已知 Agent 列表中的 agent_id，如 "role_b"）
 - broadcast(content): 向所有 Agent 广播消息
-- analyze(data): 分析情报数据
+- analyze(data): 分析当前局势
 - plan(objective): 制定行动计划
-- wait: 等待更多情报
+- wait: 等待更多信息或观望
 
 行为准则：
-- 等待侦察兵提供足够情报再做决策
-- 下达清晰具体的指令
-- 综合多方情报做出判断
-- 在信息不足时主动要求更多侦察""",
-
-    "analyst": """你是一个分析员 Agent。你的职责是分析数据、评估情报和生成报告。
-
-你可以使用以下动作：
-- analyze(data): 深入分析数据
-- send_message(target_name, content): 向目标 Agent 发送分析结果
-- search(topic): 搜索补充信息
-- wait: 等待更多数据
-
-行为准则：
-- 收到数据后先分析再回复
-- 给出数据驱动的评估
-- 发现异常及时报告
-- 用结构化方式呈现分析结果""",
-
-    "support": """你是一个支援 Agent。你的职责是提供后勤支持和信息协调。
-
-你可以使用以下动作：
-- send_message(target_name, content): 向目标 Agent 发送消息
-- search(topic): 查询信息
-- wait: 等待请求
-
-行为准则：
-- 响应其他 Agent 的支援请求
-- 协调信息流通
-- 主动提供帮助""",
-
-    "observer": """你是一个观察员 Agent。你的职责是监视环境、发现异常和预警。
-
-你可以使用以下动作：
-- search(topic): 搜索特定信号
-- send_message(target_name, content): 发送预警消息
-- analyze(data): 分析监测数据
-- wait: 持续监控
-
-行为准则：
-- 发现异常立即预警
-- 持续监测关键指标
-- 及时上报威胁""",
-}
+- 始终围绕你的核心目标和秘密行动
+- 合理使用你的资产和影响力
+- 与相关方建立联系、谈判或竞争
+- 根据局势变化灵活调整策略
+- send_message 的 target 必须用 agent_id（如 role_c），不能用中文名"""
 
 
 class Brain:
@@ -123,10 +69,12 @@ class Brain:
     4. 解析响应 → Action
     """
 
-    def __init__(self, role: str, name: str, goals: List[str] = None, config: Dict = None):
+    def __init__(self, role: str, name: str, goals: List[str] = None, config: Dict = None,
+                 system_prompt: str = ""):
         self.role = role
         self.name = name
         self.goals = goals or ["完成指派的任务"]
+        self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.config = config or get_api_config()
         self.memory: List[str] = []  # 短期记忆（最近几轮的事件）
         self.turn = 0
@@ -145,7 +93,7 @@ class Brain:
         self.turn += 1
         api_key = self.config.get("api_key", "")
         if not api_key:
-            return self._fallback_decision(inbox, context)
+            return Action(type="wait", target="", content="", reasoning="no LLM API key configured")
 
         prompt = self._build_prompt(inbox, context)
         response_text = self._call_llm(prompt, api_key)
@@ -162,7 +110,7 @@ class Brain:
     def _build_prompt(self, inbox: List[Dict], context: Dict = None) -> str:
         """构建发给 LLM 的 prompt"""
         context = context or {}
-        system = ROLE_SYSTEM_PROMPTS.get(self.role, ROLE_SYSTEM_PROMPTS["scout"])
+        system = self.system_prompt
 
         # 已知的其他 Agent
         known = context.get("known_agents", [])
@@ -236,7 +184,8 @@ class Brain:
     def _call_anthropic(self, prompt: str, api_key: str, model: str = "") -> str:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
-        model = model or "claude-sonnet-4-6"
+        from .config import DEFAULT_LLM_MODEL
+        model = model or DEFAULT_LLM_MODEL
         # Split system and user
         parts = prompt.split("## 当前状态")
         system = parts[0].strip() if len(parts) > 1 else prompt[:500]
@@ -249,21 +198,24 @@ class Brain:
         return message.content[0].text
 
     def _call_openai_compat(self, prompt: str, api_key: str, model: str = "", api_base: str = "") -> str:
-        import requests
+        import httpx
         model = model or "deepseek-chat"
         api_base = api_base or "https://api.deepseek.com/v1"
         url = f"{api_base.rstrip('/')}/chat/completions"
 
-        resp = requests.post(url, headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }, json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 512, "temperature": 0.7,
-        }, timeout=30)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        try:
+            resp = httpx.post(url, headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }, json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 512, "temperature": 0.7,
+            }, timeout=30.0)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"LLM API call failed: {e}") from e
 
     def _parse_response(self, text: str) -> Action:
         """从 LLM 响应中解析 Action"""
@@ -292,64 +244,9 @@ class Brain:
 
         return Action(type="wait", content="", reasoning=f"无法解析: {text[:50]}")
 
-    def _fallback_decision(self, inbox: List[Dict], context: Dict = None) -> Action:
-        """无 LLM 时的规则回退决策"""
-        context = context or {}
-
-        # 如果有新消息，回复它
-        if inbox:
-            last_msg = inbox[-1]
-            sender = last_msg.get("from", "")
-            content = last_msg.get("content", "")
-
-            if self.role == "commander":
-                if "情报" in str(content) or "报告" in str(content):
-                    return Action(type="analyze", content=content,
-                                  reasoning="收到情报，进行分析")
-                return Action(type="send_message", target=sender,
-                              content="收到，继续执行任务。",
-                              reasoning=f"回复 {sender} 的消息")
-
-            if self.role == "scout":
-                if "搜索" in str(content) or "侦察" in str(content):
-                    return Action(type="search", content="目标区域",
-                                  reasoning="收到侦察指令，开始搜索")
-                return Action(type="send_message", target=sender,
-                              content="正在执行侦察任务。",
-                              reasoning=f"回复 {sender}")
-
-            if self.role == "analyst":
-                if "分析" in str(content) or "数据" in str(content):
-                    return Action(type="analyze", content=content,
-                                  reasoning="收到分析请求")
-                return Action(type="wait", reasoning="等待分析请求")
-
-            return Action(type="send_message", target=sender,
-                          content="收到。", reasoning=f"回复 {sender}")
-
-        # 无消息时，按角色主动行动
-        if self.role == "scout":
-            return Action(type="search", content="敌军位置",
-                          reasoning="主动侦察")
-        elif self.role == "commander":
-            return Action(type="wait", content="",
-                          reasoning="等待侦察情报")
-        elif self.role == "analyst":
-            return Action(type="wait", content="",
-                          reasoning="等待数据输入")
-        else:
-            return Action(type="wait", content="", reasoning="待命")
-
-
-def create_brain(role: str, name: str, goals: List[str] = None) -> Brain:
-    """工厂函数：创建指定角色的 Brain"""
+def create_brain(role: str, name: str, goals: List[str] = None,
+                  system_prompt: str = "") -> Brain:
+    """工厂函数：创建 Brain"""
     if goals is None:
-        default_goals = {
-            "scout": ["搜索敌军情报", "侦察目标区域地形", "及时报告发现"],
-            "commander": ["收集各方情报", "制定作战方案", "下达清晰指令"],
-            "analyst": ["分析收到的数据", "评估威胁等级", "提供决策建议"],
-            "support": ["协调信息流通", "响应支援请求"],
-            "observer": ["持续监测环境", "发现异常立即预警"],
-        }
-        goals = default_goals.get(role, ["完成指派任务"])
-    return Brain(role=role, name=name, goals=goals)
+        goals = ["完成指派任务"]
+    return Brain(role=role, name=name, goals=goals, system_prompt=system_prompt)

@@ -13,6 +13,8 @@ LLM 脚本解析器 — 用 AI 将自然语言剧本解析为结构化 Agent 配
 import json
 import os
 import re
+
+from .config import DEFAULT_LLM_MODEL
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field, asdict
 
@@ -26,6 +28,7 @@ class AgentDef:
     skills: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
     tasks: List[str] = field(default_factory=list)  # 该 agent 要执行的任务
+    extra_meta: Dict[str, Any] = field(default_factory=dict)  # script_json 扩展字段
 
 
 @dataclass
@@ -35,6 +38,7 @@ class SceneDefinition:
     description: str = ""
     agents: List[AgentDef] = field(default_factory=list)
     workflow: List[Dict[str, Any]] = field(default_factory=list)  # 任务执行顺序
+    event_triggers: List[Dict[str, Any]] = field(default_factory=list)  # script_json 事件
 
     def to_workflow_steps(self):
         """
@@ -136,7 +140,7 @@ def get_api_config() -> Dict[str, str]:
     if anthropic_key:
         config["api_key"] = anthropic_key
         config["provider"] = "anthropic"
-        config["model"] = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+        config["model"] = os.environ.get("ANTHROPIC_MODEL", DEFAULT_LLM_MODEL)
 
     # OpenAI (优先于 Anthropic，如果同时存在)
     openai_key = os.environ.get("OPENAI_API_KEY", "")
@@ -294,7 +298,7 @@ def _parse_with_anthropic(script: str, api_key: str, model: str = "") -> SceneDe
     import anthropic
 
     client = anthropic.Anthropic(api_key=api_key)
-    model = model or "claude-sonnet-4-6"
+    model = model or DEFAULT_LLM_MODEL
 
     message = client.messages.create(
         model=model,

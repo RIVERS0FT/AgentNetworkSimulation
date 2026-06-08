@@ -10,10 +10,26 @@ Agent SDK — 对应架构文档 第三节：Agent SDK & 第六节：Agent管理
 """
 
 from typing import List, Optional, Dict, Any
-from .message import Message
 from datetime import datetime
+from dataclasses import dataclass
 import uuid
 import json
+
+
+@dataclass
+class Message:
+    """Agent 间消息"""
+    source: str
+    target: str
+    type: str = "task"
+    payload: Dict[str, Any] = None
+    message_id: str = ""
+
+    def __post_init__(self):
+        if self.message_id == "":
+            self.message_id = str(uuid.uuid4())[:8]
+        if self.payload is None:
+            self.payload = {}
 
 
 class Agent:
@@ -45,8 +61,11 @@ class Agent:
         self.status = "created"  # created, idle, running, paused, stopped, error
         self.container_id = f"docker-{self.agent_id}"
         self.event_bus = None  # 由仿真引擎注入
+        self.comm = None       # 统一通信层 (LocalBus/RemoteBus)
         self.task_queue: List[Message] = []
         self.completed_tasks: List[Dict[str, Any]] = []
+        self.pending_task_descs: List[str] = []  # task descriptions from scene script
+        self.extra_meta: Dict[str, Any] = {}     # script_json metadata (identity, goals, etc.)
         self.inbox: List[Dict] = []           # LLM 收件箱
         self.brain = None                      # LLM 大脑
         self.has_brain = False                 # 是否启用 LLM
@@ -60,22 +79,29 @@ class Agent:
 
     # ── 任务收发 ────────────────────────────────
 
+    def set_comm(self, comm, registry=None):
+        """设置统一通信层和 Agent 注册表"""
+        self.comm = comm
+        self._registry = registry
+
     def send_task(self, task: str, target: "Agent" = None, **kwargs) -> Message:
         """
-        发送任务给目标 Agent
-
-        Args:
-            task: 任务描述
-            target: 目标 Agent；如果为 None 则发给自己
+        发送任务给目标 Agent。优先使用统一通信层。
         """
+        target_id = target.agent_id if target else self.agent_id
         msg = Message(
             source=self.agent_id,
-            target=target.agent_id if target else self.agent_id,
+            target=target_id,
             type="task",
             payload={"action": task, **kwargs},
         )
 
-        if target and self.event_bus:
+        # 统一通信层: LocalBus 直投 inbox, RemoteBus HTTP 转发
+        if self.comm and target and target_id != self.agent_id:
+            self.comm.send(self.agent_id, self.name, target_id, task)
+        elif self.comm and not target:
+            self.task_queue.append(msg)
+        elif self.event_bus and target:
             self.event_bus.publish(msg)
         else:
             self.task_queue.append(msg)
@@ -90,7 +116,9 @@ class Agent:
             type="response",
             payload={"result": result, **kwargs},
         )
-        if self.event_bus:
+        if self.comm and target:
+            self.comm.send(self.agent_id, self.name, target.agent_id, str(result))
+        elif self.event_bus:
             self.event_bus.publish(msg)
         return msg
 
@@ -108,10 +136,12 @@ class Agent:
 
     # ── LLM Brain 集成 ───────────────────────────
 
-    def equip_brain(self, goals: List[str] = None, config: Dict = None):
+    def equip_brain(self, goals: List[str] = None, config: Dict = None,
+                     system_prompt: str = ""):
         """为 Agent 安装 LLM 大脑"""
         from .brain import create_brain
-        self.brain = create_brain(role=self.role, name=self.name, goals=goals)
+        self.brain = create_brain(role=self.role, name=self.name, goals=goals,
+                                  system_prompt=system_prompt)
         if config:
             self.brain.config = config
         self.has_brain = True
@@ -273,6 +303,8 @@ class Agent:
             "tags": self.tags,
             "capability_scores": self.capability_scores,
             "pending_tasks": len(self.task_queue),
+            "pending_task_descs": self.pending_task_descs,
+            "extra_meta": self.extra_meta,
             "completed_tasks": len(self.completed_tasks),
             "created_at": self._created_at,
             "x": self.x,

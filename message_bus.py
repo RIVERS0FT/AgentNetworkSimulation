@@ -24,13 +24,7 @@ import uvicorn
 import requests
 import time
 
-from agent_network.metrics import MetricsRegistry
-
 app = FastAPI(title="Agent Message Bus")
-metrics = MetricsRegistry()
-
-# 注册 Prometheus /metrics 端点
-MetricsRegistry.add_metrics_route(app)
 
 # ── 可选的外部服务转发 ──
 LOG_COLLECTOR_URL = os.environ.get("LOG_COLLECTOR_URL", "")
@@ -64,10 +58,12 @@ async def health():
 
 
 @app.post("/register")
-async def register(agent_id: str, url: str):
-    """Agent 容器注册自己"""
+async def register(agent_id: str, url: str, name: str = ""):
+    """Agent 容器注册自己 (同时按ID和名称索引)"""
     agent_registry[agent_id] = url
-    print(f"[Bus] Registered: {agent_id} @ {url}")
+    if name:
+        agent_registry[name] = url  # 名称别名
+    print(f"[Bus] Registered: {agent_id} ({name}) @ {url}")
     return {"registered": agent_id, "total": len(agent_registry)}
 
 
@@ -92,9 +88,6 @@ async def relay(msg: RelayMessage):
         "content": msg.content[:200], "reasoning": msg.reasoning[:100],
     }
     message_log.append(entry)
-
-    # ── Prometheus 指标 ──
-    metrics.record_message(source=msg.from_id, target=msg.to, msg_type="relay")
 
     # ── 日志收集器转发 ──
     if LOG_COLLECTOR_URL:
@@ -138,10 +131,16 @@ async def relay(msg: RelayMessage):
                     results[aid] = str(e)
         return {"broadcast": True, "targets": len(results), "results": results}
 
-    # 单播
+    # 单播 — 先精确匹配ID，再匹配名称，再模糊匹配
     target_url = agent_registry.get(msg.to)
     if not target_url:
-        metrics.record_error(service="message-bus", error_type="target_not_found")
+        # 尝试名称模糊匹配
+        target_lower = msg.to.lower().strip()
+        for key, url in agent_registry.items():
+            if target_lower in key.lower() or key.lower() in target_lower:
+                target_url = url
+                break
+    if not target_url:
         return {"error": f"Target '{msg.to}' not found", "known": list(agent_registry.keys())}
 
     try:
@@ -149,13 +148,8 @@ async def relay(msg: RelayMessage):
             "from_id": msg.from_id, "from_name": msg.from_name,
             "content": msg.content,
         }, timeout=5)
-        relay_latency = (time.time() - relay_start) * 1000
-        metrics.message_latency_seconds.labels(
-            from_role=msg.from_id, to_role=msg.to
-        ).observe(relay_latency / 1000.0)
         return {"relayed": True, "to": msg.to, "status": resp.status_code}
     except Exception as e:
-        metrics.record_error(service="message-bus", error_type="relay_error")
         return {"error": str(e), "to": msg.to}
 
 

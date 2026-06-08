@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """
-Agent 容器运行时 — 每个 Docker 容器内运行的 HTTP 服务
+Agent 容器运行时 — 每个 Docker 容器/子进程内运行的 HTTP 服务
 
-接收消息 → LLM 决策 → 发送消息 → 返回状态
+接收消息 → Agent.decide() → 执行动作 → 通过 RemoteBus 发送消息
 
 环境变量:
-  AGENT_ID: Agent ID
-  AGENT_ROLE: 角色
-  AGENT_NAME: 名称
-  MESSAGE_BUS_URL: 消息总线地址
-  LLM_API_KEY: LLM API Key（可选）
-  LLM_MODEL: 模型名（可选）
+  AGENT_ID:         Agent ID
+  AGENT_ROLE:       角色
+  AGENT_NAME:       名称
+  PORT:             监听端口
+  MESSAGE_BUS_URL:  消息总线地址 (默认 localhost:9000)
+  AGENT_CORE_GOAL:  核心目标 (可选)
+  AGENT_HIDDEN_SECRET: 隐藏秘密 (可选)
+  AGENT_ACTION_SPACE:  可用行动 JSON (可选)
+  AGENT_INITIAL_ASSETS: 初始资产 JSON (可选)
+  LLM_API_KEY:       LLM API Key (可选)
+  LLM_MODEL:         模型名 (可选)
+
+统一通信层: RemoteBus → Message Bus HTTP 中转
 """
 
 import os
@@ -26,43 +33,98 @@ from typing import List, Optional, Dict, Any
 import uvicorn
 import requests
 
-from agent_network.brain import Brain, Action
-from agent_network.message import Message
-from agent_network.metrics import MetricsRegistry
+from agent_network.agent import Agent
+from agent_network.comm import RemoteBus
 
 
 # ═══════════════════════════════════════════════
-# Agent 身份
+# Agent 身份 (环境变量)
 # ═══════════════════════════════════════════════
 
 AGENT_ID = os.environ.get("AGENT_ID", "agent-001")
-AGENT_ROLE = os.environ.get("AGENT_ROLE", "scout")
+AGENT_ROLE = os.environ.get("AGENT_ROLE", "generic")
 AGENT_NAME = os.environ.get("AGENT_NAME", AGENT_ID)
+AGENT_PORT = int(os.environ.get("PORT", "8000"))
 MESSAGE_BUS = os.environ.get("MESSAGE_BUS_URL", "http://localhost:9000")
+SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:8000")  # 统一日志收集
+
+AGENT_CORE_GOAL = os.environ.get("AGENT_CORE_GOAL", "")
+AGENT_HIDDEN_SECRET = os.environ.get("AGENT_HIDDEN_SECRET", "")
+AGENT_ACTION_SPACE = json.loads(os.environ.get("AGENT_ACTION_SPACE", "[]"))
+AGENT_INITIAL_ASSETS = json.loads(os.environ.get("AGENT_INITIAL_ASSETS", "{}"))
+AGENT_SYSTEM_PROMPT = os.environ.get("AGENT_SYSTEM_PROMPT", "")  # from scene background_rules
+
 LOG_COLLECTOR_URL = os.environ.get("LOG_COLLECTOR_URL", "")
 PACKET_MONITOR_URL = os.environ.get("PACKET_MONITOR_URL", "")
 
-app = FastAPI(title=f"Agent {AGENT_NAME}")
-metrics = MetricsRegistry()
+# ═══════════════════════════════════════════════
+# 初始化 Agent + 统一通信层
+# ═══════════════════════════════════════════════
 
-# 注册 Prometheus /metrics 端点
-MetricsRegistry.add_metrics_route(app)
+# 通信层: RemoteBus → Message Bus HTTP 中转
+comm = RemoteBus(message_bus_url=MESSAGE_BUS)
 
-# LLM 配置
+# 创建 Agent 实例（和内存模式完全一致）
+agent = Agent(
+    agent_id=AGENT_ID,
+    role=AGENT_ROLE,
+    name=AGENT_NAME,
+    skills=AGENT_ACTION_SPACE,
+    tags=[AGENT_CORE_GOAL] if AGENT_CORE_GOAL else [],
+)
+agent.x = 0.0
+agent.y = 0.0
+agent.comm = comm
+agent.pending_task_descs = [AGENT_CORE_GOAL] if AGENT_CORE_GOAL else []
+agent.extra_meta = {
+    "identity": AGENT_NAME,
+    "core_goal": AGENT_CORE_GOAL,
+    "hidden_secret": AGENT_HIDDEN_SECRET,
+    "action_space": AGENT_ACTION_SPACE,
+    "initial_assets": AGENT_INITIAL_ASSETS,
+}
+
+# 安装 Brain
 brain_config = {}
 if os.environ.get("LLM_API_KEY"):
     brain_config["api_key"] = os.environ["LLM_API_KEY"]
     brain_config["model"] = os.environ.get("LLM_MODEL", "")
     brain_config["provider"] = os.environ.get("LLM_PROVIDER", "auto")
 
-brain = Brain(role=AGENT_ROLE, name=AGENT_NAME, config=brain_config)
-inbox: List[Dict] = []
+_goals = []
+if AGENT_CORE_GOAL:
+    _goals.append(f"核心目标: {AGENT_CORE_GOAL}")
+if AGENT_HIDDEN_SECRET:
+    _goals.append(f"你的秘密: {AGENT_HIDDEN_SECRET}（可在关键时刻使用）")
+if AGENT_ACTION_SPACE:
+    _goals.append(f"可用行动: {', '.join(AGENT_ACTION_SPACE)}")
+if AGENT_INITIAL_ASSETS:
+    _goals.append(f"初始资产: {json.dumps(AGENT_INITIAL_ASSETS, ensure_ascii=False)}")
+
+agent.equip_brain(goals=_goals if _goals else None, config=brain_config,
+                   system_prompt=AGENT_SYSTEM_PROMPT)
+
+# ═══════════════════════════════════════════════
+# HTTP API
+# ═══════════════════════════════════════════════
+
+app = FastAPI(title=f"Agent {AGENT_NAME}")
+
 turn = 0
+last_action: Dict[str, Any] = {}
 
+def _log_agent(event: str, detail: str):
+    """统一日志 — POST 到主服务器"""
+    try:
+        requests.post(f"{SERVER_URL}/api/logs/agent", json={
+            "agent_id": AGENT_ID,
+            "agent_name": AGENT_NAME,
+            "event": event,
+            "detail": detail,
+        }, timeout=2)
+    except Exception:
+        pass  # 日志发送失败不影响 Agent 运行
 
-# ═══════════════════════════════════════════════
-# API
-# ═══════════════════════════════════════════════
 
 class MessageIn(BaseModel):
     from_id: str
@@ -78,113 +140,109 @@ class DecideRequest(BaseModel):
 @app.get("/status")
 async def status():
     """Agent 状态"""
-    metrics.set_agent_active(AGENT_ID, AGENT_ROLE, "running")
     return {
         "agent_id": AGENT_ID,
         "name": AGENT_NAME,
         "role": AGENT_ROLE,
         "turn": turn,
-        "inbox_size": len(inbox),
+        "inbox_size": len(agent.inbox),
         "has_llm": bool(brain_config.get("api_key")),
+        "core_goal": AGENT_CORE_GOAL or None,
+        "hidden_secret": AGENT_HIDDEN_SECRET or None,
+        "action_space": AGENT_ACTION_SPACE,
+        "initial_assets": AGENT_INITIAL_ASSETS,
+        "last_action": last_action,
     }
 
 
 @app.post("/message")
 async def receive_message(msg: MessageIn):
-    """接收来自其他 Agent 的消息"""
-    inbox.append({
+    """接收来自其他 Agent 的消息 → 写入 Agent 收件箱"""
+    agent.inbox.append({
         "from": msg.from_name or msg.from_id,
         "content": msg.content,
         "type": msg.type,
     })
-    if len(inbox) > 50:
-        inbox.pop(0)
-    return {"received": True, "inbox_size": len(inbox)}
+    if len(agent.inbox) > 50:
+        agent.inbox.pop(0)
+    return {"received": True, "inbox_size": len(agent.inbox)}
 
 
 @app.post("/decide")
 async def decide(req: DecideRequest = None):
     """触发 LLM 决策，返回 Action"""
-    global turn
+    global turn, last_action
     turn += 1
     ctx = req.context if req else {}
     ctx["round"] = turn
-    action = brain.decide(inbox, ctx)
 
-    # 记录操作指标
-    metrics.record_agent_operation(AGENT_ID, "decide", "completed")
+    action = agent.decide(ctx)
+    if action:
+        last_action = action.to_dict() if hasattr(action, 'to_dict') else str(action)
+        _log_agent("decide", f"{action.type} → {getattr(action, 'target', '')}: {getattr(action, 'content', '')[:100]}")
 
-    # 转发日志到 Log Collector
-    if LOG_COLLECTOR_URL:
-        try:
-            requests.post(f"{LOG_COLLECTOR_URL}/api/logs/ingest", json={
-                "level": "INFO", "event": "agent_decide",
-                "agent_id": AGENT_ID, "agent_name": AGENT_NAME, "agent_role": AGENT_ROLE,
-                "index": "logs-agent",
-                "message": f"Decision: {action.type} → {action.target or 'self'}: {action.content[:200]}",
-                "details": action.to_dict(),
-            }, timeout=1)
-        except Exception:
-            pass
 
+    if action and hasattr(action, 'to_dict'):
+        return {
+            "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
+            "turn": turn, "has_llm": bool(brain_config.get("api_key")),
+            **action.to_dict(),
+        }
     return {
-        "agent_id": AGENT_ID,
-        "agent_name": AGENT_NAME,
-        "turn": turn,
-        "has_llm": bool(brain_config.get("api_key")),
-        **action.to_dict(),
+        "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
+        "turn": turn, "type": "wait", "target": "", "content": "",
+        "reasoning": "no brain available",
     }
 
 
 @app.post("/act")
 async def act():
-    """执行最近一次决策并发送消息到消息总线"""
-    ctx = {"round": turn}
-    action = brain.decide(inbox, ctx)
-    result = {"action": action.to_dict()}
+    """执行上一次 /decide 的决策（不再重复调用 LLM）"""
+    global last_action
+    result: Dict[str, Any] = {}
 
-    # 如果是发送消息，通过消息总线转发
-    if action.type in ("send_message", "broadcast"):
+    if not last_action:
+        return {"status": "no_decision_yet"}
+
+    action_type = last_action.get("type", "wait")
+    action_target = last_action.get("target", "")
+    action_content = last_action.get("content", "")
+    result["action"] = last_action
+    _log_agent("act", f"{action_type} → {action_target}: {action_content[:100]}")
+
+    # 如果是发送消息，通过 RemoteBus 转发
+    if action_type in ("send_message", "broadcast"):
         try:
             relay_start = time.time()
-            resp = requests.post(f"{MESSAGE_BUS}/relay", json={
-                "from_id": AGENT_ID,
-                "from_name": AGENT_NAME,
-                "to": action.target if action.type == "send_message" else "broadcast",
-                "content": action.content,
-                "reasoning": action.reasoning,
-            }, timeout=5)
-            result["relayed"] = resp.json() if resp.ok else {"error": resp.status_code}
+            if action_type == "send_message":
+                ok = comm.send(AGENT_ID, AGENT_NAME, action_target, action_content)
+            else:
+                ok = comm.broadcast(AGENT_ID, AGENT_NAME, action_content)
+            result["relayed"] = ok
 
-            # 转发数据包到 Packet Monitor
+            # 转发到 Packet Monitor
             if PACKET_MONITOR_URL:
                 try:
                     requests.post(f"{PACKET_MONITOR_URL}/api/packets/ingest", json={
                         "from_id": AGENT_ID, "from_name": AGENT_NAME,
-                        "to": action.target if action.type == "send_message" else "broadcast",
-                        "content": action.content, "reasoning": action.reasoning,
-                        "type": action.type,
+                        "to": action_target if action_type == "send_message" else "broadcast",
+                        "content": action_content, "type": action_type,
                         "direction": "outbound",
                     }, timeout=1)
                 except Exception:
                     pass
-
-            metrics.record_agent_operation(AGENT_ID, "act", "completed")
         except Exception as e:
             result["relay_error"] = str(e)
-            metrics.record_agent_operation(AGENT_ID, "act", "error")
-            metrics.record_error(service="agent_server", error_type="relay_failed")
     else:
-        metrics.record_agent_operation(AGENT_ID, action.type, "completed")
 
     # 转发日志到 Log Collector
     if LOG_COLLECTOR_URL:
         try:
             requests.post(f"{LOG_COLLECTOR_URL}/api/logs/ingest", json={
                 "level": "INFO", "event": "agent_act",
-                "agent_id": AGENT_ID, "agent_name": AGENT_NAME, "agent_role": AGENT_ROLE,
+                "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
                 "index": "logs-agent",
-                "message": f"Action: {action.type}: {action.content[:200]}",
+                "message": f"Act: {str(action)[:200]}",
                 "details": result,
             }, timeout=1)
         except Exception:
@@ -196,13 +254,13 @@ async def act():
 @app.get("/inbox")
 async def get_inbox():
     """查看收件箱"""
-    return {"inbox": inbox[-20:]}
+    return {"inbox": agent.inbox[-20:]}
 
 
 @app.post("/clear")
 async def clear():
     """清空收件箱"""
-    inbox.clear()
+    agent.inbox.clear()
     return {"cleared": True}
 
 
@@ -211,8 +269,14 @@ async def clear():
 # ═══════════════════════════════════════════════
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    print(f"[Agent] {AGENT_NAME} ({AGENT_ROLE}) starting on port {port}")
-    print(f"[Agent] Message bus: {MESSAGE_BUS}")
+    # 向消息总线注册
+    try:
+        comm.register_agent(AGENT_ID, AGENT_NAME, f"http://localhost:{AGENT_PORT}")
+        print(f"[Agent] Registered with message bus: {AGENT_ID} @ port {AGENT_PORT}")
+    except Exception as e:
+        print(f"[Agent] Failed to register with message bus: {e}")
+
+    print(f"[Agent] {AGENT_NAME} ({AGENT_ROLE}) starting on port {AGENT_PORT}")
+    print(f"[Agent] Goal: {AGENT_CORE_GOAL or 'N/A'}")
     print(f"[Agent] LLM: {'enabled' if brain_config.get('api_key') else 'disabled'}")
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=AGENT_PORT, log_level="info")
