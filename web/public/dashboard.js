@@ -1,6 +1,6 @@
 // ============== Log (must be first) ==============
 let logBuffer = [];
-function logEntry(level, event) {
+function logEntry(field, event) {
 const now = new Date();
 const ts = now.getFullYear() + '-' +
            (now.getMonth()+1).toString().padStart(2,'0') + '-' +
@@ -9,22 +9,21 @@ const ts = now.getFullYear() + '-' +
            now.getMinutes().toString().padStart(2,'0') + ':' +
            now.getSeconds().toString().padStart(2,'0') + '.' +
            now.getMilliseconds().toString().padStart(3,'0');
-logBuffer.push({ timestamp: ts, level, event });
+logBuffer.push({ timestamp: ts, source: 'frontend', field, event });
 if (logBuffer.length > 500) logBuffer.shift();
 renderLogs();
 }
 function renderLogs() {
-const filter = document.getElementById('log-filter')?.value || '';
+const checked = [...document.querySelectorAll('#log-fields input:checked')].map(cb => cb.dataset.field);
 const container = document.getElementById('log-entries');
 const autoscroll = document.getElementById('log-autoscroll')?.checked;
 if (!container) return;
 const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 30;
-let entries = [...logBuffer];
-if (filter) entries = entries.filter(e => e.level === filter);
+let entries = logBuffer.filter(e => checked.includes(e.field));
 const countEl = document.getElementById('log-count');
 if (countEl) countEl.textContent = entries.length;
 container.innerHTML = entries.slice(-200).map(e =>
-'<div class=log-entry><span class=ts>' + e.timestamp + '</span> <span class="lv lv-' + e.level + '">' + e.level + '</span> <span class=ev>' + e.event + '</span></div>'
+'<div class=log-entry><span class=ts>' + e.timestamp + '</span> <span class="lv lv-' + e.field + '">' + e.field + '</span> <span class=ev>' + e.event + '</span></div>'
 ).join('') || '<div class=log-entry><span class=ts>--</span> <span class=ev>无日志</span></div>';
 if (autoscroll && wasAtBottom) container.scrollTop = container.scrollHeight;
 }
@@ -45,6 +44,7 @@ let tickInterval = null;
 // ============== Agent forwarding → React iframe ==============
 const iframe = document.getElementById('campus-iframe');
 let _relationships = [];
+let _lastLogCount = 0;
 function forwardAgents() {
   if (iframe && iframe.contentWindow) {
     iframe.contentWindow.postMessage({ type: 'agents', data: agents, relationships: _relationships }, '*');
@@ -94,18 +94,24 @@ window.addEventListener('message', (e) => {
 function connectWS() {
 const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 ws = new WebSocket(proto + '//' + location.host + '/ws');
-ws.onopen = () => { ws.send('all'); logEntry('L1', 'WebSocket 已连接'); };
+ws.onopen = () => { ws.send('all'); logEntry('frontend', 'WebSocket 已连接'); };
 ws.onmessage = (e) => {
 const msg = JSON.parse(e.data);
 if (msg.type === 'status' || msg.type === 'all') {
 agents = msg.data.agents || [];
+if (msg.data.relationships) _relationships = msg.data.relationships;
 forwardAgents();
+const logs = msg.data.agent_logs || [];
+logs.slice(_lastLogCount).forEach(l => {
+if (l.event === 'packet_send') logEntry('message', l.detail + ' [' + (l.agent_name || l.agent_id) + ']');
+});
+_lastLogCount = logs.length;
 }
 if (msg.type === 'packets' && msg.data) {
 // packet stats received
 }
 if (msg.type === 'message') {
-logEntry('L5', '消息包: ' + (msg.data.payload?.action || msg.data.type) + ' [' + msg.data.source + ' → ' + msg.data.target + ']');
+logEntry('message', '消息包: ' + (msg.data.payload?.action || msg.data.type) + ' [' + msg.data.source + ' → ' + msg.data.target + ']');
 }
 };
 ws.onclose = () => { setTimeout(connectWS, 3000); };
@@ -119,11 +125,14 @@ async function loadSceneList() {
     const data = await r.json();
     const sel = document.getElementById('scene-selector');
     if (!sel) return;
-    sel.innerHTML = '<option value="">选择场景脚本</option>';
-    data.scenes.forEach(f => {
+    sel.innerHTML = '';
+    data.scenes.forEach(s => {
       const opt = document.createElement('option');
-      opt.value = f;
-      opt.textContent = f.replace('.json', '');
+      const val = typeof s === 'string' ? s : s.name;
+      opt.value = val;
+      opt.textContent = typeof s === 'string' ? val.replace('.json', '') : val;
+      // Store format info
+      if (typeof s !== 'string') opt.dataset.format = s.format;
       sel.appendChild(opt);
     });
   } catch(e) { console.error('loadSceneList', e); }
@@ -133,54 +142,69 @@ function onSceneSelect() {}
 
 async function runSelectedScene() {
   const sel = document.getElementById('scene-selector');
-  const filename = sel?.value;
-  if (!filename) { logEntry('L1', '请先选择场景脚本'); return; }
+  const name = sel?.value;
+  const format = sel?.selectedOptions[0]?.dataset?.format || 'file';
+  if (!name) { logEntry('scene', '请先选择场景脚本'); return; }
 
-  let sceneName, script, scriptJson = null;
-  try {
-    const r = await fetch(API + '/scenes/' + encodeURIComponent(filename));
-    const data = await r.json();
-    const content = data.content?.trim();
-    if (!content) { logEntry('L1', '场景文件内容为空'); return; }
-    const json = JSON.parse(content);
-    if (json.script_json) {
-      sceneName = json.script_json.scenario_metadata?.title || data.name;
-      scriptJson = json.script_json;
-    } else if (json.script) {
-      sceneName = json.name || data.name;
-      script = json.script;
-    } else {
-      logEntry('L1', '场景格式不支持: 需要 script 或 script_json 字段'); return;
+  logEntry('scene', '=== ' + name + ' ===');
+
+  // Folder format: pass scene name directly, backend parses the folder
+  let body;
+  if (format === 'folder') {
+    body = { scene: name, name: name };
+  } else {
+    // Legacy .json file: load and extract script_json
+    try {
+      const r = await fetch(API + '/scenes/' + encodeURIComponent(name));
+      const data = await r.json();
+      const content = data.content?.trim();
+      if (!content) { logEntry('scene', '场景文件内容为空'); return; }
+      const json = JSON.parse(content);
+      let sceneName, scriptJson = null, script = null;
+      if (json.script_json) {
+        sceneName = json.script_json.scenario_metadata?.title || data.name;
+        scriptJson = json.script_json;
+      } else if (json.script) {
+        sceneName = json.name || data.name; script = json.script;
+      } else { logEntry('scene', '场景格式不支持'); return; }
+      body = scriptJson
+        ? { scene: 'auto', script_json: scriptJson, name: sceneName }
+        : { scene: 'auto', script: script, name: sceneName };
+    } catch(e) {
+      logEntry('scene', (e instanceof SyntaxError ? 'JSON解析失败: ' : '读取失败: ') + e.message);
+      return;
     }
-  } catch(e) {
-    if (e instanceof SyntaxError) { logEntry('L1', 'JSON解析失败: ' + e.message); }
-    else { logEntry('L1', '读取场景失败: ' + e.message); }
-    return;
   }
-  if (!scriptJson && !script) { logEntry('L1', '场景文件内容为空'); return; }
 
-  simRunning = true;
-  logEntry('L1', '=== 运行场景: ' + sceneName + ' ===');
+  // ── Step 1: Setup — render agents on map immediately ──
   try {
-    const body = scriptJson
-      ? { scene: 'auto', script_json: scriptJson, name: sceneName }
-      : { scene: 'auto', script: script, name: sceneName };
-    const r = await fetch(API + '/simulations/run', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body)
+    const r1 = await fetch(API + '/simulations/setup', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
     });
-    if (!r.ok) { const text = await r.text(); throw new Error(text.slice(0, 200)); }
-    const data = await r.json();
-    logEntry('L1', '完成: ' + (data.duration_seconds || 0) + 's | Agent: ' + (data.agent_stats?.total_agents || 0) + ' 个');
-    if (data.relationships) { _relationships = data.relationships; forwardAgents(); }
+    if (!r1.ok) throw new Error((await r1.text()).slice(0, 200));
+    const d1 = await r1.json();
+    if (d1.relationships) { _relationships = d1.relationships; forwardAgents(); }
     if (ws && ws.readyState === WebSocket.OPEN) ws.send('all');
-  } catch(e) { logEntry('L1', '运行失败: ' + e.message); }
-  simRunning = false;
+    logEntry('scene', '场景就绪: ' + (d1.agent_stats?.total_agents || 0) + ' Agent');
+  } catch(e) { logEntry('scene', '场景构建失败: ' + e.message); return; }
+
+  // ── Step 2: Launch — fire & forget, WebSocket pushes updates ──
+  simRunning = true;
+  fetch(API + '/simulations/launch', { method: 'POST' })
+    .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t.slice(0, 200)); }))
+    .then(d => {
+      if (d.error) { logEntry('scene', '容器: ' + d.error); return; }
+      logEntry('scene', '仿真完成: ' + (d.duration_seconds||0) + 's | ' + (d.agent_stats?.total_agents||0) + ' Agent');
+      if (d.relationships) { _relationships = d.relationships; forwardAgents(); }
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send('all');
+    })
+    .catch(e => logEntry('scene', '容器启动失败: ' + e.message))
+    .finally(() => { simRunning = false; });
 }
 
 function togglePanel(id) { document.getElementById(id).classList.toggle('minimized'); }
 
 // ============== Start ==============
-logEntry('L1', '控制台就绪');
+logEntry('system', '控制台就绪');
 loadSceneList();
 setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) ws.send('all'); }, 500);

@@ -20,6 +20,10 @@ const STATUS_COLORS: Record<string, string> = {
   stopped: '#C0392B', error: '#C0392B', created: '#8B8475',
 };
 
+/** Persistent simulation state (survives re-renders) */
+let _simState: Map<string, { x: number; y: number }> | null = null;
+let _relRef: Relationship[] = [];
+
 export function useAgentOverlay() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
@@ -46,7 +50,11 @@ export function useAgentOverlay() {
     for (let i = agents.length - 1; i >= 0; i--) {
       const a = agents[i];
       if (a.x === undefined || a.y === undefined) continue;
-      const dx = wx - a.x, dy = wy - a.y;
+      // Use force-adjusted position for hit test
+      const sp = _simState?.get(a.agent_id);
+      const ax = sp ? sp.x : a.x;
+      const ay = sp ? sp.y : a.y;
+      const dx = wx - ax, dy = wy - ay;
       if (Math.sqrt(dx*dx + dy*dy) < rPx + 3/zoom) { found = a; break; }
     }
     setHovered(found);
@@ -65,22 +73,30 @@ export function drawRelationships(
   relationships: Relationship[],
   agents: AgentInfo[],
 ) {
+  _relRef = relationships;
   if (!relationships.length || !agents.length) return;
+
   const agentMap = new Map(agents.map(a => [a.agent_id, a]));
+  const getPos = (id: string): {x:number;y:number}|null => {
+    const sp = _simState?.get(id);
+    if (sp) return sp;
+    const a = agentMap.get(id);
+    return (a && a.x != null) ? { x: a.x, y: a.y } : null;
+  };
+
   ctx.save();
   ctx.lineCap = 'round';
 
   for (const rel of relationships) {
-    const from = agentMap.get(rel.from.toLowerCase());
-    const to = agentMap.get(rel.to.toLowerCase());
-    if (!from || !to || from.x === undefined || to.x === undefined) continue;
+    const from = getPos(rel.from.toLowerCase());
+    const to = getPos(rel.to.toLowerCase());
+    if (!from || !to) continue;
 
-    // Color: cooperative (green) vs competitive (red)
     const isCooperative = (rel.value || 0) > 0;
     const alpha = Math.min(1, Math.abs(rel.value || 50) / 100 + 0.15);
     const color = isCooperative
-      ? `rgba(107,138,94,${alpha.toFixed(2)})`   // green
-      : `rgba(192,57,43,${alpha.toFixed(2)})`;    // red
+      ? `rgba(107,138,94,${alpha.toFixed(2)})`
+      : `rgba(192,57,43,${alpha.toFixed(2)})`;
 
     ctx.beginPath();
     ctx.moveTo(from.x, from.y);
@@ -96,7 +112,6 @@ export function drawRelationships(
     ctx.strokeStyle = color;
     ctx.stroke();
 
-    // Relation label at midpoint
     if (rel.relation_type) {
       const mx = (from.x + to.x) / 2;
       const my = (from.y + to.y) / 2;
@@ -122,16 +137,79 @@ export function drawAgents(
   _canvasW: number, _canvasH: number,
 ) {
   if (!agents.length) return;
-  // world coords → pixels within the transformed context (0..worldWidth maps to 0.._canvasW after scale)
   const r = Math.max(2, Math.min(10, worldWidth / 50));
 
+  // ── Force simulation (persistent across frames) ──
+  if (!_simState) _simState = new Map<string, { x: number; y: number }>();
+  const pos = _simState;
+
+  // Init new agents at server position
   for (const a of agents) {
     if (a.x === undefined || a.y === undefined) continue;
+    if (!pos.has(a.agent_id)) {
+      pos.set(a.agent_id, { x: a.x, y: a.y });
+    }
+  }
+  // Remove stale agents
+  const activeIds = new Set(agents.map(a => a.agent_id));
+  for (const id of pos.keys()) { if (!activeIds.has(id)) pos.delete(id); }
+
+  // Build adjacency map from relationship links
+  const adj = new Map<string, Set<string>>();
+  for (const rel of _relRef) {
+    const f = rel.from.toLowerCase();
+    const t = rel.to.toLowerCase();
+    if (!adj.has(f)) adj.set(f, new Set());
+    if (!adj.has(t)) adj.set(t, new Set());
+    adj.get(f)!.add(t); adj.get(t)!.add(f);
+  }
+
+  const margin = r * 2;
+  const entries = Array.from(pos.entries());
+  const n = entries.length;
+  const minDist = r * 5;        // target separation (~40px in world)
+  const damping = 0.08;         // low → smooth convergence
+
+  for (let i = 0; i < n; i++) {
+    const [id, pi] = entries[i];
+    let fx = 0, fy = 0;
+    const neighbors = adj.get(id);
+
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const [jid, pj] = entries[j];
+      const dx = pi.x - pj.x;
+      const dy = pi.y - pj.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const isLinked = neighbors?.has(jid);
+
+      if (d < minDist) {
+        // Push apart — linked agents get 2x push to prevent overlap
+        const force = (minDist - d) / minDist * (isLinked ? 2 : 1);
+        fx += (dx / d) * force;
+        fy += (dy / d) * force;
+      } else if (isLinked && d < minDist * 4) {
+        // Gentle pull toward linked agents (only when not too far)
+        fx -= dx * 0.02;
+        fy -= dy * 0.02;
+      }
+    }
+
+    pi.x += fx * damping;
+    pi.y += fy * damping;
+    pi.x = Math.max(margin, Math.min(worldWidth - margin, pi.x));
+    pi.y = Math.max(margin, Math.min(worldWidth - margin, pi.y));
+  }
+
+  for (let i = 0; i < agents.length; i++) {
+    const a = agents[i];
+    if (a.x === undefined || a.y === undefined) continue;
+    const p = pos.get(a.agent_id);
+    if (!p) continue;
     const color = STATUS_COLORS[a.status] || '#8B8475';
 
-    // World coordinates (context is already transformed)
-    const sx = a.x;
-    const sy = a.y;
+    const sx = p.x;
+    const sy = p.y;
 
     // Selection ring
     if (selected?.agent_id === a.agent_id) {
@@ -147,7 +225,7 @@ export function drawAgents(
 
     // Label
     ctx.fillStyle = '#2A2A2A';
-    const fontSize = Math.max(7, Math.min(11, r * 1.2));
+    const fontSize = Math.max(4, Math.min(7, r * 0.7));
     ctx.font = `${fontSize}px Inter,IBM Plex Sans,system-ui,sans-serif`;
     ctx.textAlign = 'center';
     ctx.fillText(a.name || a.agent_id, sx, sy - r - 2);

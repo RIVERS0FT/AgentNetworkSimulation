@@ -1,10 +1,11 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { MissionBar } from './components/MissionBar';
 import { UrbanAtlas } from './components/UrbanAtlas';
 import { useUrbanGenerator } from './hooks/useUrbanGenerator';
 
 export default function App() {
   const urban = useUrbanGenerator();
+  const [showMap, setShowMap] = useState(false);
 
   useEffect(() => { urban.generate(123); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -28,11 +29,13 @@ export default function App() {
         seed={urban.seed}
         onRegenerate={urban.regenerate}
         loading={urban.loading}
+        showMap={showMap}
+        onToggleMap={() => setShowMap(v => !v)}
       />
 
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 relative min-w-0 flex flex-col">
-          <UrbanAtlas world={urban.world!} />
+          <UrbanAtlas world={urban.world!} showMap={showMap} />
           {urban.world && (
             <div className="absolute bottom-2 right-2 bg-paper-light/90 px-2 py-1 text-[10px] font-mono text-ink/50 select-none border border-ink/10">
               {urban.world.width}×{urban.world.height} · SEED {urban.seed}

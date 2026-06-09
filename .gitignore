@@ -1,17 +1,153 @@
+# ============================================
+# Python
+# ============================================
 __pycache__/
-*.pyc
-data/task_queue.json
-.DS_Store
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+*.manifest
+*.spec
+pip-wheel-metadata/
+*.whl
 
-# Tactical Map (React/Node)
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python version
+.python-version
+
+# ============================================
+# Testing & Coverage
+# ============================================
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+coverage/
+htmlcov/
+.tox/
+*.cover
+.hypothesis/
+.nox/
+
+# ============================================
+# Type Checking & Linting
+# ============================================
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pylint.d/
+*.pyre
+
+# ============================================
+# Tactical Map (React/Vite/Node)
+# ============================================
 web/node_modules/
 web/dist/
 web/.vite/
 
-# Environment & logs
-.env
-*.log
+# TypeScript build info
+*.tsbuildinfo
 
-# IDE
+# ============================================
+# Environment & Logs
+# ============================================
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ============================================
+# App data
+# ============================================
+data/task_queue.json
+
+# ============================================
+# OS generated files
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ============================================
+# Linux 编译产物
+# ============================================
+*.so
+*.so.*
+*.o
+*.a
+*.la
+*.lo
+*.out
+*.elf
+*.app
+core
+core.*
+.direnv/
+
+# ============================================
+# IDE & Editor
+# ============================================
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+.ropeproject/
+
+# ============================================
+# Jupyter Notebook
+# ============================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ============================================
+# Databases
+# ============================================
+*.db
+*.sqlite
+*.sqlite3
+db.json
+
+# ============================================
+# Claude Code
+# ============================================
+.claude/
+
+# ============================================
+# Misc
+# ============================================
+*.tmp
+*.temp
+.cache/
+*.bak

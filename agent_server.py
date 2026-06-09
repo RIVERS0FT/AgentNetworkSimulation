@@ -62,7 +62,7 @@ PACKET_MONITOR_URL = os.environ.get("PACKET_MONITOR_URL", "")
 # ═══════════════════════════════════════════════
 
 # 通信层: RemoteBus → Message Bus HTTP 中转
-comm = RemoteBus(message_bus_url=MESSAGE_BUS)
+comm = RemoteBus(message_bus_url=MESSAGE_BUS, server_url=SERVER_URL)
 
 # 创建 Agent 实例（和内存模式完全一致）
 agent = Agent(
@@ -233,7 +233,6 @@ async def act():
                     pass
         except Exception as e:
             result["relay_error"] = str(e)
-    else:
 
     # 转发日志到 Log Collector
     if LOG_COLLECTOR_URL:
