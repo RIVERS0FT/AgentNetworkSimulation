@@ -35,6 +35,7 @@ import requests
 
 from agent_network.agent import Agent
 from agent_network.comm import RemoteBus
+from agent_network.logger import get_logger
 
 
 # ═══════════════════════════════════════════════
@@ -124,17 +125,23 @@ app = FastAPI(title=f"Agent {AGENT_NAME}")
 turn = 0
 last_action: Dict[str, Any] = {}
 
-def _log_agent(event: str, detail: str):
-    """统一日志 — POST 到主服务器"""
+_agent_logger = get_logger()
+
+def _log_agent(event: str, detail: str, **kw):
+    """Agent 本地日志 + 上报到主服务器"""
+    # 本地记录
+    _agent_logger.system(event, detail, agent_id=AGENT_ID, details=kw or None)
+    # 上报到主服务器
     try:
         requests.post(f"{SERVER_URL}/api/logs/agent", json={
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "event": event,
             "detail": detail,
+            "details": kw or {},
         }, timeout=2)
     except Exception:
-        pass  # 日志发送失败不影响 Agent 运行
+        pass
 
 
 class MessageIn(BaseModel):
@@ -204,7 +211,8 @@ async def receive_event(event: Dict[str, Any]):
         "turn": turn,
     })
 
-    print(f"[Agent {AGENT_ID}] 收到事件: {event_name} — {impact}")
+    _log_agent("event_received", f"事件: {event_name} — {impact}",
+               event_name=event_name, impact=impact, turn=turn)
     return {"received": True, "event": event_name}
 
 
@@ -225,7 +233,13 @@ async def decide(req: DecideRequest = None):
     action = agent.decide(ctx)
     if action:
         last_action = action.to_dict() if hasattr(action, 'to_dict') else str(action)
-        _log_agent("decide", f"{action.type} → {getattr(action, 'target', '')}: {getattr(action, 'content', '')[:100]}")
+        _log_agent("decide",
+                   f"{action.type} → {getattr(action, 'target', '')}: {getattr(action, 'content', '')[:100]}",
+                   action_type=action.type if hasattr(action, 'type') else "unknown",
+                   target=getattr(action, 'target', ''),
+                   content=getattr(action, 'content', '')[:300],
+                   reasoning=getattr(action, 'reasoning', '')[:200],
+                   round=turn)
 
 
     if action and hasattr(action, 'to_dict'):
@@ -254,7 +268,10 @@ async def act():
     action_target = last_action.get("target", "")
     action_content = last_action.get("content", "")
     result["action"] = last_action
-    _log_agent("act", f"{action_type} → {action_target}: {action_content[:100]}")
+    _log_agent("act",
+               f"{action_type} → {action_target}: {action_content[:100]}",
+               action_type=action_type, target=action_target,
+               content=action_content[:300])
 
     # 如果是发送消息，通过 RemoteBus 转发
     if action_type in ("send_message", "broadcast"):

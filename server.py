@@ -60,6 +60,10 @@ from agent_network.logger import SimulationLogger, LogLevel
 from agent_network.event_bus import PacketRecorder
 from agent_network.tool import ToolRegistry
 from agent_network.skill import SkillRegistry
+from agent_network.logger import get_logger, LogLevel
+
+# ── 统一日志器 ──
+logger = get_logger()
 
 # ── 统一 Agent 日志缓冲区 ──
 _agent_logs: List[Dict[str, Any]] = []  # 内存/容器模式共用日志
@@ -585,7 +589,7 @@ def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
                     "impact": trigger.get("impact", ""),
                     "turn": current_turn,
                 }
-                print(f"[Event] Round {current_turn}: {event_payload['event_name']} — {event_payload['impact']}")
+                logger.event_trigger(current_turn, event_payload['event_name'], event_payload['impact'])
                 for ca, _ in created_cas:
                     try:
                         _req.post(f"{ca.url}/event", json=event_payload, timeout=5)
@@ -604,7 +608,8 @@ def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
                     ready_steps.append(step)
 
             if ready_steps:
-                print(f"[DAG] Round {current_turn}: ready steps = {[s['step_id'] for s in ready_steps]}")
+                logger.system("dag_round", f"Round {current_turn}: {len(ready_steps)} ready steps",
+                              details={"round": current_turn, "ready": [s["step_id"] for s in ready_steps]})
                 for step in ready_steps:
                     step_type = step.get("type", "task")
                     agent_id = step.get("agent_id", "").lower()
@@ -612,11 +617,11 @@ def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
 
                     if step_type == "wait":
                         wait_sec = (step.get("params", {}) or {}).get("seconds", 2)
-                        print(f"[DAG] Waiting {wait_sec}s for {step['step_id']}")
+                        logger.dag_step(step["step_id"], "", f"wait({wait_sec}s)", current_turn, "waiting")
                         time.sleep(wait_sec)
                     elif step_type == "parallel":
                         sub_steps = step.get("sub_steps", [])
-                        print(f"[DAG] Parallel: {len(sub_steps)} sub-steps")
+                        logger.dag_step(step["step_id"], "", f"parallel({len(sub_steps)} sub-steps)", current_turn, "running")
                         for ss in sub_steps:
                             ss_agent = ss.get("agent_id", "").lower()
                             if ss_agent in agent_map:
@@ -625,7 +630,8 @@ def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
                                               json={"context": {"action": ss.get("action", ""), "round": current_turn}},
                                               timeout=10)
                                 except Exception as e:
-                                    print(f"[DAG] Parallel step error: {e}")
+                                    logger.error("dag_parallel_error", f"Parallel sub-step error: {e}",
+                                                 details={"step_id": step["step_id"], "error": str(e)})
                     else:
                         # task 类型
                         if agent_id in agent_map:
@@ -635,10 +641,13 @@ def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
                                                  timeout=10)
                                 results_log.append({"step": sid, "agent": agent_id,
                                                     "action": action, "status": resp.status_code})
+                                logger.dag_step(sid, agent_id, action, current_turn, f"completed({resp.status_code})")
                             except Exception as e:
-                                print(f"[DAG] Step {sid} error: {e}")
+                                logger.error("dag_step_error", f"Step {sid} failed: {e}",
+                                             agent_id=agent_id, details={"step_id": sid, "error": str(e)})
                         else:
-                            print(f"[DAG] Agent {agent_id} not found for step {sid}")
+                            logger.error("dag_agent_not_found", f"Agent {agent_id} not found for step {sid}",
+                                         details={"step_id": sid, "agent_id": agent_id})
 
                     completed_steps.add(sid)
                     time.sleep(0.2)
@@ -646,9 +655,11 @@ def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
                 # 没有可执行步骤，但还有未完成的 → 跳过本轮
                 pending = [s["step_id"] for s in workflow_steps if s["step_id"] not in completed_steps]
                 if pending:
-                    print(f"[DAG] Round {current_turn}: no ready steps, pending={pending}")
+                    logger.system("dag_stalled", f"Round {current_turn}: no ready steps",
+                                  details={"round": current_turn, "pending": pending})
                 else:
-                    print(f"[DAG] All {len(completed_steps)} steps completed at round {current_turn}")
+                    logger.system("dag_complete", f"All {len(completed_steps)} steps done at round {current_turn}",
+                                  details={"round": current_turn, "completed": len(completed_steps)})
                     break
         else:
             # 无 workflow 定义 → 回退到固定轮次广播模式
@@ -1005,48 +1016,94 @@ async def get_simulation_results(limit: int = Query(default=5, le=20)):
 # ═══════════════════════════════════════════════
 # 日志查询 API — 对应架构文档第十一节
 # ═══════════════════════════════════════════════
-
-# 全局日志收集器
-_global_logger = SimulationLogger("api-server")
+# 日志查询 & 导出 API
+# ═══════════════════════════════════════════════
 
 
 @app.get("/api/logs")
 async def query_logs(
     agent_id: Optional[str] = Query(None),
     level: Optional[str] = Query(None),
-    level_type: Optional[str] = Query(None),
     event: Optional[str] = Query(None),
-    index: Optional[str] = Query(None),
-    limit: int = Query(default=50, le=500),
+    keyword: Optional[str] = Query(None),
+    limit: int = Query(default=100, le=1000),
 ):
-    """日志查询 API"""
-    # 内存查询
-    log_level = None
-    if level:
-        try:
-            log_level = LogLevel[level.upper()]
-        except KeyError:
-            pass
-
-    entries = _global_logger.query(
+    """日志查询 API — 支持按 agent/level/event/keyword 过滤"""
+    entries = logger.query(
         agent_id=agent_id,
-        level=log_level,
-        level_type=level_type,
-        event_contains=event,
-        index=index,
+        level=level,
+        event=event,
+        keyword=keyword,
         limit=limit,
     )
     return {
         "backend": "memory",
         "total": len(entries),
-        "entries": [e.to_dict() for e in entries],
+        "entries": entries,
     }
 
 
 @app.get("/api/logs/stats")
 async def log_stats():
-    """日志索引统计"""
-    return _global_logger.get_index_stats()
+    """日志统计"""
+    return logger.get_index_stats()
+
+
+@app.get("/api/logs/agent/{agent_id}")
+async def agent_logs(agent_id: str, limit: int = 50):
+    """获取某个 Agent 的完整时间线"""
+    return {
+        "agent_id": agent_id,
+        "entries": logger.get_agent_timeline(agent_id, limit),
+    }
+
+
+@app.get("/api/logs/messages")
+async def message_logs(limit: int = 50):
+    """获取 Agent 间通信报文"""
+    return {
+        "total": logger._stats["by_event"].get("agent_message", 0),
+        "entries": logger.get_message_log(limit),
+    }
+
+
+@app.get("/api/logs/export")
+async def export_logs(fmt: str = Query(default="jsonl", pattern="^(jsonl|json|csv)$"),
+                      limit: int = Query(default=0)):
+    """导出日志（jsonl / json / csv）"""
+    from fastapi.responses import PlainTextResponse
+    content = logger.export(fmt=fmt, limit=limit)
+    media_types = {"jsonl": "application/x-ndjson", "json": "application/json", "csv": "text/csv"}
+    return PlainTextResponse(content, media_type=media_types.get(fmt, "text/plain"))
+
+
+@app.get("/api/logs/export/file")
+async def export_logs_file(fmt: str = Query(default="jsonl", pattern="^(jsonl|json|csv)$"),
+                           limit: int = Query(default=0)):
+    """导出日志到文件并返回下载链接"""
+    import tempfile
+    filename = f"agent_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt if fmt != 'jsonl' else 'jsonl'}"
+    filepath = os.path.join(tempfile.gettempdir(), filename)
+    logger.export_file(filepath, fmt=fmt, limit=limit)
+    from fastapi.responses import FileResponse
+    return FileResponse(filepath, filename=filename)
+
+
+@app.get("/api/logs/files")
+async def list_log_files():
+    """列出持久化的日志文件"""
+    return {"files": logger.list_log_files()}
+
+
+@app.get("/api/logs/download/{filename:path}")
+async def download_log_file(filename: str):
+    """下载指定日志文件"""
+    from fastapi.responses import FileResponse
+    log_dir = logger._log_dir
+    filepath = os.path.join(log_dir, filename)
+    if not os.path.isfile(filepath):
+        raise HTTPException(404, f"Log file '{filename}' not found")
+    return FileResponse(filepath, filename=filename)
 
 
 # ═══════════════════════════════════════════════
@@ -1089,7 +1146,7 @@ async def system_stats():
         "tools": {"registered": len(ToolRegistry.list_tools()), "stats": ToolRegistry.get_stats()},
         "skills": {"registered": len(SkillRegistry.list_skills())},
         "packets": PacketRecorder.get_stats(),
-        "logs": _global_logger.get_index_stats(),
+        "logs": logger.get_index_stats(),
     }
 
 
@@ -1772,27 +1829,37 @@ async def map_find_path(
 
 @app.post("/api/logs/agent")
 async def agent_log_ingest(req: Request):
-    """容器模式 Agent 提交决策/执行日志"""
+    """容器模式 Agent 提交决策/执行日志 — 写入统一日志器"""
     try:
         body = await req.json()
     except Exception:
         body = {}
+    agent_id = body.get("agent_id", "?")
+    event = body.get("event", "act")
+    detail = body.get("detail", "")
+    details = body.get("details", {})
+
+    # 同时写入旧缓冲（兼容）+ 统一日志器
     _agent_logs.append({
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "agent_id": body.get("agent_id", "?"),
+        "agent_id": agent_id,
         "agent_name": body.get("agent_name", "?"),
-        "event": body.get("event", "act"),
-        "detail": body.get("detail", ""),
+        "event": event,
+        "detail": detail,
     })
     if len(_agent_logs) > 500:
         _agent_logs.pop(0)
+
+    # 写入结构化日志
+    logger.system(event, detail, agent_id=agent_id, details=details)
     return {"status": "ok", "total_logs": len(_agent_logs)}
 
 
 @app.get("/api/logs/agent")
-async def agent_logs_get():
-    """获取 Agent 日志"""
-    return {"logs": _agent_logs[-200:], "total": len(_agent_logs)}
+async def agent_logs_get(limit: int = Query(default=200)):
+    """获取 Agent 动作日志（从统一日志器）"""
+    entries = logger.query(event="agent_action", limit=limit)
+    return {"logs": entries, "total": len(entries)}
 
 
 # ═══════════════════════════════════════════════
@@ -1833,8 +1900,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "logs",
                         "data": {
-                            "entries": [e.to_dict() for e in _global_logger.get_entries()[-50:]],
-                            "stats": _global_logger.get_index_stats(),
+                            "entries": logger.get_entries(50),
+                            "stats": logger.get_index_stats(),
                         },
                     })
                 elif data == "all":
@@ -1845,7 +1912,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "agents": agents_data,
                             "stats": AgentRegistry.get_stats(),
                             "packets": PacketRecorder.get_stats(),
-                            "logs": _global_logger.get_index_stats(),
+                            "logs": {"stats": logger.get_index_stats(), "entries": logger.get_entries(20)},
                             "map": _current_map,
                             "agent_logs": _agent_logs[-50:],
                             "relationships": _current_relationships,

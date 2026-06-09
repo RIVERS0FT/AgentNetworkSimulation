@@ -22,9 +22,13 @@ from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 import requests
-import time
+
+from agent_network.logger import get_logger, LogLevel
 
 app = FastAPI(title="Agent Message Bus")
+
+# ── 全局日志器 ──
+logger = get_logger()
 
 # ── 可选的外部服务转发 ──
 LOG_COLLECTOR_URL = os.environ.get("LOG_COLLECTOR_URL", "")
@@ -41,9 +45,6 @@ class RelayMessage(BaseModel):
 
 # Agent 注册表: {agent_id: "http://host:port"}
 agent_registry: Dict[str, str] = {}
-
-# 消息记录
-message_log: List[Dict] = []
 stats = {
     "total_messages": 0,
     "by_source": {},
@@ -63,13 +64,15 @@ async def register(agent_id: str, url: str, name: str = ""):
     agent_registry[agent_id] = url
     if name:
         agent_registry[name] = url  # 名称别名
-    print(f"[Bus] Registered: {agent_id} ({name}) @ {url}")
+    logger.system("agent_registered", f"[Bus] {agent_id} ({name}) @ {url}",
+                  agent_id=agent_id, details={"url": url, "name": name, "total": len(agent_registry)})
     return {"registered": agent_id, "total": len(agent_registry)}
 
 
 @app.post("/unregister")
 async def unregister(agent_id: str):
     agent_registry.pop(agent_id, None)
+    logger.system("agent_unregistered", f"[Bus] {agent_id} 已注销", agent_id=agent_id)
     return {"unregistered": agent_id}
 
 
@@ -82,12 +85,13 @@ async def relay(msg: RelayMessage):
     stats["by_source"][msg.from_id] = stats["by_source"].get(msg.from_id, 0) + 1
     stats["by_target"][msg.to] = stats["by_target"].get(msg.to, 0) + 1
 
-    entry = {
-        "timestamp": datetime.now().isoformat(timespec="milliseconds"),
-        "from": msg.from_id, "to": msg.to,
-        "content": msg.content[:200], "reasoning": msg.reasoning[:100],
-    }
-    message_log.append(entry)
+    # ── 记录所有通信报文 ──
+    logger.agent_message(
+        from_id=msg.from_id, to=msg.to,
+        content=msg.content, reasoning=msg.reasoning,
+        latency_ms=(time.time() - relay_start) * 1000,
+        status="relaying",
+    )
 
     # ── 日志收集器转发 ──
     if LOG_COLLECTOR_URL:
@@ -129,6 +133,10 @@ async def relay(msg: RelayMessage):
                     results[aid] = resp.status_code
                 except Exception as e:
                     results[aid] = str(e)
+        logger.agent_message(from_id=msg.from_id, to="broadcast",
+                             content=msg.content, reasoning=msg.reasoning,
+                             status="broadcast", latency_ms=(time.time()-relay_start)*1000,
+                             targets=len(results))
         return {"broadcast": True, "targets": len(results), "results": results}
 
     # 单播 — 先精确匹配ID，再匹配名称，再模糊匹配
@@ -141,6 +149,9 @@ async def relay(msg: RelayMessage):
                 target_url = url
                 break
     if not target_url:
+        logger.error("message_target_not_found",
+                     f"[Bus] 目标 '{msg.to}' 不在注册表中", agent_id=msg.from_id,
+                     known_agents=list(agent_registry.keys()))
         return {"error": f"Target '{msg.to}' not found", "known": list(agent_registry.keys())}
 
     try:
@@ -148,8 +159,16 @@ async def relay(msg: RelayMessage):
             "from_id": msg.from_id, "from_name": msg.from_name,
             "content": msg.content,
         }, timeout=5)
-        return {"relayed": True, "to": msg.to, "status": resp.status_code}
+        latency = (time.time() - relay_start) * 1000
+        logger.agent_message(from_id=msg.from_id, to=msg.to,
+                             content=msg.content, reasoning=msg.reasoning,
+                             latency_ms=latency, status=f"delivered({resp.status_code})")
+        return {"relayed": True, "to": msg.to, "status": resp.status_code, "latency_ms": round(latency, 1)}
     except Exception as e:
+        latency = (time.time() - relay_start) * 1000
+        logger.error("message_relay_failed",
+                     f"[Bus] 转发给 {msg.to} 失败: {e}", agent_id=msg.from_id,
+                     target=msg.to, error=str(e), latency_ms=latency)
         return {"error": str(e), "to": msg.to}
 
 
@@ -160,7 +179,17 @@ async def list_agents():
 
 @app.get("/messages")
 async def get_messages(limit: int = 50):
-    return {"total": len(message_log), "messages": message_log[-limit:]}
+    """获取报文记录 (兼容旧API + 新格式)"""
+    entries = logger.get_message_log(limit)
+    return {"total": stats["total_messages"], "messages": entries,
+            "stats": stats}
+
+
+@app.get("/messages/raw")
+async def get_raw_messages(limit: int = 50):
+    """获取原始报文内容 (无过滤器)"""
+    entries = logger.query(event="agent_message", limit=limit)
+    return {"total": len(entries), "messages": entries}
 
 
 @app.get("/stats")
@@ -168,11 +197,12 @@ async def get_stats():
     return {
         **stats,
         "agent_count": len(agent_registry),
-        "log_size": len(message_log),
+        "log_stats": logger.get_index_stats(),
     }
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("BUS_PORT", 9000))
-    print(f"[Message Bus] Starting on port {port}")
+    logger.system("message_bus_start", f"Message Bus starting on :{port}",
+                  details={"port": port})
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
