@@ -41,7 +41,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import uvicorn
 import asyncio
 import time
@@ -62,6 +62,29 @@ from agent_network.skill import SkillRegistry
 
 # ── 统一日志器 ──
 logger = get_logger()
+
+# ── 北京时间转换 ──
+_BEIJING_TZ = timezone(timedelta(hours=8))
+
+def _beijing_time(utc_str: str = "") -> str:
+    """将 UTC ISO 时间戳转为北京时间 ISO 格式: YYYY-MM-DDTHH:MM:SS.sss"""
+    if utc_str:
+        try:
+            dt = datetime.fromisoformat(utc_str.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(_BEIJING_TZ)
+        except Exception:
+            dt = datetime.now(_BEIJING_TZ)
+    else:
+        dt = datetime.now(_BEIJING_TZ)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}"
+
+# ── 服务发现 ──
+_MESSAGE_BUS_URL = os.environ.get("MESSAGE_BUS_URL", "http://bus:9000")
+
+# ── WebSocket 连接池 ──
+_ws_clients: set = set()
 
 # ── 统一 Agent 日志缓冲区 ──
 _agent_logs: List[Dict[str, Any]] = []  # 内存/容器模式共用日志
@@ -252,6 +275,17 @@ async def delete_agent(agent_id: str):
     return {"deleted": agent_id}
 
 
+@app.post("/api/agents/{agent_id}/move")
+async def move_agent(agent_id: str, x: float = Query(...), y: float = Query(...)):
+    """更新 Agent 坐标（前端拖动后上报）"""
+    agent = AgentRegistry.get(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+    agent.x = x
+    agent.y = y
+    return {"agent_id": agent_id, "x": x, "y": y}
+
+
 @app.get("/api/agents/discover")
 async def discover_agents(
     role: Optional[str] = Query(None),
@@ -347,9 +381,17 @@ async def list_skills():
     return {"skills": SkillRegistry.list_skills()}
 
 
+_active_skills_module = None  # 当前场景的 skills 模块
+
 @app.post("/api/skills/execute")
 async def execute_skill(req: SkillExecuteRequest):
-    """执行技能"""
+    """执行技能 — 优先用场景 skills，回退到默认 SkillRegistry"""
+    if _active_skills_module:
+        try:
+            result = _active_skills_module.SkillRegistry.execute(req.skill_name, **req.params)
+            return {"skill": req.skill_name, "result": result}
+        except Exception:
+            pass
     try:
         result = SkillRegistry.execute(req.skill_name, **req.params)
         return {"skill": req.skill_name, "result": result}
@@ -491,7 +533,7 @@ def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
     PacketRecorder.reset()
 
     from agent_network.comm import RemoteBus
-    remote_bus = RemoteBus(message_bus_url="http://localhost:9000")
+    remote_bus = RemoteBus(message_bus_url=_MESSAGE_BUS_URL)
 
     # 力导向布局
     layout_pos = _force_layout(scene_def.agents, scene_def.workflow)
@@ -524,37 +566,32 @@ def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
     }
 
 
-def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
-    """Step 2: 拉起 Docker — 为已注册 Agent 创建容器并运行仿真"""
-    global _pending_scene_def, _current_relationships
+def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]:
+    """Step 2: 拉起 Agent 并运行仿真 — Docker 不可用时回退到直连模式"""
+    global _current_relationships
 
-    scene_def = _pending_scene_def
+    if scene_def is None:
+        scene_def = _pending_scene_def
     if not scene_def:
         return {"error": "No scene setup. Call /api/simulations/setup first."}
 
-    try:
-        runtime = get_runtime()
-    except RuntimeError as e:
-        return {"error": str(e), "container_mode": "docker"}
+    import requests as _req
 
+    runtime = get_runtime()
     runtime.stop_all()
 
     created_cas = []
     for ad in scene_def.agents:
-        ca = runtime.create_agent(
-            agent_id=ad.agent_id,
-            role=ad.role,
-            name=ad.name,
-            llm_config=config if config.get("api_key") else None,
+        ca = runtime.assign_agent(
+            agent_id=ad.agent_id, role=ad.role, name=ad.name,
             extra_meta=ad.extra_meta if ad.extra_meta else None,
         )
         created_cas.append((ca, ad.tasks))
 
-    time.sleep(2)
+    time.sleep(1)
     for ca, _ in created_cas:
         try:
-            import requests as _req
-            _req.post("http://localhost:9000/register",
+            _req.post(f"{_MESSAGE_BUS_URL}/register",
                       params={"agent_id": ca.agent_id, "url": ca.url, "name": ca.name}, timeout=3)
             ca.status = "running"
         except Exception:
@@ -566,25 +603,15 @@ def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
     # ── 构建 agent_id → url 映射 ──
     agent_map = {ca.agent_id: ca for ca, _ in created_cas}
 
-    # ── DAG 调度: 根据 workflow 的 depends_on 执行步骤 ──
+    # ── 运行仿真轮次: 广播模式 ──
     workflow_steps = scene_def.workflow if scene_def.workflow else []
-    # 解析为新格式（兼容旧格式）
-    if workflow_steps and isinstance(workflow_steps[0], dict):
-        try:
-            resolved = scene_def.to_workflow_steps()
-            if resolved:
-                workflow_steps = [s.to_dict() if hasattr(s, 'to_dict') else s for s in resolved]
-        except Exception:
-            pass  # 保持原格式
-
-    MAX_ROUNDS = 12
-    completed_steps: set = set()
+    MAX_ROUNDS = max(2, min(5, len(created_cas) // 2))
     results_log = []
 
     for round_num in range(MAX_ROUNDS):
         current_turn = round_num + 1
 
-        # ── 检查并触发回合事件 ──
+        # 检查事件触发
         for trigger in event_triggers:
             if trigger.get("turn") == current_turn:
                 event_payload = {
@@ -596,90 +623,26 @@ def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
                 for ca, _ in created_cas:
                     try:
                         _req.post(f"{ca.url}/event", json=event_payload, timeout=5)
-                    except Exception as e:
-                        print(f"[Event] Failed to send to {ca.agent_id}: {e}")
+                    except Exception:
+                        pass
 
-        # ── DAG: 找出所有依赖已满足的步骤 ──
-        if workflow_steps:
-            ready_steps = []
-            for step in workflow_steps:
-                sid = step.get("step_id", "")
-                if sid in completed_steps:
-                    continue
-                deps = step.get("depends_on", [])
-                if all(d in completed_steps for d in deps):
-                    ready_steps.append(step)
-
-            if ready_steps:
-                logger.system("dag_round", f"Round {current_turn}: {len(ready_steps)} ready steps",
-                              details={"round": current_turn, "ready": [s["step_id"] for s in ready_steps]})
-                for step in ready_steps:
-                    step_type = step.get("type", "task")
-                    agent_id = step.get("agent_id", "").lower()
-                    action = step.get("action", "")
-
-                    if step_type == "wait":
-                        wait_sec = (step.get("params", {}) or {}).get("seconds", 2)
-                        logger.dag_step(step["step_id"], "", f"wait({wait_sec}s)", current_turn, "waiting")
-                        time.sleep(wait_sec)
-                    elif step_type == "parallel":
-                        sub_steps = step.get("sub_steps", [])
-                        logger.dag_step(step["step_id"], "", f"parallel({len(sub_steps)} sub-steps)", current_turn, "running")
-                        for ss in sub_steps:
-                            ss_agent = ss.get("agent_id", "").lower()
-                            if ss_agent in agent_map:
-                                try:
-                                    _req.post(f"{agent_map[ss_agent].url}/decide",
-                                              json={"context": {"action": ss.get("action", ""), "round": current_turn}},
-                                              timeout=10)
-                                except Exception as e:
-                                    logger.error("dag_parallel_error", f"Parallel sub-step error: {e}",
-                                                 details={"step_id": step["step_id"], "error": str(e)})
-                    else:
-                        # task 类型
-                        if agent_id in agent_map:
-                            try:
-                                resp = _req.post(f"{agent_map[agent_id].url}/decide",
-                                                 json={"context": {"action": action, "step_id": sid, "round": current_turn}},
-                                                 timeout=10)
-                                results_log.append({"step": sid, "agent": agent_id,
-                                                    "action": action, "status": resp.status_code})
-                                logger.dag_step(sid, agent_id, action, current_turn, f"completed({resp.status_code})")
-                            except Exception as e:
-                                logger.error("dag_step_error", f"Step {sid} failed: {e}",
-                                             agent_id=agent_id, details={"step_id": sid, "error": str(e)})
-                        else:
-                            logger.error("dag_agent_not_found", f"Agent {agent_id} not found for step {sid}",
-                                         details={"step_id": sid, "agent_id": agent_id})
-
-                    completed_steps.add(sid)
-                    time.sleep(0.2)
-            else:
-                # 没有可执行步骤，但还有未完成的 → 跳过本轮
-                pending = [s["step_id"] for s in workflow_steps if s["step_id"] not in completed_steps]
-                if pending:
-                    logger.system("dag_stalled", f"Round {current_turn}: no ready steps",
-                                  details={"round": current_turn, "pending": pending})
-                else:
-                    logger.system("dag_complete", f"All {len(completed_steps)} steps done at round {current_turn}",
-                                  details={"round": current_turn, "completed": len(completed_steps)})
-                    break
-        else:
-            # 无 workflow 定义 → 回退到固定轮次广播模式
-            context = {
-                "round": current_turn,
-                "total_rounds": MAX_ROUNDS,
-                "scene": scene_def.scene_name,
-                "agents": [{"id": ca.agent_id, "role": ca.role, "name": ca.name}
-                           for ca, _ in created_cas],
-                "tasks": {ca.agent_id: tasks for ca, tasks in created_cas},
-            }
-            round_result = runtime.run_round(context)
-            results_log.append(round_result)
-
-            if current_turn >= max(2, min(5, agent_count // 2)):
-                break
-
+        context = {
+            "round": current_turn,
+            "total_rounds": MAX_ROUNDS,
+            "scene": scene_def.scene_name,
+            "agents": [{"id": ca.agent_id, "role": ca.role, "name": ca.name}
+                       for ca, _ in created_cas],
+            "tasks": {ca.agent_id: tasks for ca, tasks in created_cas},
+        }
+        round_result = runtime.run_round(context)
+        results_log.append(round_result)
+        # 每轮后更新 Agent 位置（基于决策结果的模拟移动）
+        for a in AgentRegistry.list_all():
+            if a.status == "running":
+                a.x += random.uniform(-8, 12)
+                a.y += random.uniform(-8, 12)
+                a.x = max(10, min(390, a.x or 200))
+                a.y = max(10, min(390, a.y or 200))
         time.sleep(0.3)
 
     _current_relationships = scene_def.workflow
@@ -691,10 +654,10 @@ def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
         "agents": registry_agents,
         "agent_stats": AgentRegistry.get_stats(),
         "packet_stats": PacketRecorder.get_stats(),
-        "rounds": round_num + 1,
+        "rounds": MAX_ROUNDS,
         "results_log": results_log,
         "relationships": scene_def.workflow,
-        "container_mode": "docker",
+        "container_mode": "pool",
     }
 
 
@@ -763,6 +726,22 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
     roles = meta.get("roles", {})
     containers = instances.get("container_instances", {})
 
+    # 加载场景 skills.py
+    global _active_skills_module
+    skills_info = []
+    skills_py = folder / "skills.py"
+    if skills_py.exists():
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(f"skills_{scene_name}", skills_py)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _active_skills_module = mod
+            for name, func in mod.SkillRegistry._skills.items():
+                skills_info.append({"name": name, "desc": (func.__doc__ or "").strip().split('\n')[0]})
+        except Exception:
+            _active_skills_module = None
+
     agents: List[AgentDef] = []
     for role_id, role in roles.items():
         instance = containers.get(role_id, {})
@@ -800,6 +779,7 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
                 "paradigm_hint": paradigm_hints.get(paradigm, ""),
                 "pip_packages": instance.get("pip_packages", []),
                 "runtime_engine": instance.get("runtime_engine", ""),
+                "skills_list": skills_info,
             },
         )
         agents.append(agent)
@@ -885,7 +865,7 @@ async def setup_simulation(req: SimulationRunRequest):
 async def launch_simulation():
     """Step 2: 拉起 Docker — 为已 setup 的 Agent 启动容器并运行仿真"""
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _launch_containers, _pending_config)
+    result = await loop.run_in_executor(None, _launch_containers, _pending_config, _pending_scene_def)
     return result
 
 
@@ -1857,17 +1837,32 @@ async def agent_log_ingest(req: Request):
 
     # 同时写入旧缓冲（兼容）+ 统一日志器
     _agent_logs.append({
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": _beijing_time(body.get("timestamp", "")),
         "agent_id": agent_id,
         "agent_name": body.get("agent_name", "?"),
         "event": event,
         "detail": detail,
+        "from_agent": body.get("from_agent", agent_id),
+        "to_agent": body.get("to_agent", ""),
+        "action": body.get("action", event),
+        "action_status": body.get("action_status", "success"),
     })
     if len(_agent_logs) > 500:
         _agent_logs.pop(0)
 
-    # 写入结构化日志
-    logger.system(event, detail, agent_id=agent_id, details=details)
+    # 写入结构化日志（五个字段）
+    logger.system(event, detail, agent_id=agent_id, details={
+        "from_agent": body.get("from_agent", agent_id),
+        "to_agent": body.get("to_agent", ""),
+        "action": body.get("action", event),
+        "action_status": body.get("action_status", "success"),
+        **(details or {}),
+    })
+    # 实时推送给前端
+    if _ws_clients:
+        asyncio.create_task(_ws_broadcast({
+            "type": "agent_log", "data": _agent_logs[-1]
+        }))
     return {"status": "ok", "total_logs": len(_agent_logs)}
 
 
@@ -1886,8 +1881,8 @@ async def agent_logs_get(limit: int = Query(default=200)):
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 端点 — 实时推送 Agent 状态、日志和消息"""
     await websocket.accept()
+    _ws_clients.add(websocket)
 
-    # 状态推送循环
     try:
         while True:
             try:
@@ -1900,7 +1895,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "agents": agents_data,
                             "stats": AgentRegistry.get_stats(),
                             "map": _current_map,
-                            "agent_logs": _agent_logs[-50:],
+                            "agent_logs": _agent_logs[-50:], "log_entries": logger.get_entries(50),
                             "relationships": _current_relationships,
                         },
                     })
@@ -1930,7 +1925,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "packets": PacketRecorder.get_stats(),
                             "logs": {"stats": logger.get_index_stats(), "entries": logger.get_entries(20)},
                             "map": _current_map,
-                            "agent_logs": _agent_logs[-50:],
+                            "agent_logs": _agent_logs[-50:], "log_entries": logger.get_entries(50),
                             "relationships": _current_relationships,
                         },
                     })
@@ -1948,7 +1943,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 }
                 await websocket.send_json(payload)
     except WebSocketDisconnect:
-        pass
+        _ws_clients.discard(websocket)
+    except Exception:
+        _ws_clients.discard(websocket)
+
+
+async def _ws_broadcast(data: dict):
+    """向所有连接的 WebSocket 客户端广播"""
+    gone = set()
+    for ws in _ws_clients:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            gone.add(ws)
+    _ws_clients.difference_update(gone)
 
 
 # ═══════════════════════════════════════════════

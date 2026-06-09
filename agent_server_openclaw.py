@@ -17,6 +17,7 @@ import os
 import sys
 import json
 import time
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -123,11 +124,18 @@ _TOOLS = [
 ]
 
 
-def _log_agent(event: str, detail: str):
+def _log_agent(event: str, detail: str, **kw):
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     try:
         requests.post(f"{SERVER_URL}/api/logs/agent", json={
             "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
             "event": event, "detail": detail,
+            "timestamp": timestamp,
+            "from_agent": AGENT_ID,
+            "to_agent": kw.get("target", kw.get("to", "")),
+            "action": kw.get("action_type", event),
+            "action_status": kw.get("status", "success"),
+            "details": kw or {},
         }, timeout=2)
     except Exception:
         pass

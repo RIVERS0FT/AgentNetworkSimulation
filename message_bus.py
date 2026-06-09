@@ -90,10 +90,11 @@ async def relay(msg: RelayMessage, request: Request):
     # ── 入站报文: Agent → Bus ──
     PacketRecorder.record(
         direction="inbound",
-        src_ip=client_ip, dst_ip="bus", dst_port=9000,
-        protocol="HTTP/1.1", method="POST", path="/relay",
+        src_ip=client_ip, src_port=0, dst_ip="bus", dst_port=9000,
+        protocol="TCP/HTTP", method="POST", path="/relay",
         agent_from=msg.from_id, agent_to=msg.to,
         content=msg.content, reasoning=msg.reasoning,
+        message_type="relay", tcp_flags="PSH,ACK",
     )
 
     # ── 记录所有通信报文（日志） ──
@@ -182,11 +183,12 @@ async def relay(msg: RelayMessage, request: Request):
         # ── 出站报文: Bus → 目标 Agent ──
         PacketRecorder.record(
             direction="outbound",
-            src_ip="bus", dst_ip=target_url, dst_port=0,
-            protocol="HTTP/1.1", method="POST", path="/message",
+            src_ip="bus", src_port=9000, dst_ip=target_url, dst_port=0,
+            protocol="TCP/HTTP", method="POST", path="/message",
             status_code=resp.status_code, latency_ms=latency,
             agent_from=msg.from_id, agent_to=msg.to,
             content=msg.content, reasoning=msg.reasoning,
+            message_type="relay", tcp_flags="PSH,ACK",
         )
         logger.agent_message(from_id=msg.from_id, to=msg.to,
                              content=msg.content, reasoning=msg.reasoning,
@@ -195,11 +197,12 @@ async def relay(msg: RelayMessage, request: Request):
     except Exception as e:
         latency = (time.time() - relay_start) * 1000
         PacketRecorder.record(
-            direction="outbound", src_ip="bus", dst_ip=target_url,
-            protocol="HTTP/1.1", method="POST", path="/message",
+            direction="outbound", src_ip="bus", src_port=9000, dst_ip=target_url, dst_port=0,
+            protocol="TCP/HTTP", method="POST", path="/message",
             status_code=0, latency_ms=latency,
             agent_from=msg.from_id, agent_to=msg.to,
             content=msg.content, reasoning=str(e),
+            message_type="relay", tcp_flags="RST",
         )
         logger.error("message_relay_failed",
                      f"[Bus] 转发给 {msg.to} 失败: {e}", agent_id=msg.from_id,

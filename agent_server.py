@@ -24,6 +24,7 @@ import os
 import sys
 import json
 import time
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -130,17 +131,26 @@ _agent_logger = get_logger()
 
 def _log_agent(event: str, detail: str, **kw):
     """Agent 本地日志 + 上报到主服务器"""
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    effective_id = kw.get("from_id", AGENT_ID)
+    effective_name = kw.get("from_name", AGENT_NAME)
+    payload = {
+        "agent_id": effective_id,
+        "agent_name": effective_name,
+        "event": event,
+        "detail": detail,
+        "timestamp": timestamp,
+        "from_agent": effective_id,
+        "to_agent": kw.get("target", kw.get("to", "")),
+        "action": kw.get("action_type", event),
+        "action_status": kw.get("status", "success"),
+        "details": kw or {},
+    }
     # 本地记录
-    _agent_logger.system(event, detail, agent_id=AGENT_ID, details=kw or None)
+    _agent_logger.system(event, detail, agent_id=AGENT_ID, details=payload)
     # 上报到主服务器
     try:
-        requests.post(f"{SERVER_URL}/api/logs/agent", json={
-            "agent_id": AGENT_ID,
-            "agent_name": AGENT_NAME,
-            "event": event,
-            "detail": detail,
-            "details": kw or {},
-        }, timeout=2)
+        requests.post(f"{SERVER_URL}/api/logs/agent", json=payload, timeout=2)
     except Exception:
         pass
 
@@ -231,32 +241,53 @@ async def list_events():
 
 @app.post("/decide")
 async def decide(req: DecideRequest = None):
-    """触发 LLM 决策，返回 Action"""
+    """触发 LLM 决策，返回 Action — 支持身份注入"""
     global turn, last_action
     turn += 1
     ctx = req.context if req else {}
     ctx["round"] = turn
 
+    # 使用注入的身份（场景 Agent），覆盖容器自身的身份
+    effective_id = ctx.get("agent_id", AGENT_ID)
+    effective_name = ctx.get("agent_name", AGENT_NAME)
+    effective_role = ctx.get("agent_role", AGENT_ROLE)
+
+    # 注入场景角色目标和技能（只在身份变化时重建 brain）
+    if effective_id != AGENT_ID:
+        injected_goals = []
+        injected_prompt = AGENT_SYSTEM_PROMPT
+        if ctx.get("core_goal"): injected_goals.append(f"核心目标: {ctx['core_goal']}")
+        if ctx.get("hidden_secret"): injected_goals.append(f"隐藏秘密: {ctx['hidden_secret']}")
+        if ctx.get("action_space"): injected_goals.append(f"可用行动: {', '.join(ctx['action_space'])}")
+        if ctx.get("skills_list"):
+            skills_text = "\n".join(f"  - {s['name']}: {s.get('desc','')}" for s in ctx["skills_list"])
+            injected_goals.append(f"可用技能:\n{skills_text}")
+        if ctx.get("background_rules"): injected_prompt = ctx["background_rules"]
+        if injected_goals and effective_id != getattr(agent, '_last_injected_id', None):
+            agent._last_injected_id = effective_id
+            agent.equip_brain(goals=injected_goals, config=brain_config, system_prompt=injected_prompt)
+
     action = agent.decide(ctx)
     if action:
         last_action = action.to_dict() if hasattr(action, 'to_dict') else str(action)
+        act_type = action.type if hasattr(action, 'type') else "unknown"
+        act_target = getattr(action, 'target', '')
         _log_agent("decide",
-                   f"{action.type} → {getattr(action, 'target', '')}: {getattr(action, 'content', '')[:100]}",
-                   action_type=action.type if hasattr(action, 'type') else "unknown",
-                   target=getattr(action, 'target', ''),
+                   f"{act_type} → {act_target}: {getattr(action, 'content', '')[:100]}",
+                   from_id=effective_id, target=act_target,
+                   action_type=act_type,
                    content=getattr(action, 'content', '')[:300],
                    reasoning=getattr(action, 'reasoning', '')[:200],
-                   round=turn)
-
+                   round=turn, status="decided")
 
     if action and hasattr(action, 'to_dict'):
         return {
-            "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
+            "agent_id": effective_id, "agent_name": effective_name,
             "turn": turn, "has_llm": bool(brain_config.get("api_key")),
             **action.to_dict(),
         }
     return {
-        "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
+        "agent_id": effective_id, "agent_name": effective_name,
         "turn": turn, "type": "wait", "target": "", "content": "",
         "reasoning": "no brain available",
     }
@@ -275,10 +306,17 @@ async def act():
     action_target = last_action.get("target", "")
     action_content = last_action.get("content", "")
     result["action"] = last_action
+    relay_ok = result.get("relayed", None)
+    if relay_ok is True:
+        act_status = "success"
+    elif relay_ok is False:
+        act_status = "failed"
+    else:
+        act_status = "executed"  # 非消息类动作（wait/think等）
     _log_agent("act",
                f"{action_type} → {action_target}: {action_content[:100]}",
                action_type=action_type, target=action_target,
-               content=action_content[:300])
+               content=action_content[:300], status=act_status)
 
     # 如果是发送消息，通过 RemoteBus 转发
     if action_type in ("send_message", "broadcast"):
@@ -312,6 +350,17 @@ async def act():
                     pass
         except Exception as e:
             result["relay_error"] = str(e)
+
+    elif action_type == "execute_skill":
+        skill_name = last_action.get("skill", action_target)
+        skill_params = last_action.get("params", {})
+        try:
+            resp = requests.post(f"{SERVER_URL}/api/skills/execute", json={
+                "agent_id": AGENT_ID, "skill_name": skill_name, "params": skill_params,
+            }, timeout=10)
+            result["skill_result"] = resp.json() if resp.ok else {"error": resp.text}
+        except Exception as e:
+            result["skill_error"] = str(e)
 
     # 转发日志到 Log Collector
     if LOG_COLLECTOR_URL:

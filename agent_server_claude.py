@@ -18,6 +18,7 @@ import sys
 import json
 import time
 import subprocess
+from datetime import datetime, timezone
 import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -57,11 +58,19 @@ last_action: Dict[str, Any] = {}
 inbox: list = []
 
 
-def _log_agent(event: str, detail: str):
+def _log_agent(event: str, detail: str, **kw):
+    """结构化动作日志上报"""
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     try:
         requests.post(f"{SERVER_URL}/api/logs/agent", json={
             "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
             "event": event, "detail": detail,
+            "timestamp": timestamp,
+            "from_agent": AGENT_ID,
+            "to_agent": kw.get("target", kw.get("to", "")),
+            "action": kw.get("action_type", event),
+            "action_status": kw.get("status", "success"),
+            "details": kw or {},
         }, timeout=2)
     except Exception:
         pass
@@ -181,7 +190,10 @@ async def decide(req: DecideRequest = None):
         response = _call_claude_code(prompt)
         action = _parse_response(response)
         last_action = action
-        _log_agent("decide", f"{action.get('action')} → {action.get('target', '')}")
+        act_type = action.get('action', 'unknown')
+        act_target = action.get('target', '')
+        _log_agent("decide", f"{act_type} → {act_target}",
+                   action_type=act_type, target=act_target, status="decided")
     except Exception as e:
         action = {"reasoning": str(e), "action": "wait", "target": "", "content": ""}
         last_action = action
@@ -207,6 +219,11 @@ async def act():
     action_content = last_action.get("content", "")
     result: Dict[str, Any] = {"action": last_action}
 
+    # 结构化动作日志
+    _log_agent("act", f"{action_type} → {action_target}: {action_content[:100]}",
+               action_type=action_type, target=action_target,
+               content=action_content[:300], status="executing")
+
     if action_type in ("send_message", "broadcast"):
         try:
             if action_type == "send_message":
@@ -214,6 +231,9 @@ async def act():
             else:
                 comm.broadcast(AGENT_ID, AGENT_NAME, action_content)
             result["relayed"] = True
+            _log_agent("act", f"{action_type} → {action_target}: 发送成功",
+                       action_type=action_type, target=action_target,
+                       content=action_content[:100], status="success")
 
             if PACKET_MONITOR_URL:
                 try:
@@ -227,6 +247,8 @@ async def act():
                     pass
         except Exception as e:
             result["relay_error"] = str(e)
+            _log_agent("act", f"{action_type} → {action_target}: 发送失败 {e}",
+                       action_type=action_type, target=action_target, status="failed")
 
     if LOG_COLLECTOR_URL:
         try:
