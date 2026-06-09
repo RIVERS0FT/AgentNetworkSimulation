@@ -707,7 +707,7 @@ def _build_scene_from_script_json(sj: Dict[str, Any]) -> SceneDefinition:
             name=identity,
             skills=action_space[:4],   # 前4个action作为skill
             tags=[core_goal[:30]],     # core_goal 截断为 tag
-            tasks=[core_goal],         # core_goal 作为主任务
+            tasks=action_space[:6] if action_space else [core_goal],  # 具体行动作为任务
             extra_meta={
                 "identity": identity,
                 "core_goal": core_goal,
@@ -773,7 +773,7 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
             name=role.get("name", role_id),
             skills=skills[:4],
             tags=[paradigm] if paradigm else [],
-            tasks=[role.get("core_goal", "")],
+            tasks=skills[:6] if skills else [role.get("core_goal", "")],  # 技能绑定作为具体任务
             extra_meta={
                 "identity": role.get("identity", ""),
                 "core_goal": role.get("core_goal", ""),
