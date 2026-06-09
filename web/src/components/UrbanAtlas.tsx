@@ -8,9 +8,10 @@ import { useAgentOverlay, drawAgents, drawRelationships } from './AgentLayer';
 interface UrbanAtlasProps {
   world: CityWorld;
   onStats?: (stats: CityStats) => void;
+  showMap?: boolean;
 }
 
-export function UrbanAtlas({ world, onStats }: UrbanAtlasProps) {
+export function UrbanAtlas({ world, onStats, showMap = true }: UrbanAtlasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<UrbanRenderer>(new UrbanRenderer());
@@ -89,8 +90,13 @@ export function UrbanAtlas({ world, onStats }: UrbanAtlasProps) {
     ctx.save();
     ctx.scale(dpr, dpr);
 
-    // Step 1: render map
-    renderer.render(ctx, world, viewport.zoom, viewport.panX, viewport.panY, W, H);
+    // Step 1: render map (skip if toggled off)
+    if (showMap) {
+      renderer.render(ctx, world, viewport.zoom, viewport.panX, viewport.panY, W, H);
+    } else {
+      ctx.fillStyle = '#ECE8DF';
+      ctx.fillRect(0, 0, W, H);
+    }
 
     // Step 2: render agents in world coordinates
     // Atlas renders world 0..400 into screen via: screenX = wx/WORLD * zoom * canvasW + canvasW/2 + panX - zoom*canvasW/2
@@ -107,12 +113,12 @@ export function UrbanAtlas({ world, onStats }: UrbanAtlasProps) {
     ctx.clip();  // clip to atlas bounds
     ctx.translate(screenX, screenY);
     ctx.scale(screenW / world.width, screenH / world.height);
-    drawRelationships(ctx, relationships, agents);
     drawAgents(ctx, agents, selected, world.width, screenW, screenH);
+    drawRelationships(ctx, relationships, agents);
     ctx.restore();
 
     ctx.restore();
-  }, [world, viewport, renderer, agents, relationships, selected]);
+  }, [world, viewport, renderer, agents, relationships, selected, showMap]);
 
   useAnimationLoop(render, true);
 

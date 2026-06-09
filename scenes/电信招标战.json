@@ -7,6 +7,7 @@
     "role_slots": [
       {
         "slot_id": "ROLE_A",
+        "backend": "brain",
         "identity": "大型电信公司CEO",
         "core_goal": "在招标中获得合同，确保市场份额达到30%",
         "initial_assets": {
@@ -23,6 +24,7 @@
       },
       {
         "slot_id": "ROLE_B",
+        "backend": "openclaw",
         "identity": "新兴科技公司创始人",
         "core_goal": "以低价赢得合同，扩大市场知名度",
         "initial_assets": {
@@ -39,6 +41,7 @@
       },
       {
         "slot_id": "ROLE_C",
+        "backend": "claude-code",
         "identity": "政府评标委员会委员",
         "core_goal": "确保招标过程透明，避免媒体曝光负面新闻",
         "initial_assets": {

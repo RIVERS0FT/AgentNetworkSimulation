@@ -7,11 +7,11 @@ echo   AI Agent 仿真运行平台 - 一键启动
 echo =============================================
 
 REM --- 1. Build frontend if not yet built ---
-if not exist "web\tactical-map\dist\index.html" (
+if not exist "web\dist\index.html" (
     echo [1/4] 构建前端...
-    cd web\tactical-map
+    cd web
     call npx vite build
-    cd ..\..
+    cd ..
     echo   前端构建完成
 ) else (
     echo [1/4] 前端已构建 (跳过)

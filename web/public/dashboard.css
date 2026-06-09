@@ -65,3 +65,9 @@ body{font-family:'Inter','IBM Plex Sans',system-ui,sans-serif;background:var(--b
 #settings-panel label{font-size:0.7rem;color:var(--gray)}
 #settings-panel input,#settings-panel select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:3px;font-size:0.75rem;font-family:inherit}
 @media(max-width:900px){.app{flex-direction:column}.canvas-panel{flex:2;min-height:50vh}.side-panel{flex:1;max-width:100%;flex-direction:column}.script-editor{flex:0}.log-viewer{flex:1}}
+.log-dropdown{position:relative;display:inline-block}
+.log-dropdown-btn{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:2px 6px;border-radius:3px;font-size:0.7rem;cursor:pointer;font-family:inherit;line-height:1.2;vertical-align:middle}
+.log-dropdown-btn:hover{border-color:var(--gray)}
+.log-dropdown.open .log-dropdown-menu{display:flex!important}
+.log-dropdown.open .log-dropdown-btn{border-color:var(--gray)}
+.log-dropdown-menu .chk{font-size:0.7rem;font-family:inherit;color:var(--text);padding:2px 0}

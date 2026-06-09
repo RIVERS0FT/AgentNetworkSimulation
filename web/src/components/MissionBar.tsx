@@ -4,9 +4,11 @@ interface MissionBarProps {
   seed: number;
   onRegenerate: () => void;
   loading: boolean;
+  showMap: boolean;
+  onToggleMap: () => void;
 }
 
-export function MissionBar({ seed, onRegenerate, loading }: MissionBarProps) {
+export function MissionBar({ seed, onRegenerate, loading, showMap, onToggleMap }: MissionBarProps) {
   const [time, setTime] = useState('');
 
   useEffect(() => {
@@ -32,6 +34,15 @@ export function MissionBar({ seed, onRegenerate, loading }: MissionBarProps) {
           </p>
         </div>
         <div className="h-7 w-px bg-ink/12" />
+        <button
+          onClick={onToggleMap}
+          title={showMap ? '隐藏地图' : '显示地图'}
+          className={`text-xs px-2 py-0.5 border transition-colors cursor-pointer ${
+            showMap ? 'border-ink/30 text-ink bg-ink/5' : 'border-ink/15 text-ink/40 hover:text-ink hover:border-ink/30'
+          }`}
+        >
+          🗺 地图
+        </button>
         <div className="flex items-center gap-1.5 text-xs text-ink-light">
           SEED <span className="text-ink font-medium">{seed}</span>
           <button

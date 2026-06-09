@@ -97,6 +97,7 @@ service_state = {
 
 _current_map: Optional[Dict[str, Any]] = None  # 当前地形地图 (TerrainMap.to_dict())
 _current_map_obj: Optional[Any] = None           # TerrainMap 实例 (用于寻路等操作)
+_current_relationships: List[Dict[str, Any]] = []  # 当前关系链
 
 
 # ═══════════════════════════════════════════════
@@ -184,10 +185,22 @@ async def index():
 # Agent 管理 API — 对应架构文档第六节
 # ═══════════════════════════════════════════════
 
+def _inject_runtime_url(status: dict) -> dict:
+    """注入容器运行时的实际 URL（IP直连用）"""
+    try:
+        runtime = get_runtime()
+        ca = runtime.agents.get(status["agent_id"])
+        if ca and ca.url:
+            status["url"] = ca.url
+    except Exception:
+        pass
+    return status
+
+
 @app.get("/api/agents", response_model=List[AgentStatus])
 async def list_agents():
     """列出所有已注册 Agent"""
-    return [a.get_status() for a in AgentRegistry.list_all()]
+    return [_inject_runtime_url(a.get_status()) for a in AgentRegistry.list_all()]
 
 
 @app.get("/api/agents/{agent_id}", response_model=AgentStatus)
@@ -196,7 +209,7 @@ async def get_agent(agent_id: str):
     agent = AgentRegistry.get(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
-    return agent.get_status()
+    return _inject_runtime_url(agent.get_status())
 
 
 @app.post("/api/agents", response_model=AgentStatus)
@@ -441,39 +454,36 @@ def _force_layout(agents: List[Any], links: List[Dict],
             pos[aid][0] = max(margin, min(width - margin, pos[aid][0]))
             pos[aid][1] = max(margin, min(height - margin, pos[aid][1]))
 
+    # Break overlaps: add small random jitter to all positions
+    for aid in pos:
+        pos[aid][0] += _rnd.uniform(-12, 12)
+        pos[aid][1] += _rnd.uniform(-12, 12)
+        pos[aid][0] = max(margin, min(width - margin, pos[aid][0]))
+        pos[aid][1] = max(margin, min(height - margin, pos[aid][1]))
+
     return pos
 
 
-def _run_with_containers(scene_def: SceneDefinition, engine_name: str,
-                         config: Dict[str, str]) -> Dict[str, Any]:
-    """
-    容器化运行场景：每个 Agent 运行在独立子进程中，通过 HTTP 通信。
-    Docker 可用时自动切换为 Docker 容器模式。
-    """
-    # 检测 Docker 是否可用
-    mode = "process"
-    try:
-        import docker
-        docker.from_env()
-        mode = "docker"
-        print(f"[Container] Docker detected, using container mode")
-    except Exception:
-        print(f"[Container] Docker unavailable, using subprocess mode")
+# 全局场景状态（setup → launch 分离）
+_pending_scene_def: Optional[SceneDefinition] = None
+_pending_layout: Dict[str, tuple] = {}
+_pending_config: Dict[str, str] = {}
 
-    runtime = get_runtime(mode=mode)
-    runtime.stop_all()  # 清理旧的容器/进程
+
+def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
+    """Step 1: 绘制场景 — 创建 Agent、计算布局、注册，不启动容器"""
+    global _pending_scene_def, _pending_layout
+
     AgentRegistry.reset()
+    PacketRecorder.reset()
 
-    # 统一通信层（容器模式 — 注册用的 stub，实际通信在子进程内）
     from agent_network.comm import RemoteBus
     remote_bus = RemoteBus(message_bus_url="http://localhost:9000")
 
-    # 力导向布局：根据 relationship 关系优化 Agent 位置
+    # 力导向布局
     layout_pos = _force_layout(scene_def.agents, scene_def.workflow)
 
-    created_cas = []
     for ad in scene_def.agents:
-        # 注册到 AgentRegistry（供 WebSocket 和 API 查询）
         agent = Agent(
             agent_id=ad.agent_id,
             role=ad.role,
@@ -482,7 +492,6 @@ def _run_with_containers(scene_def: SceneDefinition, engine_name: str,
             tags=ad.tags,
         )
         agent.set_comm(remote_bus)
-        # 用力导向布局位置
         lx, ly = layout_pos.get(ad.agent_id, (random.uniform(50, 350), random.uniform(50, 350)))
         agent.x = lx
         agent.y = ly
@@ -491,6 +500,34 @@ def _run_with_containers(scene_def: SceneDefinition, engine_name: str,
         AgentRegistry.register(agent)
         agent.start()
 
+    _pending_scene_def = scene_def
+    _pending_layout = layout_pos
+
+    return {
+        "agents": [a.get_status() for a in AgentRegistry.list_all()],
+        "agent_stats": AgentRegistry.get_stats(),
+        "relationships": scene_def.workflow,
+        "scene_name": scene_def.scene_name,
+    }
+
+
+def _launch_containers(config: Dict[str, str]) -> Dict[str, Any]:
+    """Step 2: 拉起 Docker — 为已注册 Agent 创建容器并运行仿真"""
+    global _pending_scene_def, _current_relationships
+
+    scene_def = _pending_scene_def
+    if not scene_def:
+        return {"error": "No scene setup. Call /api/simulations/setup first."}
+
+    try:
+        runtime = get_runtime()
+    except RuntimeError as e:
+        return {"error": str(e), "container_mode": "docker"}
+
+    runtime.stop_all()
+
+    created_cas = []
+    for ad in scene_def.agents:
         ca = runtime.create_agent(
             agent_id=ad.agent_id,
             role=ad.role,
@@ -498,12 +535,10 @@ def _run_with_containers(scene_def: SceneDefinition, engine_name: str,
             llm_config=config if config.get("api_key") else None,
             extra_meta=ad.extra_meta if ad.extra_meta else None,
         )
-        created_cas.append((ca, agent, ad.tasks))
+        created_cas.append((ca, ad.tasks))
 
-    # 等待所有 Agent 启动（子进程并行启动）
     time.sleep(2)
-    # 批量向消息总线注册
-    for ca, agent, _ in created_cas:
+    for ca, _ in created_cas:
         try:
             import requests as _req
             _req.post("http://localhost:9000/register",
@@ -523,25 +558,26 @@ def _run_with_containers(scene_def: SceneDefinition, engine_name: str,
             "total_rounds": rounds,
             "scene": scene_def.scene_name,
             "agents": [{"id": ca.agent_id, "role": ca.role, "name": ca.name}
-                       for ca, _, _ in created_cas],
-            "tasks": {ca.agent_id: tasks for ca, _, tasks in created_cas},
+                       for ca, _ in created_cas],
+            "tasks": {ca.agent_id: tasks for ca, tasks in created_cas},
         }
         round_result = runtime.run_round(context)
         results_log.append(round_result)
         time.sleep(0.3)
 
-    # 收集最终状态 — 与内存模式 engine._collect_results() 统一格式
+    _current_relationships = scene_def.workflow
     registry_agents = [a.get_status() for a in AgentRegistry.list_all()]
 
     return {
-        "simulation_name": engine_name,
+        "simulation_name": scene_def.scene_name,
         "duration_seconds": round(rounds * 1.5, 2),
         "agents": registry_agents,
         "agent_stats": AgentRegistry.get_stats(),
         "packet_stats": PacketRecorder.get_stats(),
         "rounds": rounds,
         "results_log": results_log,
-        "container_mode": mode,
+        "relationships": scene_def.workflow,
+        "container_mode": "docker",
     }
 
 
@@ -560,6 +596,7 @@ def _build_scene_from_script_json(sj: Dict[str, Any]) -> SceneDefinition:
         action_space = slot.get("action_space", [])
         hidden_secret = slot.get("hidden_secret", "")
         initial_assets = slot.get("initial_assets", {})
+        backend = slot.get("backend", "brain")
 
         agent = AgentDef(
             agent_id=slot_id,
@@ -575,6 +612,7 @@ def _build_scene_from_script_json(sj: Dict[str, Any]) -> SceneDefinition:
                 "initial_assets": initial_assets,
                 "action_space": action_space,
                 "background_rules": bg,  # scene system prompt
+                "backend": backend,
             },
         )
         agents.append(agent)
@@ -592,43 +630,130 @@ def _build_scene_from_script_json(sj: Dict[str, Any]) -> SceneDefinition:
     )
 
 
+def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
+    """将文件夹格式（3个JSON）映射为 SceneDefinition。"""
+    from pathlib import Path
+    folder = _SCENES_DIR / scene_name
+
+    # Load 3 files
+    meta = json.loads((folder / "meta_and_roles.json").read_text(encoding='utf-8'))
+    instances = json.loads((folder / "instances_and_skills.json").read_text(encoding='utf-8'))
+    topology = json.loads((folder / "network_topology.json").read_text(encoding='utf-8'))
+
+    smeta = meta.get("scenario_metadata", {})
+    title = smeta.get("title", scene_name)
+    bg = smeta.get("global_rules", "")
+    roles = meta.get("roles", {})
+    containers = instances.get("container_instances", {})
+
+    agents: List[AgentDef] = []
+    for role_id, role in roles.items():
+        instance = containers.get(role_id, {})
+        skills = [s["skill_name"] for s in instance.get("skill_bindings", [])]
+        backend = role.get("model_backbone", "brain")
+        # Map model_backbone to our backend names
+        if backend == "claudecode":
+            backend = "claude-code"
+
+        agent = AgentDef(
+            agent_id=role_id.lower(),
+            role="generic",
+            name=role.get("name", role_id),
+            skills=skills[:4],
+            tags=[role.get("primary_interaction_paradigm", "")],
+            tasks=[role.get("core_goal", "")],
+            extra_meta={
+                "identity": role.get("identity", ""),
+                "core_goal": role.get("core_goal", ""),
+                "hidden_secret": "",
+                "initial_assets": {},
+                "action_space": skills,
+                "background_rules": bg,
+                "backend": backend,
+                "pip_packages": instance.get("pip_packages", []),
+                "runtime_engine": instance.get("runtime_engine", ""),
+            },
+        )
+        agents.append(agent)
+
+    # Build relationships from topology edges
+    relationships = []
+    for subnet in topology.get("sub_networks", []):
+        for edge in subnet.get("edges", []):
+            relationships.append({
+                "from": edge["source"],
+                "to": edge["target"],
+                "relation_type": edge.get("paradigm", ""),
+                "value": 50 if edge.get("paradigm") == "COLLABORATION" else -30,
+                "can_direct_chat": True,
+                "channel_id": edge.get("channel_id", ""),
+            })
+
+    return SceneDefinition(
+        scene_name=title,
+        description=bg,
+        agents=agents,
+        workflow=relationships,
+        event_triggers=[],
+    )
+
+
 @app.post("/api/simulations/run")
 async def run_simulation(req: SimulationRunRequest):
-    """运行仿真场景 — 支持 auto/battlefield/fleet + LLM 解析 + script_json 直映"""
-    global service_state
+    """运行仿真场景 — setup + launch 一体化（兼容旧版）"""
+    global service_state, _current_relationships
 
-    name = req.name or f"{req.scene}-{service_state['simulations_run'] + 1}"
-
-    # ── 优先：script_json 直接映射（不需要 LLM） ──
+    # ── Step 1: Build scene ──
     if req.script_json:
         scene_def = _build_scene_from_script_json(req.script_json)
-        use_llm = False
-
-    # ── 其次：自然语言 script → LLM/模板解析 ──
+    elif req.scene and (_SCENES_DIR / req.scene).is_dir():
+        scene_def = _build_scene_from_folder(req.scene)
     elif req.scene == "auto" or req.script:
         script_text = req.script or req.scene
         config = _get_effective_llm_config()
-        use_llm = bool(config.get("api_key"))
-        scene_def = parse_script(script_text, use_llm=use_llm, config=config)
+        scene_def = parse_script(script_text, use_llm=bool(config.get("api_key")), config=config)
 
-    # ── 执行场景 ──
+    # ── Step 2: Setup agents ──
+    result = _setup_scene(scene_def)
+    _current_relationships = result["relationships"]
+
+    # ── Step 3: Launch containers ──
+    config = _get_effective_llm_config()
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _run_scene_definition, scene_def, name)
-    result["llm_parsed"] = use_llm
-    result["scene_definition"] = {
-        "scene_name": scene_def.scene_name,
-        "description": scene_def.description,
-        "agents": [{"agent_id": a.agent_id, "role": a.role, "name": a.name, "tasks": a.tasks}
-                   for a in scene_def.agents],
-        "relationships": scene_def.workflow,
-    }
-    result["relationships"] = scene_def.workflow
-
-    _simulation_results.append(result)
-    if len(_simulation_results) > 20:
-        _simulation_results.pop(0)
+    launch = await loop.run_in_executor(None, _launch_containers, config)
+    result.update(launch)
 
     service_state["simulations_run"] += 1
+    return result
+
+
+@app.post("/api/simulations/setup")
+async def setup_simulation(req: SimulationRunRequest):
+    """Step 1: 绘制场景 — 创建 Agent、返回布局和关系（不启动容器）"""
+    global _current_relationships, _pending_config
+
+    if req.script_json:
+        scene_def = _build_scene_from_script_json(req.script_json)
+    elif req.scene and (_SCENES_DIR / req.scene).is_dir():
+        scene_def = _build_scene_from_folder(req.scene)
+    elif req.scene == "auto" or req.script:
+        script_text = req.script or req.scene
+        config = _get_effective_llm_config()
+        scene_def = parse_script(script_text, use_llm=bool(config.get("api_key")), config=config)
+    else:
+        return {"error": "No scene data provided"}
+
+    _pending_config = _get_effective_llm_config()
+    result = _setup_scene(scene_def)
+    _current_relationships = result["relationships"]
+    return result
+
+
+@app.post("/api/simulations/launch")
+async def launch_simulation():
+    """Step 2: 拉起 Docker — 为已 setup 的 Agent 启动容器并运行仿真"""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _launch_containers, _pending_config)
     return result
 
 
@@ -674,28 +799,43 @@ _SCENES_DIR = None  # initialized after pathlib import below
 
 @app.get("/api/scenes")
 async def list_scenes():
-    """列出所有可用的 .md 场景文件"""
+    """列出所有可用场景（文件夹式 + 旧版 .json 文件）"""
     if not _SCENES_DIR.exists():
         return {"scenes": []}
-    files = sorted(
-        [f.name for f in _SCENES_DIR.iterdir() if f.suffix == '.json'],
-        key=lambda n: n.lower()
-    )
-    return {"scenes": files}
+    scenes = []
+    for f in sorted(_SCENES_DIR.iterdir(), key=lambda n: n.name.lower()):
+        if f.is_dir() and (f / "meta_and_roles.json").exists():
+            scenes.append({"name": f.name, "format": "folder"})
+        elif f.suffix == '.json' and f.name != "test_output.json":
+            scenes.append({"name": f.name, "format": "file"})
+    return {"scenes": scenes}
 
 
-@app.get("/api/scenes/{filename}")
-async def read_scene(filename: str):
-    """读取指定 .json 场景文件内容"""
-    path = (_SCENES_DIR / filename).resolve()
-    # Prevent path traversal
+@app.get("/api/scenes/{scene_name}")
+async def read_scene(scene_name: str):
+    """读取场景内容（文件夹式或旧版 .json 文件）"""
+    from pathlib import Path
+    # Try folder format first
+    folder = _SCENES_DIR / scene_name
+    if folder.is_dir():
+        files = {}
+        for key in ["meta_and_roles", "instances_and_skills", "network_topology"]:
+            fpath = folder / f"{key}.json"
+            if fpath.exists():
+                files[key] = json.loads(fpath.read_text(encoding='utf-8'))
+        if "meta_and_roles" in files:
+            title = files["meta_and_roles"].get("scenario_metadata", {}).get("title", scene_name)
+            return {"name": scene_name, "title": title, "format": "folder", "files": files}
+        raise HTTPException(status_code=404, detail=f"Folder scene '{scene_name}' missing meta_and_roles.json")
+
+    # Legacy .json file format
+    path = (_SCENES_DIR / scene_name).resolve()
     if not str(path).startswith(str(_SCENES_DIR.resolve())):
         raise HTTPException(status_code=403, detail="Invalid path")
     if not path.exists() or path.suffix != '.json':
-        raise HTTPException(status_code=404, detail=f"Scene '{filename}' not found")
+        raise HTTPException(status_code=404, detail=f"Scene '{scene_name}' not found")
     content = path.read_text(encoding='utf-8')
-    name = path.stem
-    return {"filename": filename, "name": name, "content": content}
+    return {"name": path.stem, "filename": scene_name, "format": "file", "content": content}
 
 
 # ═══════════════════════════════════════════════
@@ -849,7 +989,7 @@ class ContainerAgentRequest(BaseModel):
 @app.post("/api/containers/create")
 async def container_create(req: ContainerAgentRequest):
     """创建并启动一个 Agent 容器/进程"""
-    runtime = get_runtime(mode="process")
+    runtime = get_runtime()
     config = _get_effective_llm_config()
     ca = runtime.create_agent(
         agent_id=req.agent_id, role=req.role,
@@ -915,7 +1055,7 @@ def _get_controller() -> ContainerController:
     global _controller
     if _controller is None:
         _controller = ContainerController()
-        runtime = get_runtime(mode="process")
+        runtime = get_runtime()
         _controller.set_runtime(runtime)
     return _controller
 
@@ -1546,22 +1686,6 @@ async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 端点 — 实时推送 Agent 状态、日志和消息"""
     await websocket.accept()
 
-    # 注册到 EventBus 全局广播 — 消息实时推送
-    received_messages = []
-
-    def on_message(msg: Message):
-        received_messages.append(msg.to_dict())
-
-    # 给 EventBus 注册广播回调
-    event_bus = None
-    for agent in AgentRegistry.list_all():
-        if agent.event_bus:
-            event_bus = agent.event_bus
-            break
-    if not event_bus:
-        event_bus = EventBus("ws-bus")
-    event_bus.on_broadcast(on_message)
-
     # 状态推送循环
     try:
         while True:
@@ -1576,6 +1700,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "stats": AgentRegistry.get_stats(),
                             "map": _current_map,
                             "agent_logs": _agent_logs[-50:],
+                            "relationships": _current_relationships,
                         },
                     })
                 elif data == "packets":
@@ -1605,6 +1730,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "logs": _global_logger.get_index_stats(),
                             "map": _current_map,
                             "agent_logs": _agent_logs[-50:],
+                            "relationships": _current_relationships,
                         },
                     })
             except asyncio.TimeoutError:
@@ -1616,12 +1742,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         "agents": agents_data,
                         "stats": AgentRegistry.get_stats(),
                         "map": _current_map,
+                        "relationships": _current_relationships,
                     },
                 }
-                # 推送积压的消息
-                if received_messages:
-                    payload["data"]["messages"] = received_messages[-10:]
-                    received_messages.clear()
                 await websocket.send_json(payload)
     except WebSocketDisconnect:
         pass

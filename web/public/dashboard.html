@@ -24,9 +24,15 @@
 <div class="section-title">仿真日志 <span class="toggle" onclick="togglePanel('log-viewer')">_</span></div>
 <div class="log-viewer" id="log-viewer">
 <div class="log-controls">
-<select id="log-filter" onchange="renderLogs()">
-<option value="">全部级别</option><option value="L1">L1 系统</option><option value="L2">L2 Agent</option><option value="L3">L3 Tool</option><option value="L4">L4 Prompt</option><option value="L5">L5 Packet</option>
-</select>
+<div class="log-dropdown" id="log-dropdown">
+<button class="log-dropdown-btn" onclick="document.getElementById('log-dropdown').classList.toggle('open')">日志 ▾</button>
+<div class="log-dropdown-menu" id="log-fields" style="display:none;flex-direction:column;gap:4px;position:absolute;top:100%;left:0;background:var(--bg);border:1px solid var(--border);padding:6px 10px;border-radius:4px;z-index:10;min-width:100px">
+<label class="chk"><input type="checkbox" data-field="frontend" checked onchange="renderLogs()">前端</label>
+<label class="chk"><input type="checkbox" data-field="scene" checked onchange="renderLogs()">场景</label>
+<label class="chk"><input type="checkbox" data-field="message" checked onchange="renderLogs()">消息</label>
+<label class="chk"><input type="checkbox" data-field="system" checked onchange="renderLogs()">系统</label>
+</div>
+</div>
 <label class="chk"><input type="checkbox" id="log-autoscroll" checked>自动</label>
 <button class="btn ghost" onclick="clearLogs()">清空</button>
 <span style="font-size:0.65rem;color:var(--gray);margin-left:auto" id="log-count">0</span>
