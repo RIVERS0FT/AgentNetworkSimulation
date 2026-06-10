@@ -105,10 +105,10 @@ if (msg.type === 'agent_log' && msg.data) {
     const action = l.action || l.event || '?';
     const status = l.action_status || '';
     const stIcon = status === 'success' ? '✅' : status === 'failed' ? '❌' : status === 'decided' ? '💭' : '➡️';
-    const msgText = from + ' ' + stIcon + ' ' + action + (to && to !== '-' ? ' → ' + to : '') + ' | ' + (l.detail||'').slice(0,80);
+    const msgText = from + ' ' + stIcon + ' ' + action + (to && to !== '-' ? ' → ' + to : '') + ' | ' + (l.detail||'');
     logEntry('agent', msgText, ts);
+    _lastLogCount++; // 同步计数，避免 batch all 响应重复渲染
     return;
-}
 // ── Agent 状态实时更新 ──
 if (msg.type === 'agent_status' && msg.data) {
     msg.data.forEach(s => {
@@ -122,6 +122,7 @@ if (msg.type === 'status' || msg.type === 'all') {
     if (msg.data.relationships) _relationships = msg.data.relationships;
     forwardAgents();
     // ── Agent 动作日志 ──
+    if (_lastLogCount === 0) {
     const logs = msg.data.agent_logs || [];
     logs.slice(_lastLogCount).forEach(l => {
         const ts = (l.timestamp||'').slice(11,23);
@@ -130,10 +131,11 @@ if (msg.type === 'status' || msg.type === 'all') {
         const action = l.action || l.event || '?';
         const status = l.action_status || '';
         const stIcon = status === 'success' ? '✅' : status === 'failed' ? '❌' : status === 'decided' ? '💭' : '➡️';
-        const msgText = from + ' ' + stIcon + ' ' + action + (to && to !== '-' ? ' → ' + to : '') + ' | ' + (l.detail||'').slice(0,80);
+        const msgText = from + ' ' + stIcon + ' ' + action + (to && to !== '-' ? ' → ' + to : '') + ' | ' + (l.detail||'');
         logEntry('agent', msgText, ts);
     });
     _lastLogCount = logs.length;
+    }
     // ── 结构化的 logger 条目 (去重) ──
     const logEntries = msg.data.log_entries || [];
     logEntries.forEach(e => {
@@ -142,7 +144,7 @@ if (msg.type === 'status' || msg.type === 'all') {
         const from = d.from_agent || e.agent_id || '';
         const to = d.to_agent || '';
         if (e.event === 'agent_message') {
-            logEntry('message', from + ' → ' + to + ' | ' + ((d.content||'').slice(0,80)), ts);
+            logEntry('message', from + ' → ' + to + ' | ' + ((d.content||'')), ts);
         } else if (e.event === 'event_trigger') {
             logEntry('scene', '⚡ ' + (e.message||''), ts);
         } else if (e.level === 'ERROR') {
@@ -164,7 +166,7 @@ if (msg.type === 'packets' && msg.data) {
             p.channel_id ? 'ch:' + p.channel_id : '',
             p.message_type || p.method || '',
             (p.agent_from||'') + '→' + (p.agent_to||''),
-            (p.content||'').slice(0,80)
+            (p.content||'')
         ].filter(Boolean).join(' | ');
         logEntry('message', text, ts);
     });

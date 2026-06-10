@@ -130,6 +130,8 @@ last_action: Dict[str, Any] = {}
 _allowed_targets: set = set()  # 通信权限矩阵
 _channel_map: Dict[str, str] = {}  # {(from_id, to_id): channel_id} 来自 topology edge
 _current_talk: str = ""        # 当前会话/对话 ID（仿真启动时生成）
+_effective_id: str = AGENT_ID     # 当前场景身份（由 /decide 注入）
+_effective_name: str = AGENT_NAME
 
 _agent_logger = get_logger()
 
@@ -192,13 +194,11 @@ async def status():
 async def receive_message(msg: MessageIn, request: Request):
     """接收来自其他 Agent 的消息 → 写入 Agent 收件箱"""
     client_ip = request.client.host if request.client else "unknown"
-    agent.inbox.append({
-        "from": msg.from_name or msg.from_id,
-        "content": msg.content,
-        "type": msg.type,
-    })
-    if len(agent.inbox) > 50:
-        agent.inbox.pop(0)
+    agent._add_to_inbox(
+        from_agent=msg.from_name or msg.from_id,
+        content=msg.content,
+        msg_type=msg.type or "direct",
+    )
     # 记录入站报文
     PacketRecorder.record_inbound(
         agent_id=AGENT_ID, src_ip=client_ip, method="POST", path="/message",
@@ -219,11 +219,11 @@ async def receive_event(event: Dict[str, Any]):
     turn = event.get("turn", 0)
 
     # 写入 Agent 收件箱（作为系统消息）
-    agent.inbox.append({
-        "from": "系统",
-        "content": f"⚠️ 事件 [{event_name}]: {impact}",
-        "type": "event",
-    })
+    agent._add_to_inbox(
+        from_agent="系统",
+        content=f"⚠️ 事件 [{event_name}]: {impact}",
+        msg_type="system",
+    )
 
     # 同时写入事件队列（供决策时参考）
     _event_queue.append({
@@ -249,19 +249,22 @@ async def decide(req: DecideRequest = None):
     global turn, last_action
     turn += 1
     ctx = req.context if req else {}
-    ctx["round"] = turn
+    # 优先使用服务器传来的 round（避免容器复用时轮次累积偏移）
+    if "round" not in ctx:
+        ctx["round"] = turn
 
     # 使用注入的身份（场景 Agent），覆盖容器自身的身份
     effective_id = ctx.get("agent_id", AGENT_ID)
     effective_name = ctx.get("agent_name", AGENT_NAME)
     effective_role = ctx.get("agent_role", AGENT_ROLE)
 
-    # 存储通信权限矩阵
-    global _allowed_targets, _channel_map, _current_talk
+    # 存储通信权限矩阵 + 会话上下文（供 /act 使用）
+    global _allowed_targets, _channel_map, _current_talk, _effective_id, _effective_name
     _allowed_targets = set(ctx.get("comm_matrix", {}).get(effective_id, []))
-    # 存储信道映射和会话 ID（供 /act 使用）
     _channel_map = ctx.get("channel_map", {})
     _current_talk = ctx.get("talk", "")
+    _effective_id = effective_id
+    _effective_name = effective_name
 
     # 注入场景角色目标和技能（只在身份变化时重建 brain）
     if effective_id != AGENT_ID:
@@ -285,11 +288,11 @@ async def decide(req: DecideRequest = None):
         act_target = getattr(action, 'target', '')
         content_text = getattr(action, 'content', '') or getattr(action, 'reasoning', '')
         _log_agent("decide",
-                   content_text[:100],
+                   content_text,
                    from_id=effective_id, target=act_target,
                    action_type=act_type,
-                   content=getattr(action, 'content', '')[:300],
-                   reasoning=getattr(action, 'reasoning', '')[:200],
+                   content=getattr(action, 'content', ''),
+                   reasoning=getattr(action, 'reasoning', ''),
                    round=turn, status="decided")
 
     if action and hasattr(action, 'to_dict'):
@@ -330,24 +333,24 @@ async def act():
             try:
                 relay_start = time.time()
                 # 从信道映射中查找当前 Agent→目标 的 channel_id
-                chan_id = _channel_map.get(f"{AGENT_ID}->{action_target}", "") or \
-                          _channel_map.get(f"{AGENT_ID.lower()}->{action_target.lower()}", "")
+                chan_id = _channel_map.get(f"{_effective_id}->{action_target}", "") or \
+                          _channel_map.get(f"{_effective_id.lower()}->{action_target.lower()}", "")
                 if action_type == "send_message":
-                    ok = await asyncio.to_thread(comm.send, AGENT_ID, AGENT_NAME, action_target, action_content,
+                    ok = await asyncio.to_thread(comm.send, _effective_id, _effective_name, action_target, action_content,
                                                  chan_id, _current_talk)
                 else:
-                    ok = await asyncio.to_thread(comm.broadcast, AGENT_ID, AGENT_NAME, action_content, _allowed_targets,
+                    ok = await asyncio.to_thread(comm.broadcast, _effective_id, _effective_name, action_content, _allowed_targets,
                                                  chan_id, _current_talk)
                 latency = (time.time() - relay_start) * 1000
                 result["relayed"] = ok
                 _log_agent("act",
-                           action_content[:100] or action_type,
+                           action_content or action_type,
                            action_type=action_type, target=action_target,
-                           content=action_content[:300], status="success" if ok else "failed")
+                           content=action_content, status="success" if ok else "failed")
                 # 记录出站报文
                 destination = action_target if action_type == "send_message" else "broadcast"
                 PacketRecorder.record_outbound(
-                    agent_id=AGENT_ID, dst_ip=f"bus", dst_port=9000,
+                    agent_id=_effective_id, dst_ip=f"bus", dst_port=9000,
                     method="POST", path="/relay", status=200 if ok else 0,
                     latency_ms=latency, content=action_content,
                     agent_to=destination,
@@ -356,7 +359,7 @@ async def act():
                 if PACKET_MONITOR_URL:
                     try:
                         requests.post(f"{PACKET_MONITOR_URL}/api/packets/ingest", json={
-                            "from_id": AGENT_ID, "from_name": AGENT_NAME,
+                            "from_id": _effective_id, "from_name": _effective_name,
                             "to": action_target if action_type == "send_message" else "broadcast",
                             "content": action_content, "type": action_type,
                             "direction": "outbound",
@@ -369,16 +372,16 @@ async def act():
                            action_type=action_type, target=action_target, status="failed")
     else:
         # 非消息类动作（wait/think/analyze/plan 等）
-        _log_agent("act", action_content[:100] or action_type,
+        _log_agent("act", action_content or action_type,
                    action_type=action_type, target=action_target,
-                   content=action_content[:300], status="executed")
+                   content=action_content, status="executed")
 
     if action_type == "execute_skill":
         skill_name = last_action.get("skill", action_target)
         skill_params = last_action.get("params", {})
         try:
             resp = requests.post(f"{SERVER_URL}/api/skills/execute", json={
-                "agent_id": AGENT_ID, "skill_name": skill_name, "params": skill_params,
+                "agent_id": _effective_id, "skill_name": skill_name, "params": skill_params,
             }, timeout=10)
             result["skill_result"] = resp.json() if resp.ok else {"error": resp.text}
         except Exception as e:
@@ -391,7 +394,7 @@ async def act():
                 "level": "INFO", "event": "agent_act",
                 "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
                 "index": "logs-agent",
-                "message": f"Act: {str(action)[:200]}",
+                "message": f"Act: {str(action)}",
                 "details": result,
             }, timeout=1)
         except Exception:
@@ -411,6 +414,25 @@ async def clear():
     """清空收件箱"""
     agent.inbox.clear()
     return {"cleared": True}
+
+
+@app.post("/reset")
+async def reset_state():
+    """重置容器状态 — 容器池复用时调用，清除跨仿真残留"""
+    global turn, last_action, _allowed_targets, _channel_map
+    global _current_talk, _effective_id, _effective_name, _event_queue
+    turn = 0
+    last_action = {}
+    _allowed_targets = set()
+    _channel_map = {}
+    _current_talk = ""
+    _effective_id = AGENT_ID
+    _effective_name = AGENT_NAME
+    _event_queue = []
+    agent.inbox.clear()
+    if hasattr(agent, '_last_injected_id'):
+        del agent._last_injected_id
+    return {"status": "reset"}
 
 
 # ═══════════════════════════════════════════════

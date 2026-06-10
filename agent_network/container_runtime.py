@@ -161,6 +161,13 @@ class ContainerRuntime:
         )
         ca._extra_meta = extra_meta or {}
         self.agents[agent_id] = ca
+
+        # 重置容器状态（清除上一轮仿真的残留数据）
+        try:
+            requests.post(f"{url}/reset", timeout=3)
+        except Exception:
+            pass
+
         return ca
 
     def run_round(self, context: Dict = None) -> Dict:
@@ -217,6 +224,28 @@ class ContainerRuntime:
     def reset(self):
         self.stop_all()
         self._used_containers.clear()
+        # 清理上一轮仿真动态创建的残留容器（避免复用旧镜像）
+        self._cleanup_orphan_containers()
+
+    def _cleanup_orphan_containers(self):
+        """移除所有动态创建的 Agent 容器（前缀匹配但不在池容器列表中的）"""
+        if not self._docker_client:
+            return
+        pool_names = set()
+        for cfg in self.BACKEND_CONFIG.values():
+            for i in range(1, 10):  # 池容器: ag-b1~4, ag-c1~3, ag-o1~3
+                pool_names.add(f"{cfg['prefix']}{i}")
+        try:
+            for c in self._docker_client.containers.list(all=True):
+                for prefix in [cfg["prefix"] for cfg in self.BACKEND_CONFIG.values()]:
+                    if c.name.startswith(prefix) and c.name not in pool_names:
+                        try:
+                            c.remove(force=True)
+                        except Exception:
+                            pass
+                        break
+        except Exception:
+            pass
 
 
 _runtime: Optional[ContainerRuntime] = None

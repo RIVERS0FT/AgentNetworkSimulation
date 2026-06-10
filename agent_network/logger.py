@@ -246,9 +246,9 @@ class SimulationLogger:
     def agent_decide(self, agent_id: str, prompt_snippet: str, decision: Dict = None):
         """记录 Agent 决策"""
         self._log(LogLevel.INFO, "agent_decide",
-                  f"[{agent_id}] 决策: {prompt_snippet[:100]}",
+                  f"[{agent_id}] 决策: {prompt_snippet}",
                   agent_id=agent_id,
-                  details={"prompt_snippet": prompt_snippet[:300], "decision": decision or {}})
+                  details={"prompt_snippet": prompt_snippet, "decision": decision or {}})
 
     def agent_message(self, from_id: str, to: str, content: str, reasoning: str = "",
                       latency_ms: float = 0, status: str = "success",
@@ -263,12 +263,12 @@ class SimulationLogger:
                       talk: str = ""):
         """记录 Agent 间通信报文（含完整网络层元数据）"""
         self._log(LogLevel.INFO, "agent_message",
-                  f"{from_id} → {to}: {content[:100]}",
+                  f"{from_id} → {to}: {content}",
                   agent_id=from_id,
                   details={
                       "from": from_id, "to": to,
-                      "content": content[:500],
-                      "reasoning": reasoning[:200],
+                      "content": content,
+                      "reasoning": reasoning,
                       "latency_ms": round(latency_ms, 1),
                       "status": status,
                       # ── 网络层 ──

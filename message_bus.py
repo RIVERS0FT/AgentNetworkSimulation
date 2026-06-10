@@ -12,6 +12,8 @@ import os
 import sys
 import json
 import time
+import socket
+from urllib.parse import urlparse
 from typing import Dict, List, Any
 from datetime import datetime
 
@@ -89,6 +91,17 @@ async def unregister(agent_id: str):
     return {"unregistered": agent_id}
 
 
+def _resolve_ip(url: str) -> str:
+    """从 URL 解析 hostname 为 IP 地址"""
+    if not url or not url.startswith("http"):
+        return url or "0.0.0.0"
+    try:
+        host = urlparse(url).hostname
+        return socket.gethostbyname(host) if host else url
+    except Exception:
+        return url
+
+
 @app.post("/relay")
 async def relay(msg: RelayMessage, request: Request):
     """转发消息到目标 Agent — 双向记录报文"""
@@ -99,33 +112,15 @@ async def relay(msg: RelayMessage, request: Request):
     stats["by_source"][msg.from_id] = stats["by_source"].get(msg.from_id, 0) + 1
     stats["by_target"][msg.to] = stats["by_target"].get(msg.to, 0) + 1
 
-    # ── 入站报文: Agent → Bus ──
+    # ── 入站报文: Agent → 交换矩阵（BUS 透明，用 0.0.0.0:0 表示）──
+    payload_bytes = len(msg.content.encode('utf-8')) + len(msg.reasoning.encode('utf-8'))
     PacketRecorder.record(
         direction="inbound",
-        src_ip=client_ip, src_port=0, dst_ip="bus", dst_port=9000,
+        src_ip=client_ip, src_port=0, dst_ip="0.0.0.0", dst_port=0,
         protocol="TCP/HTTP", method="POST", path="/relay",
         agent_from=msg.from_id, agent_to=msg.to,
         content=msg.content, reasoning=msg.reasoning,
         message_type="relay", tcp_flags="PSH,ACK",
-    )
-
-    # ── 记录所有通信报文（日志） ──
-    payload_bytes = len(msg.content.encode('utf-8')) + len(msg.reasoning.encode('utf-8'))
-    logger.agent_message(
-        from_id=msg.from_id, to=msg.to,
-        content=msg.content, reasoning=msg.reasoning,
-        latency_ms=(time.time() - relay_start) * 1000,
-        status="relaying",
-        # 网络层字段
-        src_ip=client_ip, src_port=0,
-        dst_ip="bus", dst_port=9000,
-        protocol="TCP/HTTP",
-        packet_len=HEADER_OVERHEAD + payload_bytes,
-        header_len=HEADER_OVERHEAD, payload_len=payload_bytes,
-        tcp_flags="PSH,ACK",
-        channel_id=msg.channel_id,
-        message_type="relay",
-        talk=msg.talk,
     )
 
     # ── 日志收集器转发 ──
@@ -135,8 +130,8 @@ async def relay(msg: RelayMessage, request: Request):
                 "level": "INFO", "event": "message_relayed",
                 "agent_id": msg.from_id,
                 "index": "logs-agent",
-                "message": msg.content[:500],
-                "details": {"to": msg.to, "reasoning": msg.reasoning[:200]},
+                "message": msg.content,
+                "details": {"to": msg.to, "reasoning": msg.reasoning},
             }, timeout=1)
         except Exception:
             pass
@@ -171,14 +166,14 @@ async def relay(msg: RelayMessage, request: Request):
             try:
                 resp = requests.post(f"{url}/message", json={
                     "from_id": msg.from_id, "from_name": msg.from_name,
-                    "content": msg.content,
+                    "content": msg.content, "type": "broadcast",
                 }, timeout=5)
                 results[aid] = resp.status_code
             except Exception as e:
                 results[aid] = str(e)
         for aid, status_code in results.items():
             PacketRecorder.record(
-                direction="outbound", src_ip="bus", dst_ip=f"agent:{aid}",
+                direction="outbound", src_ip="0.0.0.0", src_port=0, dst_ip=f"agent:{aid}",
                 protocol="HTTP/1.1", method="POST", path="/message",
                 status_code=status_code if isinstance(status_code, int) else 0,
                 agent_from=msg.from_id, agent_to=aid,
@@ -187,10 +182,10 @@ async def relay(msg: RelayMessage, request: Request):
         logger.agent_message(from_id=msg.from_id, to="broadcast",
                              content=msg.content, reasoning=msg.reasoning,
                              status=f"broadcast({len(results)})", latency_ms=(time.time()-relay_start)*1000,
-                             src_ip="bus", src_port=9000,
-                             dst_ip="broadcast", dst_port=0,
+                             src_ip=client_ip, src_port=0,
+                             dst_ip="0.0.0.0", dst_port=0,
                              protocol="HTTP/1.1",
-                             packet_len=0, header_len=HEADER_OVERHEAD, payload_len=0,
+                             packet_len=payload_bytes, header_len=HEADER_OVERHEAD, payload_len=payload_bytes,
                              tcp_flags="PSH,ACK",
                              channel_id=msg.channel_id,
                              message_type="broadcast",
@@ -215,13 +210,13 @@ async def relay(msg: RelayMessage, request: Request):
     try:
         resp = requests.post(f"{target_url}/message", json={
             "from_id": msg.from_id, "from_name": msg.from_name,
-            "content": msg.content,
+            "content": msg.content, "type": "direct",
         }, timeout=5)
         latency = (time.time() - relay_start) * 1000
-        # ── 出站报文: Bus → 目标 Agent ──
+        # ── 出站报文: 交换矩阵 → 目标 Agent（透明转发，src=0.0.0.0:0）──
         PacketRecorder.record(
             direction="outbound",
-            src_ip="bus", src_port=9000, dst_ip=target_url, dst_port=0,
+            src_ip="0.0.0.0", src_port=0, dst_ip=_resolve_ip(target_url), dst_port=0,
             protocol="TCP/HTTP", method="POST", path="/message",
             status_code=resp.status_code, latency_ms=latency,
             agent_from=msg.from_id, agent_to=msg.to,
@@ -231,9 +226,8 @@ async def relay(msg: RelayMessage, request: Request):
         logger.agent_message(from_id=msg.from_id, to=msg.to,
                              content=msg.content, reasoning=msg.reasoning,
                              latency_ms=latency, status=f"delivered({resp.status_code})",
-                             # 网络层字段
-                             src_ip="bus", src_port=9000,
-                             dst_ip=target_url, dst_port=0,
+                             src_ip=client_ip, src_port=0,
+                             dst_ip=_resolve_ip(target_url), dst_port=0,
                              protocol="TCP/HTTP",
                              packet_len=HEADER_OVERHEAD + payload_bytes,
                              header_len=HEADER_OVERHEAD, payload_len=payload_bytes,
@@ -245,7 +239,7 @@ async def relay(msg: RelayMessage, request: Request):
     except Exception as e:
         latency = (time.time() - relay_start) * 1000
         PacketRecorder.record(
-            direction="outbound", src_ip="bus", src_port=9000, dst_ip=target_url, dst_port=0,
+            direction="outbound", src_ip="0.0.0.0", src_port=0, dst_ip=_resolve_ip(target_url), dst_port=0,
             protocol="TCP/HTTP", method="POST", path="/message",
             status_code=0, latency_ms=latency,
             agent_from=msg.from_id, agent_to=msg.to,

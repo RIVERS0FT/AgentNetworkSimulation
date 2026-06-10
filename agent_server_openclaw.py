@@ -155,18 +155,17 @@ def _build_system_prompt(context: dict = None) -> str:
     role = ctx.get("agent_role", AGENT_ROLE)
     core_goal = ctx.get("core_goal") or AGENT_CORE_GOAL
     hidden_secret = ctx.get("hidden_secret") or AGENT_HIDDEN_SECRET
-    action_space = ctx.get("action_space") or AGENT_ACTION_SPACE
     skills_list = ctx.get("skills_list", [])
     background_rules = ctx.get("background_rules") or AGENT_SYSTEM_PROMPT
 
     system = background_rules or "你是一个仿真场景中的角色，根据你的身份和目标做出合理决策。"
-    actions_text = ", ".join(action_space) if action_space else "send_message, broadcast, analyze, plan, wait"
 
     skills_text = ""
     if skills_list:
-        skills_text = "\n- 可用技能:\n" + "\n".join(
-            f"    {s['name']}: {s.get('desc','')}" for s in skills_list
-        )
+        skills_text = "\n## 可用技能\n使用 execute_skill 工具调用：\n" + "\n".join(
+            f"  - execute_skill: {s.get('skill_name', s.get('name', '?'))} — {s.get('description', s.get('desc', ''))}"
+            for s in skills_list
+        ) + "\n"
 
     return f"""{system}
 
@@ -175,39 +174,58 @@ def _build_system_prompt(context: dict = None) -> str:
 - 角色: {role}
 - 核心目标: {core_goal or '完成场景任务'}
 - 隐藏秘密: {hidden_secret or '无'}
-- 可用行动: {actions_text}{skills_text}
-
+{skills_text}
 行为准则：
 - 必须立即采取具体行动，绝对不能wait！
-- 始终围绕核心目标和秘密行动
-- 用 send_message 主动与相关 Agent 通信（target 必须用 agent_id）
-- 合理使用 analyze_situation 和 plan_strategy
+- 有直接消息必须回复！优先 send_message
+- send_message 的 target 必须用 agent_id（如 ceo、cto）
+- 有技能时积极使用 execute_skill
 - 用中文回复"""
 
 
 def _build_user_message(inbox_msgs: list, context: dict = None) -> str:
     context = context or {}
     known = context.get("agents", context.get("known_agents", []))
-    known_list = "\n".join(
-        f"  - {a.get('name', a.get('agent_id', '?'))} (agent_id={a.get('id', a.get('agent_id', '?'))})"
-        for a in known) if known else "  none"
+    known_lines = []
+    for a in known:
+        aid = a.get('id', a.get('agent_id', '?'))
+        nm = a.get('name', aid)
+        known_lines.append(f"  - agent_id={aid}  名称={nm}")
+    known_list = "\n".join(known_lines) if known_lines else "  none"
 
-    inbox_text = "（空）"
-    if inbox_msgs:
-        inbox_text = "\n".join(
-            f"  [{msg.get('from', '?')}]: {msg.get('content', '')}"
-            for msg in inbox_msgs[-5:]
-        )
+    # ── 收件箱分类 ──
+    direct_msgs, broadcast_msgs, system_msgs = [], [], []
+    for msg in inbox_msgs[-15:]:
+        mtype = msg.get('type', 'direct')
+        txt = f"  [{msg.get('from', '?')}]: {msg.get('content', '')}"
+        if mtype == 'system':
+            system_msgs.append(txt)
+        elif mtype == 'broadcast':
+            broadcast_msgs.append(txt)
+        else:
+            direct_msgs.append(txt)
+
+    inbox_text = ""
+    pending = len(direct_msgs)
+    if direct_msgs:
+        inbox_text += "## 📬 直接发给你的消息 — 必须回复！\n" + "\n".join(direct_msgs[-10:]) + "\n\n"
+    if broadcast_msgs:
+        inbox_text += "## 📢 广播消息\n" + "\n".join(broadcast_msgs[-5:]) + "\n\n"
+    if system_msgs:
+        inbox_text += "## ⚡ 系统通知\n" + "\n".join(system_msgs[-3:]) + "\n\n"
+    if not inbox_text:
+        inbox_text = "（收件箱为空 — 主动发起对话或分析局势）\n"
+
+    pending_warning = f"\n⚠️ 你有 {pending} 条未回复的直接消息！本轮必须回复！" if pending > 0 else ""
 
     return f"""## 当前回合: {turn}
 
-## 已知其它 Agent:
+## 已知其它 Agent（发消息时 target 必须用 agent_id）
 {known_list}
 
-## 收件箱:
-{inbox_text}
+{inbox_text}{pending_warning}
 
-请做出本轮决策。必要时使用工具（如 send_message 与其他 Agent 通信）。"""
+请做出本轮决策。如有直接消息必须回复，有技能时积极使用 execute_skill。"""
 
 
 def _call_anthropic_with_tools(system_prompt: str, user_message: str) -> dict:
@@ -272,7 +290,7 @@ def _call_anthropic_with_tools(system_prompt: str, user_message: str) -> dict:
     # Fallback: extract text
     text_blocks = [b for b in response.content if b.type == "text"]
     text = text_blocks[0].text if text_blocks else ""
-    return {"action": "wait", "target": "", "content": "", "reasoning": text[:200]}
+    return {"action": "wait", "target": "", "content": "", "reasoning": text}
 
 
 # ── HTTP API ──
@@ -339,9 +357,9 @@ async def decide(req: DecideRequest = None):
         last_action = action
         act_content = action.get('content', '')
         act_reasoning = action.get('reasoning', '')
-        _log_agent("decide", (act_content or act_reasoning)[:100],
+        _log_agent("decide", (act_content or act_reasoning),
                    action_type=action.get('action'), target=action.get('target', ''),
-                   content=act_content[:200], reasoning=act_reasoning[:200], status="decided")
+                   content=act_content, reasoning=act_reasoning, status="decided")
     except Exception as e:
         action = {"reasoning": str(e), "action": "wait", "target": "", "content": ""}
         last_action = action
@@ -380,9 +398,9 @@ async def act():
                 else:
                     ok = await asyncio.to_thread(comm.broadcast, _current_effective_id, _current_effective_name, action_content, _allowed_targets)
                 result["relayed"] = ok
-                _log_agent("act", action_content[:100] or action_type,
+                _log_agent("act", action_content or action_type,
                            action_type=action_type, target=action_target,
-                           content=action_content[:300], status="success" if ok else "failed")
+                           content=action_content, status="success" if ok else "failed")
             except Exception as e:
                 result["relay_error"] = str(e)
                 _log_agent("act", f"发送异常: {e}",
@@ -393,7 +411,7 @@ async def act():
             requests.post(f"{LOG_COLLECTOR_URL}/api/logs/ingest", json={
                 "level": "INFO", "event": "agent_act",
                 "agent_id": _current_effective_id, "agent_name": _current_effective_name,
-                "index": "logs-agent", "message": f"Act: {str(last_action)[:200]}",
+                "index": "logs-agent", "message": f"Act: {str(last_action)}",
                 "details": result,
             }, timeout=1)
         except Exception:
@@ -411,6 +429,20 @@ async def get_inbox():
 async def clear():
     inbox.clear()
     return {"cleared": True}
+
+
+@app.post("/reset")
+async def reset_state():
+    """重置容器状态 — 容器池复用时调用，清除跨仿真残留"""
+    global turn, last_action, inbox, _allowed_targets
+    global _current_effective_id, _current_effective_name
+    turn = 0
+    last_action = {}
+    inbox = []
+    _allowed_targets = set()
+    _current_effective_id = AGENT_ID
+    _current_effective_name = AGENT_NAME
+    return {"status": "reset"}
 
 
 if __name__ == "__main__":

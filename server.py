@@ -613,6 +613,9 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
             _comm_matrix.setdefault(src, set()).add(dst)
             _comm_matrix.setdefault(dst, set()).add(src)
 
+    # ── 清空上一轮仿真日志 ──
+    _agent_logs.clear()
+
     # ── 初始化 session 日志文件夹（server + message_bus 同步）──
     logger.start_session(scene_def.scene_name)
     try:
@@ -636,7 +639,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
 
     # ── 运行仿真轮次: 广播模式 ──
     workflow_steps = scene_def.workflow if scene_def.workflow else []
-    MAX_ROUNDS = max(2, min(5, len(created_cas) // 2))
+    MAX_ROUNDS = 20
     results_log = []
 
     for round_num in range(MAX_ROUNDS):

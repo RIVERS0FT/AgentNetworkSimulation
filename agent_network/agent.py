@@ -27,7 +27,7 @@ class Message:
 
     def __post_init__(self):
         if self.message_id == "":
-            self.message_id = str(uuid.uuid4())[:8]
+            self.message_id = str(uuid.uuid4())
         if self.payload is None:
             self.payload = {}
 
@@ -52,7 +52,7 @@ class Agent:
         tags: List[str] = None,
         capability_scores: Dict[str, float] = None,
     ):
-        self.agent_id = agent_id or f"agent-{str(uuid.uuid4())[:8]}"
+        self.agent_id = agent_id or f"agent-{str(uuid.uuid4())}"
         self.role = role
         self.name = name or self.agent_id
         self.skills = skills or []
@@ -126,12 +126,28 @@ class Agent:
         """从事件总线接收消息"""
         self.task_queue.append(message)
         # 也加入收件箱（供 LLM brain 使用）
+        self._add_to_inbox(
+            from_agent=getattr(message, 'source', 'unknown'),
+            content=message.payload.get("action", message.payload.get("result", "")),
+            msg_type=message.type,
+        )
+
+    def _add_to_inbox(self, from_agent: str, content: str, msg_type: str = "direct"):
+        """写入收件箱：去重 + 限长"""
+        # 去重：相同来源相同内容前缀（前50字）视为重复
+        prefix = content if content else ""
+        for existing in self.inbox[-10:]:
+            if existing.get("from") == from_agent and existing.get("content", "") == prefix:
+                existing["content"] = content  # 更新为最新内容
+                existing["type"] = msg_type
+                return
         self.inbox.append({
-            "from": getattr(message, 'source', 'unknown'),
-            "content": message.payload.get("action", message.payload.get("result", "")),
-            "type": message.type,
+            "from": from_agent,
+            "content": content,
+            "type": msg_type,
         })
-        if len(self.inbox) > 50:
+        # 超过100条时清理最旧的
+        while len(self.inbox) > 100:
             self.inbox.pop(0)
 
     # ── LLM Brain 集成 ───────────────────────────
@@ -229,11 +245,11 @@ class Agent:
                 results.append({"status": "completed", "action": action.type, "result": result})
 
                 # 将结果加入自己的收件箱（自我反馈）
-                self.inbox.append({
-                    "from": "self",
-                    "content": f"[{action.type}结果] {json.dumps(result, ensure_ascii=False)[:200]}",
-                    "type": "self_feedback",
-                })
+                self._add_to_inbox(
+                    from_agent="self",
+                    content=f"[{action.type}结果] {json.dumps(result, ensure_ascii=False)}",
+                    msg_type="self_feedback",
+                )
             except Exception as e:
                 results.append({"status": "error", "action": action.type, "error": str(e)})
             self.status = "idle"

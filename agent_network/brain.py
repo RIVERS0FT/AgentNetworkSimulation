@@ -100,7 +100,7 @@ class Brain:
         action = self._parse_response(response_text)
 
         # 存入记忆
-        self.memory.append(f"[Round {self.turn}] Decided: {action.type} → {action.content[:80]}")
+        self.memory.append(f"[Round {self.turn}] Decided: {action.type} → {action.content}")
         if len(self.memory) > 20:
             self.memory.pop(0)
 
@@ -114,22 +114,66 @@ class Brain:
 
         # 已知的其他 Agent
         known = context.get("known_agents", [])
-        known_list = "\n".join(f"  - {a.get('name', a.get('agent_id', '?'))} ({a.get('role', '?')})"
-                              for a in known) if known else "  暂无"
+        known_lines = []
+        for a in known:
+            aid = a.get('agent_id', '?')
+            nm = a.get('name', aid)
+            rl = a.get('role', '?')
+            known_lines.append(f"  - agent_id={aid}  名称={nm}  角色={rl}")
+        known_list = "\n".join(known_lines) if known_lines else "  暂无"
 
-        # 收件箱
-        inbox_text = "（空）"
-        if inbox:
-            inbox_text = "\n".join(
-                f"  [{msg.get('from', '?')}]: {msg.get('content', '')}"
-                for msg in inbox[-5:]  # 最近5条
-            )
+        # ── 收件箱分类 ──
+        direct_msgs = []
+        broadcast_msgs = []
+        system_msgs = []
+        for msg in inbox[-15:]:  # 最近15条
+            mtype = msg.get('type', 'direct')
+            if mtype == 'system':
+                system_msgs.append(f"  ⚡ [系统]: {msg.get('content', '')}")
+            elif mtype == 'broadcast':
+                broadcast_msgs.append(f"  [{msg.get('from', '?')}]: {msg.get('content', '')}")
+            else:
+                direct_msgs.append(f"  🔴 [{msg.get('from', '?')}]: {msg.get('content', '')}")
+
+        direct_count = len(direct_msgs)
+        pending_count = direct_count  # 简化：所有未回复的直接消息
+
+        inbox_text = ""
+        if direct_msgs:
+            inbox_text += "## 📬 直接发给你的消息 — 必须回复！\n"
+            inbox_text += "\n".join(direct_msgs[-10:]) + "\n\n"
+        if broadcast_msgs:
+            inbox_text += "## 📢 广播消息\n"
+            inbox_text += "\n".join(broadcast_msgs[-5:]) + "\n\n"
+        if system_msgs:
+            inbox_text += "## ⚡ 系统通知\n"
+            inbox_text += "\n".join(system_msgs[-3:]) + "\n\n"
+        if not inbox_text:
+            inbox_text = "（收件箱为空 — 主动发起对话或分析局势）\n"
 
         # 记忆
         memory_text = "\n".join(f"  {m}" for m in self.memory[-6:]) if self.memory else "  （开始）"
 
         # 目标
         goals_text = "\n".join(f"  {i+1}. {g}" for i, g in enumerate(self.goals))
+
+        # 可用技能
+        skills = context.get("skills_list", [])
+        skills_text = ""
+        if skills:
+            skills_lines = []
+            for s in skills:
+                sn = s.get('name', s.get('skill_name', '?'))
+                sd = s.get('desc', s.get('description', ''))
+                params = s.get('params', s.get('parameters', []))
+                params_str = ", ".join(params) if params else ""
+                skills_lines.append(f"  - execute_skill: {sn}({params_str}) — {sd}")
+            skills_text = "\n".join(skills_lines)
+
+        # 待回复警告
+        pending_warning = ""
+        if pending_count > 0:
+            pending_warning = f"\n⚠️ 你有 {pending_count} 条未回复的直接消息！本轮必须选择至少一条回复，否则将被视为失职。"
 
         prompt = f"""{system}
 
@@ -141,14 +185,18 @@ class Brain:
 ## 你的目标
 {goals_text}
 
-## 已知的其它 Agent
+## 已知的其它 Agent（发消息时 target 必须用 agent_id）
 {known_list}
+"""
+        if skills_text:
+            prompt += f"""## 可用技能（使用 execute_skill 动作调用）
+{skills_text}
 
-## 最近的记忆
+"""
+        prompt += f"""## 最近的记忆
 {memory_text}
 
-## 收件箱（最新消息）
-{inbox_text}
+{inbox_text}{pending_warning}
 
 ## 指令
 基于以上信息，决定你这一轮要做什么。用以下 JSON 格式回复（只输出 JSON，不要其他内容）:
@@ -156,19 +204,20 @@ class Brain:
 ```json
 {{
   "reasoning": "你的推理过程（一句话）",
-  "action": "send_message|broadcast|search|analyze|plan|wait",
-  "target": "目标 Agent 名字（send_message 时需要）",
-  "content": "消息内容或动作参数"
+  "action": "send_message|broadcast|execute_skill|analyze|plan|wait",
+  "target": "目标 Agent 的 agent_id（send_message 时必填）或技能名（execute_skill 时填技能名）",
+  "content": "消息内容、技能参数或动作描述"
 }}
 ```
 
 行动指南:
-- 这是第{self.turn}轮，你必须立即采取具体行动，绝对不能wait！
-- 优先向其他Agent发送消息：合作、谈判、施压、询问信息
-- 如果收件箱有发给你的消息，必须回复
-- 如有技能（skills），积极使用它们
-- 用中文回复，内容要具体，不要泛泛而谈"""
-# action字段可选值: send_message(发送消息给特定Agent), broadcast(广播给所有人), execute_skill(执行技能), search(搜索信息), analyze(分析局势), plan(制定计划)"""
+- 这是第{self.turn}轮，必须立即行动！优先 send_message 回复收件箱中的直接消息
+- target 必须填 agent_id（如 ceo、cto），不能填中文名
+- 消息内容要具体、有信息量，至少50字"""
+        if skills_text:
+            prompt += "\n- 你有可用技能！合理使用 execute_skill 来完成任务（如 allocate_budget、audit_expense 等）"
+        prompt += "\n- 用中文回复"""
+        return prompt
         return prompt
 
     def _call_llm(self, prompt: str, api_key: str) -> str:
@@ -190,7 +239,7 @@ class Brain:
         model = model or DEFAULT_LLM_MODEL
         # Split system and user
         parts = prompt.split("## 当前状态")
-        system = parts[0].strip() if len(parts) > 1 else prompt[:500]
+        system = parts[0].strip() if len(parts) > 1 else prompt
         user = prompt if len(parts) <= 1 else "## 当前状态" + parts[1]
 
         message = client.messages.create(
@@ -238,13 +287,13 @@ class Brain:
         # 回退：从文本中猜测意图
         text_lower = text.lower()
         if "发送" in text or "send" in text_lower:
-            return Action(type="send_message", content=text[:100], reasoning="从文本提取")
+            return Action(type="send_message", content=text, reasoning="从文本提取")
         if "搜索" in text or "search" in text_lower:
             return Action(type="search", content="目标区域", reasoning="从文本提取")
         if "等待" in text or "wait" in text_lower:
             return Action(type="wait", reasoning="从文本提取")
 
-        return Action(type="wait", content="", reasoning=f"无法解析: {text[:50]}")
+        return Action(type="wait", content="", reasoning=f"无法解析: {text}")
 
 def create_brain(role: str, name: str, goals: List[str] = None,
                   system_prompt: str = "") -> Brain:
