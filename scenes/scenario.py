@@ -6,6 +6,7 @@
 
 import os
 import json
+import shutil
 
 # =====================================================================
 # 1. 升级版系统核心提示词 (注入给大模型的 SYSTEM 角色)
@@ -270,18 +271,73 @@ def generate_and_dispatch_scenarios(user_idea: str, output_directory: str) -> No
         f4.write(skills_code)
     print(f"   [落盘成功] -> {file4_path}")
 
+    # =====================================================================
+    # 5. 生成合并版目录 {output_dir}_merged/
+    # =====================================================================
+    merged_dir = output_directory.rstrip("/\\") + "_merged"
+    os.makedirs(merged_dir, exist_ok=True)
+
+    # 5a. 复制 skills.py
+    import shutil
+    merged_skills = os.path.join(merged_dir, "skills.py")
+    shutil.copyfile(file4_path, merged_skills)
+    print(f"\n>> 生成合并版: {merged_dir}")
+    print(f"   [落盘成功] -> {merged_skills}")
+
+    # 5b. 构建合并 JSON
+    meta_and_roles = full_blueprint["meta_and_roles"]
+    containers = full_blueprint["instances_and_skills"]["container_instances"]
+    topo = full_blueprint["network_topology"]
+    roles = meta_and_roles["roles"]
+
+    # 从 edges 构建双向 peers
+    peer_map = {rid: set() for rid in roles}
+    for subnet in topo.get("sub_networks", []):
+        for edge in subnet.get("edges", []):
+            src, dst = edge["source"], edge["target"]
+            if src in roles:
+                peer_map[src].add(dst)
+            if dst in roles:
+                peer_map[dst].add(src)
+
+    # 合并 peers + skills 到每个 role
+    merged_roles = {}
+    for rid, role_data in roles.items():
+        merged_roles[rid] = dict(role_data)
+        merged_roles[rid]["peers"] = sorted(peer_map[rid])
+
+        # 兼容 skill_bindings（旧格式）和 skills（新格式）
+        ci = containers.get(rid, {})
+        if "skills" in ci and isinstance(ci["skills"], list):
+            s = ci["skills"]
+            merged_roles[rid]["skills"] = [x["skill_name"] if isinstance(x, dict) else x for x in s]
+        else:
+            bindings = ci.get("skill_bindings", [])
+            merged_roles[rid]["skills"] = [s["skill_name"] for s in bindings]
+
+    # 目录名作为 merged 文件名
+    merged_name = os.path.basename(output_directory.rstrip("/\\")) + "_merged.json"
+    merged_json = {
+        "scenario_metadata": meta_and_roles["scenario_metadata"],
+        "global_topology_type": topo["global_topology_type"],
+        "roles": merged_roles,
+    }
+    merged_json_path = os.path.join(merged_dir, merged_name)
+    with open(merged_json_path, "w", encoding="utf-8") as f:
+        json.dump(merged_json, f, ensure_ascii=False, indent=2)
+    print(f"   [落盘成功] -> {merged_json_path}")
+
     # 快速结构验证打印
     print("\n======== 剧本包自动化编译完成，下游就绪 ========")
-    print(f"1. 声明节点总数: {len(full_blueprint['meta_and_roles']['roles'])}")
-    print(f"2. 配置容器总数: {len(full_blueprint['instances_and_skills']['container_instances'])}")
-    print(f"3. 宏观拓扑结构: {full_blueprint['network_topology']['global_topology_type']}")
-    print(f"4. 包含子网络数: {len(full_blueprint['network_topology']['sub_networks'])}")
-    # 统计技能总数
-    total_skills = sum(
-        len(inst.get("skill_bindings", []))
-        for inst in full_blueprint["instances_and_skills"]["container_instances"].values()
-    )
+    total_roles = len(roles)
+    total_edges = sum(len(peer_map[rid]) for rid in roles) // 2  # 双向去重
+    total_skills = sum(len(merged_roles[rid]["skills"]) for rid in roles)
+    print(f"1. 声明节点总数: {total_roles}")
+    print(f"2. 拓扑连线总数: {total_edges}")
+    print(f"3. 宏观拓扑结构: {topo['global_topology_type']}")
+    print(f"4. 包含子网络数: {len(topo['sub_networks'])}")
     print(f"5. 技能实现总数: {total_skills} (已写入 skills.py)")
+    print(f"6. 合并版: {merged_dir}/")
 
 # =====================================================================
 # 4. 本地独立测试入口

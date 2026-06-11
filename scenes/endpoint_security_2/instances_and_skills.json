@@ -1,0 +1,59 @@
+{
+  "container_instances": {
+    "SEC_OP_CENTER": {
+      "skills": [
+        "incident_response",
+        "budget_management",
+        "threat_intel"
+      ]
+    },
+    "SERES_MFG": {
+      "skills": [
+        "production_optimization",
+        "vendor_evaluation"
+      ]
+    },
+    "CSG_ICS": {
+      "skills": [
+        "vulnerability_assessment",
+        "stability_analysis",
+        "policy_negotiation"
+      ]
+    },
+    "ICBC_DATA": {
+      "skills": [
+        "encryption_audit",
+        "compliance_check",
+        "budget_planning"
+      ]
+    },
+    "XDU_LAB": {
+      "skills": [
+        "ml_model_training",
+        "traffic_analysis",
+        "prototype_testing"
+      ]
+    },
+    "FW_VENDOR": {
+      "skills": [
+        "product_development",
+        "market_analysis",
+        "competitive_intel"
+      ]
+    },
+    "ETA_VENDOR": {
+      "skills": [
+        "sales_negotiation",
+        "deployment_support",
+        "revenue_forecast"
+      ]
+    },
+    "REGULATOR": {
+      "skills": [
+        "standard_setting",
+        "penalty_assessment",
+        "coverage_monitoring"
+      ]
+    }
+  }
+}

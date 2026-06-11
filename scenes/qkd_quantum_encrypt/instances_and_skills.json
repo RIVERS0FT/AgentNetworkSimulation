@@ -1,0 +1,67 @@
+{
+  "container_instances": {
+    "NANET_COM": {
+      "skills": [
+        "key_request",
+        "cost_analysis",
+        "reliability_check"
+      ]
+    },
+    "SGCC_ITC": {
+      "skills": [
+        "network_plan",
+        "cost_optimization",
+        "coverage_analysis"
+      ]
+    },
+    "CRC_ITC": {
+      "skills": [
+        "latency_monitor",
+        "fault_detection",
+        "negotiate_lease"
+      ]
+    },
+    "XIONGAN_DCA": {
+      "skills": [
+        "node_deploy",
+        "budget_control",
+        "success_rate_eval"
+      ]
+    },
+    "QKD_VENDOR": {
+      "skills": [
+        "quote_price",
+        "market_share_calc",
+        "after_sale_cost"
+      ]
+    },
+    "QKD_ACADEMY": {
+      "skills": [
+        "protocol_optimize",
+        "security_assessment",
+        "efficiency_boost"
+      ]
+    },
+    "TPN_SERVICE": {
+      "skills": [
+        "lease_line",
+        "utilization_report",
+        "customer_survey"
+      ]
+    },
+    "REGULATOR": {
+      "skills": [
+        "compliance_audit",
+        "standard_enforce",
+        "penalty_assess"
+      ]
+    },
+    "ATTACKER": {
+      "skills": [
+        "eavesdrop",
+        "interfere",
+        "theft_attempt"
+      ]
+    }
+  }
+}

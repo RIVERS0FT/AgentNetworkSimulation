@@ -1,0 +1,109 @@
+{
+  "global_topology_type": "HYBRID_MESH",
+  "sub_networks": [
+    {
+      "sub_id": "internal_collab",
+      "topology_type": "TREE",
+      "description": "工厂内部协作树：运维中心、制造部、高校实验室",
+      "nodes": [
+        "SEC_OP_CENTER",
+        "SERES_MFG",
+        "XDU_LAB"
+      ],
+      "edges": [
+        {
+          "source": "SEC_OP_CENTER",
+          "target": "SERES_MFG",
+          "paradigm": "COLLABORATION",
+          "channel_id": "vlan_plant_101"
+        },
+        {
+          "source": "SEC_OP_CENTER",
+          "target": "XDU_LAB",
+          "paradigm": "COLLABORATION",
+          "channel_id": "vlan_research_202"
+        }
+      ]
+    },
+    {
+      "sub_id": "external_negotiation",
+      "topology_type": "MESH",
+      "description": "外部多方谈判网：电网、银行、监管、厂商",
+      "nodes": [
+        "CSG_ICS",
+        "ICBC_DATA",
+        "REGULATOR",
+        "FW_VENDOR",
+        "ETA_VENDOR"
+      ],
+      "edges": [
+        {
+          "source": "CSG_ICS",
+          "target": "ICBC_DATA",
+          "paradigm": "NEGOTIATION",
+          "channel_id": "vpn_gov_bank_301"
+        },
+        {
+          "source": "CSG_ICS",
+          "target": "REGULATOR",
+          "paradigm": "NEGOTIATION",
+          "channel_id": "vpn_gov_reg_302"
+        },
+        {
+          "source": "ICBC_DATA",
+          "target": "REGULATOR",
+          "paradigm": "NEGOTIATION",
+          "channel_id": "vpn_bank_reg_303"
+        },
+        {
+          "source": "FW_VENDOR",
+          "target": "ETA_VENDOR",
+          "paradigm": "GAME",
+          "channel_id": "vlan_market_401"
+        },
+        {
+          "source": "FW_VENDOR",
+          "target": "REGULATOR",
+          "paradigm": "NEGOTIATION",
+          "channel_id": "vpn_vendor_reg_402"
+        },
+        {
+          "source": "ETA_VENDOR",
+          "target": "REGULATOR",
+          "paradigm": "NEGOTIATION",
+          "channel_id": "vpn_vendor_reg_403"
+        }
+      ]
+    },
+    {
+      "sub_id": "zero_sum_game",
+      "topology_type": "RING",
+      "description": "零和博弈环：防火墙厂商与加密分析厂商争夺市场份额",
+      "nodes": [
+        "FW_VENDOR",
+        "ETA_VENDOR",
+        "SEC_OP_CENTER"
+      ],
+      "edges": [
+        {
+          "source": "FW_VENDOR",
+          "target": "ETA_VENDOR",
+          "paradigm": "GAME",
+          "channel_id": "vlan_market_501"
+        },
+        {
+          "source": "ETA_VENDOR",
+          "target": "SEC_OP_CENTER",
+          "paradigm": "GAME",
+          "channel_id": "vlan_market_502"
+        },
+        {
+          "source": "SEC_OP_CENTER",
+          "target": "FW_VENDOR",
+          "paradigm": "GAME",
+          "channel_id": "vlan_market_503"
+        }
+      ]
+    }
+  ]
+}

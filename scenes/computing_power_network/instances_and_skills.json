@@ -1,0 +1,71 @@
+{
+  "container_instances": {
+    "CMCC_COMPUTE": {
+      "skills": [
+        "negotiate_standard",
+        "price_setting",
+        "pool_resources"
+      ]
+    },
+    "CT_CLOUD": {
+      "skills": [
+        "negotiate_standard",
+        "alliance_strategy",
+        "cost_optimize"
+      ]
+    },
+    "CU_SMART": {
+      "skills": [
+        "collaborate_training",
+        "data_compliance",
+        "resource_sharing"
+      ]
+    },
+    "GX_BIGDATA": {
+      "skills": [
+        "audit_compliance",
+        "policy_guide",
+        "approve_pool"
+      ]
+    },
+    "PENGLAB": {
+      "skills": [
+        "request_compute",
+        "negotiate_price",
+        "evaluate_performance"
+      ]
+    },
+    "SCHEDULER": {
+      "skills": [
+        "match_resources",
+        "settle_transaction",
+        "monitor_network"
+      ]
+    },
+    "GPU_VENDOR": {
+      "skills": [
+        "supply_gpu",
+        "promote_standard",
+        "bid_contract"
+      ]
+    },
+    "CMCC_ENG": {
+      "skills": [
+        "develop_pool_tech",
+        "test_integration"
+      ]
+    },
+    "CT_ENG": {
+      "skills": [
+        "develop_api",
+        "test_integration"
+      ]
+    },
+    "CU_ENG": {
+      "skills": [
+        "develop_api",
+        "data_encrypt"
+      ]
+    }
+  }
+}

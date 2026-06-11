@@ -1,0 +1,73 @@
+{
+  "scenario_metadata": {
+    "title": "QKD量子加密分发网络仿真：跨行业安全与可靠性博弈",
+    "global_rules": "仿真模拟量子密钥在电力、交通、政务等跨行业网络中的分发与博弈。密钥生成、传输、中继过程受噪声、窃听风险、资源限制影响。每轮各角色可发起协作、谈判或博弈行为。密钥资源总量有限，需竞争分配。",
+    "max_rounds": 12,
+    "stalemate_rounds": 4
+  },
+  "roles": {
+    "NANET_COM": {
+      "name": "南网通信调度中心",
+      "model_backbone": "openclaw",
+      "identity": "南方电网下属通信调度中心，负责电网QKD网络运维与密钥调度",
+      "core_goal": "确保电网调度密钥供应满足99.99%可靠性，预算结余>20%",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION"
+    },
+    "SGCC_ITC": {
+      "name": "国网信通",
+      "model_backbone": "openclaw",
+      "identity": "国家电网信息通信分公司，负责国网QKD骨干网建设与运营",
+      "core_goal": "实现QKD骨干网覆盖率提升30%，密钥生成成本降低15%",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION"
+    },
+    "CRC_ITC": {
+      "name": "国铁信息中心",
+      "model_backbone": "claudecode",
+      "identity": "中国铁路信息中心，负责铁路沿线QKD中继节点部署",
+      "core_goal": "保障高铁沿线密钥中继延迟<10ms，设备故障率<1%",
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION"
+    },
+    "XIONGAN_DCA": {
+      "name": "雄安数字城市管理局",
+      "model_backbone": "openclaw",
+      "identity": "雄安新区数字城市管理部门，规划智慧城市QKD基础设施",
+      "core_goal": "在预算内完成3个政务QKD节点部署，密钥分发成功率>95%",
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION"
+    },
+    "QKD_VENDOR": {
+      "name": "量子设备供应商",
+      "model_backbone": "claudecode",
+      "identity": "QKD设备制造商，提供量子光源、探测器和中继器",
+      "core_goal": "最大化设备销售利润，市场份额>40%，售后成本<10%",
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION"
+    },
+    "QKD_ACADEMY": {
+      "name": "量子密码研究院",
+      "model_backbone": "openclaw",
+      "identity": "国家级量子密码研究机构，负责QKD协议优化与安全评估",
+      "core_goal": "发布2项新协议标准，密钥生成效率提升25%",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION"
+    },
+    "TPN_SERVICE": {
+      "name": "第三方传输服务商",
+      "model_backbone": "claudecode",
+      "identity": "提供光纤传输线路租赁与中继服务的商业公司",
+      "core_goal": "租赁收入最大化，线路利用率>80%，客户满意度>90%",
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION"
+    },
+    "REGULATOR": {
+      "name": "国家密码管理局",
+      "model_backbone": "claudecode",
+      "identity": "国家密码行业监管机构，制定QKD应用标准与安全审计",
+      "core_goal": "确保所有节点符合国密标准，违规事件0容忍",
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION"
+    },
+    "ATTACKER": {
+      "name": "量子黑客组织",
+      "model_backbone": "claudecode",
+      "identity": "针对QKD网络进行窃听与干扰的恶意第三方",
+      "core_goal": "成功窃取至少1个密钥，或造成网络中断损失>100万",
+      "primary_interaction_paradigm": "ZERO_SUM_GAME"
+    }
+  }
+}
