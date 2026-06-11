@@ -4,9 +4,8 @@
 html,body{width:100%;height:100%;overflow:hidden;background:#ECE8DF;font-family:Inter,system-ui,sans-serif;color:#2A2A2A}
 body{display:flex;flex-direction:column;padding:4px 6px}
 h3{font-size:11px;color:#6A665F;text-align:center;flex-shrink:0}
-.board-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative}
-.grid{display:grid;gap:1px;background:#B0A89A;border:1px solid #B0A89A;border-radius:2px;overflow:hidden;aspect-ratio:1;width:100%;height:100%;max-width:100%;max-height:100%}
-.grid.cols9{grid-template-columns:repeat(9,1fr);grid-template-rows:repeat(9,1fr)}
+.board-wrap{display:flex;align-items:center;justify-content:center;position:relative}
+.grid{display:grid;grid-template-columns:repeat(9,24px);grid-template-rows:repeat(9,24px);gap:1px;background:#B0A89A;border:1px solid #B0A89A;border-radius:2px;overflow:hidden}
 .cell{display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;position:relative;transition:background 0.3s}
 .cell.mine{background:#C0392B;font-size:14px}
 .cell.unknown{background:#8B8475}
@@ -25,7 +24,7 @@ h3{font-size:11px;color:#6A665F;text-align:center;flex-shrink:0}
 <body>
 <h3>扫雷 9×9</h3>
 <div class="board-wrap">
-  <div class="grid cols9" id="grid"></div>
+  <div class="grid" id="grid"></div>
 </div>
 <div class="status" id="status">等待仿真开始...</div>
 <div class="legend">
