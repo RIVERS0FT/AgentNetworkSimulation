@@ -493,7 +493,7 @@ async def decide(req: DecideRequest = None):
                 _agent._last_injected_id = effective_id
                 _agent.equip_brain(goals=injected_goals, config=_brain_config, system_prompt=injected_prompt)
 
-        action = _agent.decide(ctx)
+        action = await asyncio.to_thread(_agent.decide, ctx)
         if action:
             last_action = action.to_dict() if hasattr(action, 'to_dict') else str(action)
             act_type = action.type if hasattr(action, 'type') else "unknown"
@@ -516,7 +516,7 @@ async def decide(req: DecideRequest = None):
             try:
                 system = _build_system_prompt(ctx)
                 user = _build_user_message(inbox, ctx)
-                action = _call_openclaw(system, user)
+                action = await asyncio.to_thread(_call_openclaw, system, user)
                 last_action = action
                 _log_agent("decide", action.get('content', '') or action.get('reasoning', ''),
                            action_type=action.get('action'), target=action.get('target', ''),
@@ -530,7 +530,7 @@ async def decide(req: DecideRequest = None):
     elif BACKEND == "claude-code":
         try:
             prompt = _build_claude_prompt(inbox, ctx)
-            response = _call_claude_code(prompt)
+            response = await asyncio.to_thread(_call_claude_code, prompt)
             action = _parse_claude_response(response)
             last_action = action
             _log_agent("decide", action.get('content', '') or action.get('reasoning', ''),
