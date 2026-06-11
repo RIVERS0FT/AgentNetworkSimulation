@@ -1,0 +1,71 @@
+{
+  "container_instances": {
+    "BYD_IT": {
+      "skills": [
+        "negotiate_bandwidth",
+        "monitor_efficiency",
+        "escalate_issue"
+      ]
+    },
+    "SERES_IT": {
+      "skills": [
+        "negotiate_bandwidth",
+        "enforce_sla",
+        "cost_analysis"
+      ]
+    },
+    "SOUTH_PLANT": {
+      "skills": [
+        "cost_optimization",
+        "downtime_analysis"
+      ]
+    },
+    "5G_VENDOR": {
+      "skills": [
+        "propose_5g_solution",
+        "calculate_roi",
+        "contract_negotiation"
+      ]
+    },
+    "WIFI_VENDOR": {
+      "skills": [
+        "propose_wifi_solution",
+        "market_analysis",
+        "competitive_pricing"
+      ]
+    },
+    "OTA_PLATFORM": {
+      "skills": [
+        "schedule_ota",
+        "impact_assessment",
+        "success_rate_analysis"
+      ]
+    },
+    "REGULATOR": {
+      "skills": [
+        "audit_spectrum",
+        "enforce_compliance",
+        "allocate_spectrum"
+      ]
+    },
+    "AGV_FLEET": {
+      "skills": [
+        "report_latency",
+        "request_priority"
+      ]
+    },
+    "PROD_LINE": {
+      "skills": [
+        "report_jitter",
+        "demand_bandwidth"
+      ]
+    },
+    "TENANT_MGR": {
+      "skills": [
+        "isolate_tenant",
+        "monitor_interference",
+        "resolve_complaint"
+      ]
+    }
+  }
+}
