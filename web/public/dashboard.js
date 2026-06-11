@@ -44,6 +44,21 @@ let simRunning = false;
 let _relationships = [];
 let _lastLogCount = 0;
 
+// ============== Communication Events (data flow animation) ==============
+const _commEvents = [];
+const COMM_EVENT_TTL = 2000; // 粒子动画持续 2 秒
+
+function purgeCommEvents(now) {
+  for (let i = _commEvents.length - 1; i >= 0; i--) {
+    if (now - _commEvents[i].timestamp > COMM_EVENT_TTL) {
+      _commEvents.splice(i, 1);
+    }
+  }
+}
+
+// ============== Client-side Force Simulation State ==============
+let _simState = new Map(); // agent_id → { x, y } in world coords
+
 // ============== Canvas Agent Rendering ==============
 const STATUS_COLORS = {
   idle: '#6B8A5E', running: '#5A7A9A', paused: '#B8783A',
@@ -79,8 +94,11 @@ function getScreenMapping(agents) {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   agents.forEach(a => {
     if (a.x == null) return;
-    minX = Math.min(minX, a.x); maxX = Math.max(maxX, a.x);
-    minY = Math.min(minY, a.y); maxY = Math.max(maxY, a.y);
+    const sp = _simState.get(a.agent_id);
+    const ax = sp ? sp.x : a.x;
+    const ay = sp ? sp.y : a.y;
+    minX = Math.min(minX, ax); maxX = Math.max(maxX, ax);
+    minY = Math.min(minY, ay); maxY = Math.max(maxY, ay);
   });
 
   const rangeX = maxX - minX || 1;
@@ -91,6 +109,13 @@ function getScreenMapping(agents) {
 
   return {
     valid: isFinite(minX),
+    // When force-simulated position exists, use it instead of raw agent position
+    getPos: function(agentId) {
+      const sp = _simState.get(agentId);
+      if (sp) return sp;
+      const a = agents.find(a => a.agent_id === agentId);
+      return (a && a.x != null) ? { x: a.x, y: a.y } : null;
+    },
     toScreen: function(x, y) {
       return {
         sx: offsetX + (x - minX) * scale,
@@ -106,7 +131,7 @@ function getScreenMapping(agents) {
   };
 }
 
-function drawRelationships(agents, relationships) {
+function drawRelationships(agents, relationships, time) {
   if (!ctx || !relationships.length || !agents.length) return;
   const agentMap = {};
   agents.forEach(a => { agentMap[a.agent_id.toLowerCase()] = a; });
@@ -114,17 +139,26 @@ function drawRelationships(agents, relationships) {
   const mapping = getScreenMapping(agents);
   if (!mapping.valid) return;
 
+  const now = time || performance.now();
+  purgeCommEvents(now);
+
   ctx.save();
   ctx.lineCap = 'round';
 
   for (const rel of relationships) {
-    const fromAgent = agentMap[rel.from.toLowerCase()];
-    const toAgent = agentMap[rel.to.toLowerCase()];
-    if (!fromAgent || !toAgent || fromAgent.x == null || toAgent.x == null) continue;
+    const fromPos = mapping.getPos(rel.from.toLowerCase());
+    const toPos = mapping.getPos(rel.to.toLowerCase());
+    if (!fromPos || !toPos) continue;
 
-    const from = mapping.toScreen(fromAgent.x, fromAgent.y);
-    const to = mapping.toScreen(toAgent.x, toAgent.y);
+    const from = mapping.toScreen(fromPos.x, fromPos.y);
+    const to = mapping.toScreen(toPos.x, toPos.y);
 
+    const dx = to.sx - from.sx;
+    const dy = to.sy - from.sy;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len === 0) continue;
+
+    // ── 静态基线 ──
     const isCooperative = (rel.value || 0) > 0;
     const alpha = Math.min(1, Math.abs(rel.value || 50) / 100 + 0.15);
     const color = isCooperative
@@ -134,16 +168,51 @@ function drawRelationships(agents, relationships) {
     ctx.beginPath();
     ctx.moveTo(from.sx, from.sy);
     ctx.lineTo(to.sx, to.sy);
-    ctx.setLineDash([6, 8]);
-    ctx.lineWidth = 1.0;
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 0.6;
     ctx.strokeStyle = color;
     ctx.stroke();
+
+    // ── 关系类型标签 ──
+    if (rel.relation_type) {
+      const mx = (from.sx + to.sx) / 2;
+      const my = (from.sy + to.sy) / 2;
+      ctx.fillStyle = '#88847F';
+      ctx.font = '5px Inter, IBM Plex Sans, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(rel.relation_type, mx, my - 5);
+      ctx.textAlign = 'start';
+    }
+
+    // ── 数据流动画：沿连线绘制流动粒子 ──
+    const fromKey = rel.from.toLowerCase();
+    const toKey = rel.to.toLowerCase();
+    const commOnEdge = _commEvents.find(c =>
+      c.from === fromKey && c.to === toKey
+    );
+    if (commOnEdge) {
+      const age = now - commOnEdge.timestamp;
+      if (age < COMM_EVENT_TTL) {
+        const fadeAlpha = 1 - age / COMM_EVENT_TTL;
+        const flowSpeed = 0.04; // px/ms
+        ctx.fillStyle = `rgba(90,122,154,${fadeAlpha.toFixed(2)})`;
+        // 绘制 3 个流动粒子，均匀分布
+        for (let p = 0; p < 3; p++) {
+          const offset = ((age * flowSpeed + p * len / 3) % len + len) % len;
+          const px = from.sx + (dx / len) * offset;
+          const py = from.sy + (dy / len) * offset;
+          ctx.beginPath();
+          ctx.arc(px, py, 2.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
   }
   ctx.setLineDash([]);
   ctx.restore();
 }
 
-function drawAgents(agents, hoveredId) {
+function drawAgents(agents, hoveredId, time) {
   if (!ctx || !agents.length) return;
 
   const mapping = getScreenMapping(agents);
@@ -153,9 +222,73 @@ function drawAgents(agents, hoveredId) {
   const canvasW = canvas.width / dpr;
   const r = Math.max(6, Math.min(16, canvasW / 40));
 
+  // ── Client-side force simulation (prevent overlap) ──
+  const now = time || performance.now();
+  const maxX = 400;
+  const margin = r * 2;
+
+  // Init new agents
   for (const a of agents) {
-    if (a.x == null) continue;
-    const p = mapping.toScreen(a.x, a.y);
+    if (a.x == null || a.y == null) continue;
+    if (!_simState.has(a.agent_id)) {
+      _simState.set(a.agent_id, { x: a.x, y: a.y });
+    }
+  }
+  // Remove stale agents
+  const activeIds = new Set(agents.map(a => a.agent_id));
+  for (const id of _simState.keys()) { if (!activeIds.has(id)) _simState.delete(id); }
+
+  // Build adjacency from relationships
+  const adj = new Map();
+  for (const rel of _relationships) {
+    const f = rel.from.toLowerCase();
+    const t = rel.to.toLowerCase();
+    if (!adj.has(f)) adj.set(f, new Set());
+    if (!adj.has(t)) adj.set(t, new Set());
+    adj.get(f).add(t); adj.get(t).add(f);
+  }
+
+  const entries = Array.from(_simState.entries());
+  const n = entries.length;
+  const minDist = r * 10;
+  const damping = 0.12;
+
+  for (let i = 0; i < n; i++) {
+    const [id, pi] = entries[i];
+    let fx = 0, fy = 0;
+    const neighbors = adj.get(id);
+
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const [jid, pj] = entries[j];
+      const dx = pi.x - pj.x;
+      const dy = pi.y - pj.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const isLinked = neighbors?.has(jid);
+
+      if (d < minDist) {
+        const force = (minDist - d) / minDist * (isLinked ? 2 : 1);
+        fx += (dx / d) * force;
+        fy += (dy / d) * force;
+      } else if (isLinked && d < minDist * 4) {
+        fx -= dx * 0.02;
+        fy -= dy * 0.02;
+      }
+    }
+
+    pi.x += fx * damping;
+    pi.y += fy * damping;
+    pi.x = Math.max(margin, Math.min(maxX - margin, pi.x));
+    pi.y = Math.max(margin, Math.min(maxX - margin, pi.y));
+  }
+
+  // ── Draw agents ──
+  for (const a of agents) {
+    if (a.x == null || a.y == null) continue;
+    const sp = _simState.get(a.agent_id);
+    const wx = sp ? sp.x : a.x;
+    const wy = sp ? sp.y : a.y;
+    const p = mapping.toScreen(wx, wy);
     const color = STATUS_COLORS[a.status] || '#8B8475';
 
     // Selection ring for hovered agent
@@ -172,6 +305,21 @@ function drawAgents(agents, hoveredId) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 0.8;
     ctx.stroke();
+
+    // ── 思考动画：decided / analyzed 状态时绘制旋转弧线 ──
+    if (a.status === 'decided' || a.status === 'analyzed') {
+      const spinAngle = (now / 600) % (Math.PI * 2); // 每 600ms 转一圈
+      const arcLen = Math.PI * 1.4; // 约 252°
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, r + 3.5, spinAngle, spinAngle + arcLen);
+      ctx.strokeStyle = color + '99';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
 
     // Label
     ctx.fillStyle = '#2A2A2A';
@@ -190,14 +338,15 @@ function render() {
 
   const canvasW = canvas.width / dpr;
   const canvasH = canvas.height / dpr;
+  const now = performance.now();
 
   // Clear canvas with paper background
   ctx.fillStyle = '#ECE8DF';
   ctx.fillRect(0, 0, canvasW, canvasH);
 
   if (agents.length > 0) {
-    drawRelationships(agents, _relationships);
-    drawAgents(agents, hoveredAgent?.agent_id);
+    drawRelationships(agents, _relationships, now);
+    drawAgents(agents, hoveredAgent?.agent_id, now);
   }
 
   ctx.restore();
@@ -259,7 +408,10 @@ canvas?.addEventListener('mousemove', function(e) {
   for (let i = agents.length - 1; i >= 0; i--) {
     const a = agents[i];
     if (a.x == null) continue;
-    const p = mapping.toScreen(a.x, a.y);
+    const sp = _simState.get(a.agent_id);
+    const wx = sp ? sp.x : a.x;
+    const wy = sp ? sp.y : a.y;
+    const p = mapping.toScreen(wx, wy);
     const dx = mx - p.sx, dy = my - p.sy;
     if (Math.sqrt(dx * dx + dy * dy) < rPx) { found = a; break; }
   }
@@ -289,6 +441,11 @@ if (msg.type === 'agent_log' && msg.data) {
     const msgText = from + ' ' + stIcon + ' ' + action + (to && to !== '-' ? ' → ' + to : '') + ' | ' + (l.detail||'');
     logEntry('agent', msgText, ts);
     _lastLogCount++;
+    // ── 记录通信事件，用于数据流动画 ──
+    if ((action === 'send_message' || action === 'broadcast') && status === 'success' && from !== '?' && to) {
+      _commEvents.push({ from: from.toLowerCase(), to: to.toLowerCase(), timestamp: Date.now() });
+      if (_commEvents.length > 20) _commEvents.shift();
+    }
     return;
     }
 // ── Agent 状态实时更新 ──
@@ -300,6 +457,8 @@ if (msg.type === 'agent_status' && msg.data) {
     return;
 }
 if (msg.type === 'status' || msg.type === 'all') {
+    // Reset simState on full sync (new simulation)
+    if (msg.type === 'all') { _simState = new Map(); }
     agents = msg.data.agents || [];
     if (msg.data.relationships !== undefined && (msg.data.relationships.length > 0 || agents.length === 0)) _relationships = msg.data.relationships;
     // ── Agent 动作日志 ──
@@ -383,9 +542,11 @@ async function runSelectedScene() {
   const name = sel?.value;
   if (!name) { logEntry('scene', '请先选择场景脚本'); return; }
 
-	// 清空上轮仿真的前端日志
+	// 清空上轮仿真的前端日志和状态
 	clearLogs();
 	_lastLogCount = 0;
+  _simState = new Map();
+  _commEvents.length = 0;
 
   logEntry('scene', '=== ' + name + ' ===');
 
