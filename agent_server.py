@@ -12,8 +12,10 @@ Agent 容器运行时 — 统一 HTTP 服务 (Brain / OpenCLAW / Claude Code)
   MESSAGE_BUS_URL / SERVER_URL
   AGENT_CORE_GOAL / AGENT_HIDDEN_SECRET / AGENT_ACTION_SPACE / AGENT_INITIAL_ASSETS
   AGENT_SYSTEM_PROMPT (scene background_rules)
+  AGENT_INTERACTION_PARADIGM / AGENT_PARADIGM_HINT
   ANTHROPIC_API_KEY / LLM_API_KEY / LLM_MODEL
   AGENT_BACKEND (brain | openclaw | claude-code, default: brain)
+  PACKET_MONITOR_URL
 """
 
 import os, sys, json, time, asyncio, re, subprocess
@@ -47,7 +49,6 @@ AGENT_SYSTEM_PROMPT = os.environ.get("AGENT_SYSTEM_PROMPT", "")
 AGENT_INTERACTION_PARADIGM = os.environ.get("AGENT_INTERACTION_PARADIGM", "")
 AGENT_PARADIGM_HINT = os.environ.get("AGENT_PARADIGM_HINT", "")
 
-LOG_COLLECTOR_URL = os.environ.get("LOG_COLLECTOR_URL", "")
 PACKET_MONITOR_URL = os.environ.get("PACKET_MONITOR_URL", "")
 
 BACKEND = os.environ.get("AGENT_BACKEND", "brain")
@@ -64,7 +65,7 @@ comm = RemoteBus(message_bus_url=MESSAGE_BUS, server_url=SERVER_URL)
 # Agent 实例 (brain 后端专用)
 # ═══════════════════════════════════════════════
 
-_agent = None          # brain Agent 对象
+_agent = None
 _brain_config = {}
 _event_queue: List[Dict[str, Any]] = []
 _channel_map: Dict[str, str] = {}
@@ -110,7 +111,6 @@ if BACKEND == "brain":
     _agent.equip_brain(goals=_goals if _goals else None, config=_brain_config, system_prompt=_sys_prompt)
 
 elif BACKEND == "openclaw":
-    # OpenCLAW tool definitions
     _TOOLS = [
         {
             "name": "send_message",
@@ -190,95 +190,239 @@ if BACKEND == "brain":
 
 
 # ═══════════════════════════════════════════════
-# 日志上报
+# 基础 helper
 # ═══════════════════════════════════════════════
 
-def _log_agent(event: str, detail: str, **kw):
-    timestamp = datetime.now().isoformat(timespec="milliseconds")
-    effective_id = kw.pop("from_id", _current_effective_id)
-    effective_name = kw.pop("from_name", _current_effective_name)
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="milliseconds")
+
+
+def _safe_post_json(url: str, json_data: dict, timeout: float = 3) -> bool:
+    """安全 POST，失败静默返回 False"""
     try:
-        requests.post(f"{SERVER_URL}/api/logs/agent", json={
-            "agent_id": effective_id, "agent_name": effective_name,
-            "event": event, "detail": detail, "timestamp": timestamp,
-            "from_agent": effective_id,
-            "to_agent": kw.get("target", kw.get("to", "")) if kw.get("action_type") in ("send_message", "broadcast") else "",
-            "action": (kw.get("target") or kw.get("to")) if kw.get("action_type") == "execute_skill" else "send_message" if kw.get("action_type") == "broadcast" else kw.get("action_type", event),
-            "action_status": kw.get("status", "success"),
-            "details": {k: v for k, v in kw.items() if k not in ("action_type", "target")},
-        }, timeout=2)
+        requests.post(url, json=json_data, timeout=timeout)
+        return True
     except Exception:
-        pass
+        return False
 
 
 # ═══════════════════════════════════════════════
-# 后端决策 (openclaw / claude-code)
+# 收件箱 helper（统一 brain / 非 brain）
 # ═══════════════════════════════════════════════
 
-def _build_system_prompt(context: dict = None) -> str:
-    ctx = context or {}
+def _get_inbox() -> list:
+    return _agent.inbox if _agent else inbox
+
+
+def _append_inbox(from_agent: str, content: str, msg_type: str = "direct"):
+    if _agent:
+        _agent._add_to_inbox(from_agent=from_agent, content=content, msg_type=msg_type)
+    else:
+        inbox.append({"from": from_agent, "content": content, "type": msg_type})
+        if len(inbox) > 50:
+            inbox.pop(0)
+
+
+def _clear_inbox():
+    if _agent:
+        _agent.inbox.clear()
+    else:
+        inbox.clear()
+
+
+def _inbox_size() -> int:
+    return len(_agent.inbox) if _agent else len(inbox)
+
+
+def _recent_direct_sender() -> Optional[str]:
+    """从收件箱倒序查找最近一条 direct 消息的发件人"""
+    src = _get_inbox()
+    for msg in reversed(src):
+        if msg.get("type") in ("direct",) and msg.get("from"):
+            sender = msg["from"]
+            if sender not in ("系统", "self", _current_effective_name, _current_effective_id):
+                return sender
+    return None
+
+
+# ═══════════════════════════════════════════════
+# Action 归一化
+# ═══════════════════════════════════════════════
+
+def _normalize_action(raw) -> dict:
+    """归一化 brain Action 对象 / openclaw dict / claude dict → 统一 dict"""
+    if hasattr(raw, 'to_dict'):
+        d = raw.to_dict()
+        return {
+            "type": d.get("type", "wait"),
+            "target": d.get("target", ""),
+            "content": d.get("content", ""),
+            "reasoning": d.get("reasoning", ""),
+        }
+    if isinstance(raw, dict):
+        return {
+            "type": raw.get("action", raw.get("type", "wait")),
+            "target": raw.get("target", ""),
+            "content": raw.get("content", ""),
+            "reasoning": raw.get("reasoning", ""),
+        }
+    return {"type": "wait", "target": "", "content": "", "reasoning": str(raw)}
+
+
+def _decision_response(action: dict, effective_id: str, effective_name: str, extra: dict = None) -> dict:
+    """构造 /decide 统一返回结构"""
+    base = {
+        "agent_id": effective_id, "agent_name": effective_name, "turn": turn,
+        "type": action.get("type", "wait"),
+        "target": action.get("target", ""),
+        "content": action.get("content", ""),
+        "reasoning": action.get("reasoning", ""),
+    }
+    if extra:
+        base.update(extra)
+    return base
+
+
+# ═══════════════════════════════════════════════
+# Prompt 构建
+# ═══════════════════════════════════════════════
+
+def _format_known_agents(known: list) -> str:
+    lines = ["  - agent_id=" + (a.get('id', a.get('agent_id', '?')))
+             + "  名称=" + (a.get('name', a.get('id', a.get('agent_id', '?'))))
+             for a in known]
+    return "\n".join(lines) if lines else "  none"
+
+
+def _format_skills(skills_list: list) -> str:
+    if not skills_list:
+        return ""
+    return "\n## 可用技能（使用 execute_skill 动作调用）\n" + "\n".join(
+        f"  - execute_skill: {s.get('skill_name', s.get('name', '?'))} — {s.get('description', s.get('desc', ''))}"
+        for s in skills_list
+    ) + "\n"
+
+
+def _partition_inbox_messages(inbox_msgs: list):
+    """将收件箱消息按类型分成 direct/broadcast/system 三组"""
+    direct, broadcast, system = [], [], []
+    for msg in inbox_msgs[-15:]:
+        mtype = msg.get('type', 'direct')
+        txt = f"  [{msg.get('from', '?')}]: {msg.get('content', '')}"
+        if mtype == 'system':
+            system.append(txt)
+        elif mtype == 'broadcast':
+            broadcast.append(txt)
+        else:
+            direct.append(txt)
+    return direct, broadcast, system
+
+
+def _format_inbox_sections(direct: list, broadcast: list, system: list) -> str:
+    """将分好组的收件箱消息格式化为 prompt 文本"""
+    parts = []
+    pending = len(direct)
+    if direct:
+        parts.append("## 📬 直接发给你的消息\n" + "\n".join(direct[-10:]) + "\n")
+    if broadcast:
+        parts.append("## 📢 广播消息\n" + "\n".join(broadcast[-5:]) + "\n")
+    if system:
+        parts.append("## ⚡ 系统通知\n" + "\n".join(system[-3:]) + "\n")
+    if not parts:
+        parts.append("（收件箱为空 — 主动发起对话或分析局势）\n")
+    if pending > 0:
+        parts.append(f"\n⚠️ 你有 {pending} 条未回复的直接消息。执行 skill 后会自动回复。")
+    return "\n".join(parts)
+
+
+def _build_identity_block(ctx: dict, skills_list: list = None) -> str:
+    """构建身份信息块，brain/openclaw/claude 共用"""
+    identity = ctx.get("agent_name", _current_effective_name)
+    role = ctx.get("agent_role", AGENT_ROLE)
+    core_goal = ctx.get("core_goal") or AGENT_CORE_GOAL
+    hidden_secret = ctx.get("hidden_secret") or AGENT_HIDDEN_SECRET
+    skills_text = _format_skills(skills_list or ctx.get("skills_list", []))
+    return f"""## 你的身份
+- 名字: {identity}
+- 角色: {role}
+- 核心目标: {core_goal or '完成场景任务'}
+- 隐藏秘密: {hidden_secret or '无'}
+{skills_text}"""
+
+
+def _build_user_message(inbox_msgs: list, ctx: dict = None) -> str:
+    """OpenCLAW 用户消息"""
+    ctx = ctx or {}
+    known = ctx.get("agents", ctx.get("known_agents", []))
+    direct, broadcast, system = _partition_inbox_messages(inbox_msgs)
+    inbox_text = _format_inbox_sections(direct, broadcast, system)
+    return f"""## 当前回合: {turn}
+
+## 已知其它 Agent（发消息时 target 必须用 agent_id）
+{_format_known_agents(known)}
+
+{inbox_text}
+
+请做出本轮决策。收到任务指令直接用 execute_skill 执行，结果会自动回复发件人。"""
+
+
+def _build_claude_prompt(inbox_msgs: list, ctx: dict = None) -> str:
+    """Claude Code prompt"""
+    ctx = ctx or {}
     identity = ctx.get("agent_name", _current_effective_name)
     role = ctx.get("agent_role", AGENT_ROLE)
     core_goal = ctx.get("core_goal") or AGENT_CORE_GOAL
     hidden_secret = ctx.get("hidden_secret") or AGENT_HIDDEN_SECRET
     skills_list = ctx.get("skills_list", [])
     background_rules = ctx.get("background_rules") or AGENT_SYSTEM_PROMPT
+    known = ctx.get("agents", ctx.get("known_agents", []))
+    system = background_rules or "你是一个仿真场景中的角色，根据你的身份和目标做出决策。"
 
-    system = background_rules or "你是一个仿真场景中的角色，根据你的身份和目标做出合理决策。"
-
-    skills_text = ""
-    if skills_list:
-        skills_text = "\n## 可用技能\n使用 execute_skill 工具调用：\n" + "\n".join(
-            f"  - execute_skill: {s.get('skill_name', s.get('name', '?'))} — {s.get('description', s.get('desc', ''))}"
-            for s in skills_list
-        ) + "\n"
+    direct, broadcast, system_msgs = _partition_inbox_messages(inbox_msgs)
+    inbox_text = _format_inbox_sections(direct, broadcast, system_msgs)
 
     return f"""{system}
 
-## 你的身份
-- 名字: {identity}
-- 角色: {role}
-- 核心目标: {core_goal or '完成场景任务'}
-- 隐藏秘密: {hidden_secret or '无'}
-{skills_text}
+{_build_identity_block(ctx, skills_list)}
+## 已知其它 Agent（发消息时 target 必须用 agent_id）
+{_format_known_agents(known)}
+
+## 当前回合: {turn}
+
+{inbox_text}
+
+## 指令
+基于以上信息，决定你这一轮要做什么。用 JSON 回复（只输出 JSON）：
+```json
+{{"reasoning": "推理", "action": "send_message|execute_skill|wait", "target": "目标agent_id或技能名", "content": "消息内容或技能参数"}}
+```
+重要规则:
+- 必须立即采取具体行动！有直接消息时推荐 execute_skill，结果会自动回复发件人
+- target 必须用 agent_id（如 ceo、cto），不能用中文名
+- 向全体 Agent 广播消息时，target 填 "0.0.0.0"
+- 有技能时积极使用 execute_skill
+- 用中文回复"""
+
+
+# ═══════════════════════════════════════════════
+# 后端调用
+# ═══════════════════════════════════════════════
+
+def _build_system_prompt(ctx: dict = None) -> str:
+    """OpenCLAW system prompt"""
+    ctx = ctx or {}
+    background_rules = ctx.get("background_rules") or AGENT_SYSTEM_PROMPT
+    system = background_rules or "你是一个仿真场景中的角色，根据你的身份和目标做出合理决策。"
+    identity_block = _build_identity_block(ctx, ctx.get("skills_list", []))
+    return f"""{system}
+
+{identity_block}
 行为准则：
 - 必须立即采取具体行动，绝对不能wait！
 - 有直接消息时直接用 execute_skill 执行任务，结果会自动回复发件人
 - send_message 的 target 必须用 agent_id（如 ceo、cto）
 - 有技能时积极使用 execute_skill
 - 用中文回复"""
-
-
-def _build_user_message(inbox_msgs: list, context: dict = None) -> str:
-    context = context or {}
-    known = context.get("agents", context.get("known_agents", []))
-    known_lines = ["  - agent_id=" + (a.get('id', a.get('agent_id', '?'))) + "  名称=" + (a.get('name', a.get('id', a.get('agent_id', '?')))) for a in known]
-    known_list = "\n".join(known_lines) if known_lines else "  none"
-
-    direct_msgs, broadcast_msgs, system_msgs = [], [], []
-    for msg in inbox_msgs[-15:]:
-        mtype = msg.get('type', 'direct')
-        txt = f"  [{msg.get('from', '?')}]: {msg.get('content', '')}"
-        if mtype == 'system': system_msgs.append(txt)
-        elif mtype == 'broadcast': broadcast_msgs.append(txt)
-        else: direct_msgs.append(txt)
-
-    inbox_text = ""
-    pending = len(direct_msgs)
-    if direct_msgs: inbox_text += "## 📬 直接发给你的消息\n" + "\n".join(direct_msgs[-10:]) + "\n\n"
-    if broadcast_msgs: inbox_text += "## 📢 广播消息\n" + "\n".join(broadcast_msgs[-5:]) + "\n\n"
-    if system_msgs: inbox_text += "## ⚡ 系统通知\n" + "\n".join(system_msgs[-3:]) + "\n\n"
-    if not inbox_text: inbox_text = "（收件箱为空 — 主动发起对话或分析局势）\n"
-    pending_warning = f"\n⚠️ 你有 {pending} 条未回复的直接消息。执行 skill 后会自动回复。" if pending > 0 else ""
-
-    return f"""## 当前回合: {turn}
-
-## 已知其它 Agent（发消息时 target 必须用 agent_id）
-{known_list}
-
-{inbox_text}{pending_warning}
-
-请做出本轮决策。收到任务指令直接用 execute_skill 执行，结果会自动回复发件人。"""
 
 
 def _call_openclaw(system_prompt: str, user_message: str) -> dict:
@@ -305,69 +449,6 @@ def _call_openclaw(system_prompt: str, user_message: str) -> dict:
     return {"action": "wait", "target": "", "content": "", "reasoning": text}
 
 
-def _build_claude_prompt(inbox_msgs: list, context: dict = None) -> str:
-    ctx = context or {}
-    identity = ctx.get("agent_name", _current_effective_name)
-    role = ctx.get("agent_role", AGENT_ROLE)
-    core_goal = ctx.get("core_goal") or AGENT_CORE_GOAL
-    hidden_secret = ctx.get("hidden_secret") or AGENT_HIDDEN_SECRET
-    skills_list = ctx.get("skills_list", [])
-    background_rules = ctx.get("background_rules") or AGENT_SYSTEM_PROMPT
-    system = background_rules or "你是一个仿真场景中的角色，根据你的身份和目标做出决策。"
-
-    known = ctx.get("agents", ctx.get("known_agents", []))
-    known_lines = ["  - agent_id=" + (a.get('id', a.get('agent_id', '?'))) + "  名称=" + (a.get('name', a.get('id', a.get('agent_id', '?')))) for a in known]
-    known_list = "\n".join(known_lines) if known_lines else "  none"
-
-    skills_text = ""
-    if skills_list:
-        skills_text = "\n## 可用技能（使用 execute_skill 动作调用）\n" + "\n".join(
-            f"  - execute_skill: {s.get('skill_name', s.get('name', '?'))} — {s.get('description', s.get('desc', ''))}"
-            for s in skills_list) + "\n"
-
-    direct_msgs, broadcast_msgs, system_msgs = [], [], []
-    for msg in inbox_msgs[-15:]:
-        mtype = msg.get('type', 'direct')
-        txt = f"  [{msg.get('from', '?')}]: {msg.get('content', '')}"
-        if mtype == 'system': system_msgs.append(txt)
-        elif mtype == 'broadcast': broadcast_msgs.append(txt)
-        else: direct_msgs.append(txt)
-    inbox_text = ""
-    pending = len(direct_msgs)
-    if direct_msgs: inbox_text += "## 📬 直接发给你的消息\n" + "\n".join(direct_msgs[-10:]) + "\n\n"
-    if broadcast_msgs: inbox_text += "## 📢 广播消息\n" + "\n".join(broadcast_msgs[-5:]) + "\n\n"
-    if system_msgs: inbox_text += "## ⚡ 系统通知\n" + "\n".join(system_msgs[-3:]) + "\n\n"
-    if not inbox_text: inbox_text = "（收件箱为空 — 主动发起对话）\n"
-    pending_warning = f"\n⚠️ 你有 {pending} 条未回复的直接消息。执行 skill 后会自动回复。" if pending > 0 else ""
-
-    return f"""{system}
-
-## 你的身份
-- 名字: {identity}
-- 角色: {role}
-- 核心目标: {core_goal or '完成场景任务'}
-- 隐藏秘密: {hidden_secret or '无'}
-{skills_text}
-## 已知其它 Agent（发消息时 target 必须用 agent_id）
-{known_list}
-
-## 当前回合: {turn}
-
-{inbox_text}{pending_warning}
-
-## 指令
-基于以上信息，决定你这一轮要做什么。用 JSON 回复（只输出 JSON）：
-```json
-{{"reasoning": "推理", "action": "send_message|execute_skill|wait", "target": "目标agent_id或技能名", "content": "消息内容或技能参数"}}
-```
-重要规则:
-- 必须立即采取具体行动！有直接消息时推荐 execute_skill，结果会自动回复发件人
-- target 必须用 agent_id（如 ceo、cto），不能用中文名
-- 向全体 Agent 广播消息时，target 填 "0.0.0.0"
-- 有技能时积极使用 execute_skill
-- 用中文回复"""
-
-
 def _call_claude_code(prompt: str) -> str:
     env = os.environ.copy()
     result = subprocess.run(
@@ -390,6 +471,39 @@ def _parse_claude_response(text: str) -> dict:
 
 
 # ═══════════════════════════════════════════════
+# 日志
+# ═══════════════════════════════════════════════
+
+def _log_agent(event: str, detail: str, **kw):
+    """向 SERVER_URL/api/logs/agent 上报，server 转换为统一 global 日志"""
+    effective_id = kw.pop("from_id", _current_effective_id)
+    effective_name = kw.pop("from_name", _current_effective_name)
+    action_type = kw.get("action_type", event)
+    target = kw.get("target", kw.get("to", ""))
+    _safe_post_json(f"{SERVER_URL}/api/logs/agent", {
+        "agent_id": effective_id, "agent_name": effective_name,
+        "event": event, "detail": detail, "timestamp": _now_iso(),
+        "from_agent": effective_id,
+        "to_agent": target if action_type in ("send_message", "broadcast") else "",
+        "action": target if action_type == "execute_skill"
+                  else "send_message" if action_type == "broadcast"
+                  else action_type,
+        "action_status": kw.get("status", "success"),
+        "details": {k: v for k, v in kw.items() if k not in ("action_type", "target")},
+    }, timeout=2)
+
+
+def _notify_packet_monitor(from_id: str, from_name: str, to: str, content: str,
+                           action_type: str):
+    """通知外部报文监控器（仅在 PACKET_MONITOR_URL 配置时生效）"""
+    if PACKET_MONITOR_URL:
+        _safe_post_json(f"{PACKET_MONITOR_URL}/api/packets/ingest", {
+            "from_id": from_id, "from_name": from_name,
+            "to": to, "content": content, "type": action_type, "direction": "outbound",
+        }, timeout=1)
+
+
+# ═══════════════════════════════════════════════
 # Pydantic 模型
 # ═══════════════════════════════════════════════
 
@@ -405,17 +519,225 @@ class DecideRequest(BaseModel):
 
 
 # ═══════════════════════════════════════════════
-# 端点
+# /decide — 决策端点
+# ═══════════════════════════════════════════════
+
+def _prepare_decision_context(ctx: dict):
+    """准备决策上下文：递增回合、设置身份、通信权限、channel/talk"""
+    global turn, _current_effective_id, _current_effective_name, _allowed_targets
+    turn += 1
+    if "round" not in ctx:
+        ctx["round"] = turn
+
+    effective_id = ctx.get("agent_id", AGENT_ID)
+    effective_name = ctx.get("agent_name", AGENT_NAME)
+    _current_effective_id = effective_id
+    _current_effective_name = effective_name
+    _allowed_targets = set(ctx.get("comm_matrix", {}).get(effective_id, []))
+    return effective_id, effective_name
+
+
+def _decide_with_brain(ctx: dict, effective_id: str):
+    """Brain 后端决策"""
+    global _channel_map, _current_talk, _effective_id, _effective_name
+    _channel_map = ctx.get("channel_map", {})
+    _current_talk = ctx.get("talk", "")
+    _effective_id = effective_id
+    _effective_name = _current_effective_name
+
+    # 动态身份切换时注入 goals/prompt
+    if effective_id != AGENT_ID:
+        injected_goals = []
+        injected_prompt = AGENT_SYSTEM_PROMPT
+        if ctx.get("core_goal"): injected_goals.append(f"核心目标: {ctx['core_goal']}")
+        if ctx.get("hidden_secret"): injected_goals.append(f"隐藏秘密: {ctx['hidden_secret']}")
+        if ctx.get("action_space"): injected_goals.append(f"可用行动: {', '.join(ctx['action_space'])}")
+        if ctx.get("skills_list"):
+            skills_text = "\n".join(f"  - {s['name']}: {s.get('desc','')}" for s in ctx["skills_list"])
+            injected_goals.append(f"可用技能:\n{skills_text}")
+        if ctx.get("background_rules"): injected_prompt = ctx["background_rules"]
+        if injected_goals and effective_id != getattr(_agent, '_last_injected_id', None):
+            _agent._last_injected_id = effective_id
+            _agent.equip_brain(goals=injected_goals, config=_brain_config, system_prompt=injected_prompt)
+
+    action = _agent.decide(ctx)
+    if not action:
+        return {"type": "wait", "target": "", "content": "", "reasoning": "no brain available"}
+    return _normalize_action(action)
+
+
+def _decide_with_openclaw(ctx: dict):
+    """OpenCLAW 后端决策"""
+    if not API_KEY:
+        return {"type": "wait", "target": "", "content": "", "reasoning": "no API key configured"}
+    system = _build_system_prompt(ctx)
+    user = _build_user_message(inbox, ctx)
+    action_raw = _call_openclaw(system, user)
+    return _normalize_action(action_raw)
+
+
+def _decide_with_claude_code(ctx: dict):
+    """Claude Code 后端决策"""
+    prompt = _build_claude_prompt(inbox, ctx)
+    response = _call_claude_code(prompt)
+    action_raw = _parse_claude_response(response)
+    return _normalize_action(action_raw)
+
+
+@app.post("/decide")
+async def decide(req: DecideRequest = None):
+    ctx = req.context if req else {}
+    effective_id, effective_name = _prepare_decision_context(ctx)
+
+    try:
+        if BACKEND == "brain":
+            action = _decide_with_brain(ctx, effective_id)
+        elif BACKEND == "openclaw":
+            action = _decide_with_openclaw(ctx)
+        else:  # claude-code
+            action = _decide_with_claude_code(ctx)
+    except Exception as e:
+        action = {"type": "wait", "target": "", "content": "", "reasoning": str(e)}
+
+    global last_action
+    last_action = action
+    _log_agent("decide", action.get("content", "") or action.get("reasoning", ""),
+               action_type=action.get("type"), target=action.get("target", ""),
+               content=action.get("content", ""), reasoning=action.get("reasoning", ""),
+               round=turn, status="decided")
+
+    extra = {}
+    if BACKEND == "brain":
+        extra["has_llm"] = bool(_brain_config.get("api_key"))
+    else:
+        extra["backend"] = BACKEND
+    return _decision_response(action, effective_id, effective_name, extra)
+
+
+# ═══════════════════════════════════════════════
+# /act — 执行端点
+# ═══════════════════════════════════════════════
+
+def _handle_message_action(action_type: str, action_target: str, action_content: str) -> dict:
+    """处理 send_message / broadcast 动作"""
+    is_broadcast = (action_target == "0.0.0.0" or action_type == "broadcast")
+    result: Dict[str, Any] = {}
+    if not is_broadcast and action_type == "send_message" and _allowed_targets and action_target not in _allowed_targets:
+        _log_agent("act", f"无通信权限: {action_target}（允许: {', '.join(sorted(_allowed_targets))}）",
+                   action_type=action_type, target=action_target, status="failed")
+        return {"relayed": False}
+
+    try:
+        relay_start = time.time()
+        if BACKEND == "brain":
+            chan_id = _channel_map.get(f"{_effective_id}->{action_target}", "") or \
+                      _channel_map.get(f"{_effective_id.lower()}->{action_target.lower()}", "")
+        else:
+            chan_id = ""
+        talk = _current_talk if BACKEND == "brain" else ""
+        if is_broadcast:
+            ok = comm.broadcast(_current_effective_id, _current_effective_name,
+                                action_content, _allowed_targets, chan_id, talk)
+        else:
+            ok = comm.send(_current_effective_id, _current_effective_name,
+                           action_target, action_content, chan_id, talk)
+        latency = (time.time() - relay_start) * 1000
+        result["relayed"] = ok
+        _log_agent("act", action_content or action_type, action_type=action_type,
+                   target=action_target, content=action_content,
+                   status="success" if ok else "failed")
+        if BACKEND == "brain":
+            destination = "broadcast" if is_broadcast else action_target
+            PacketRecorder.record_outbound(agent_id=_current_effective_id, dst_ip="bus",
+                                           dst_port=9000, method="POST", path="/relay",
+                                           status=200 if ok else 0, latency_ms=latency,
+                                           content=action_content, agent_to=destination)
+        _notify_packet_monitor(_current_effective_id, _current_effective_name,
+                               "broadcast" if is_broadcast else action_target,
+                               action_content, action_type)
+    except Exception as e:
+        result["relay_error"] = str(e)
+        _log_agent("act", f"发送异常: {e}", action_type=action_type, target=action_target,
+                   status="failed")
+    return result
+
+
+def _handle_skill_action(action_target: str, action_content, la: dict) -> dict:
+    """处理 execute_skill 动作"""
+    skill_name = la.get("skill", action_target)
+    skill_params = la.get("params", action_content if isinstance(action_content, dict) else {})
+    if not isinstance(skill_params, dict):
+        skill_params = {}
+    result: Dict[str, Any] = {}
+    try:
+        r = requests.post(f"{SERVER_URL}/api/skills/execute", json={
+            "skill_name": skill_name, "params": skill_params,
+        }, timeout=10)
+        skill_ret = r.json() if r.ok else {"error": r.text[:500]}
+        result["skill_result"] = skill_ret
+        # 写入收件箱
+        ret_str = json.dumps(skill_ret, ensure_ascii=False)
+        _append_inbox("系统", f"[技能 {skill_name} 执行结果]\n{ret_str}", "system")
+        _log_agent("act", f"技能调用: {skill_name} | 返回: {ret_str}",
+                   action_type="execute_skill", target=skill_name,
+                   status="success" if r.ok else "failed",
+                   skill_params=skill_params, skill_result=skill_ret)
+    except Exception as e:
+        result["skill_error"] = str(e)
+        _log_agent("act", f"技能调用异常: {skill_name} | {e}",
+                   action_type="execute_skill", target=skill_name, status="failed")
+    return result
+
+
+def _auto_reply_skill_result(skill_ret: dict, skill_name: str):
+    """技能执行成功后，自动回复最近直接发件人"""
+    if not isinstance(skill_ret, dict) or skill_ret.get("status") == "error":
+        return
+    recent_sender = _recent_direct_sender()
+    if not recent_sender:
+        return
+    ret_str = json.dumps(skill_ret, ensure_ascii=False)
+    auto_msg = f"[{skill_name} 执行结果]\n{ret_str}"
+    ok = comm.send(_current_effective_id, _current_effective_name,
+                   recent_sender, auto_msg, "", "")
+    _log_agent("act", auto_msg, action_type="send_message", target=recent_sender,
+               content=auto_msg, status="success" if ok else "failed")
+
+
+@app.post("/act")
+async def act():
+    global last_action
+    if not last_action:
+        return {"status": "no_decision_yet"}
+
+    action_type = last_action.get("type", last_action.get("action", "wait"))
+    action_target = last_action.get("target", "")
+    action_content = last_action.get("content", "")
+    result: Dict[str, Any] = {"action": last_action, "backend": BACKEND}
+
+    if action_type in ("send_message", "broadcast"):
+        result.update(_handle_message_action(action_type, action_target, action_content))
+    elif action_type == "execute_skill":
+        result.update(_handle_skill_action(action_target, action_content, last_action))
+        # 技能成功后自动回复最近发件人
+        if result.get("skill_result"):
+            _auto_reply_skill_result(result["skill_result"],
+                                     last_action.get("skill", action_target))
+
+    return result
+
+
+# ═══════════════════════════════════════════════
+# 其他端点
 # ═══════════════════════════════════════════════
 
 @app.get("/status")
 async def status():
-    inbox_size = len(_agent.inbox) if _agent else len(inbox)
     has_llm = bool(_brain_config.get("api_key") if _agent else API_KEY)
     return {
         "agent_id": AGENT_ID, "name": AGENT_NAME, "role": AGENT_ROLE,
         "backend": BACKEND, "turn": turn,
-        "inbox_size": inbox_size, "has_llm": has_llm,
+        "inbox_size": _inbox_size(), "has_llm": has_llm,
         "core_goal": AGENT_CORE_GOAL or None,
         "hidden_secret": AGENT_HIDDEN_SECRET or None,
         "action_space": AGENT_ACTION_SPACE,
@@ -430,12 +752,14 @@ async def receive_message(msg: MessageIn, request: Request = None):
         client_ip = request.client.host if request and request.client else "unknown"
         _agent._add_to_inbox(from_agent=msg.from_id, content=msg.content, msg_type=msg.type or "direct")
         if BACKEND == "brain":
-            PacketRecorder.record_inbound(agent_id=AGENT_ID, src_ip=client_ip, method="POST", path="/message", content=msg.content, from_id=msg.from_id)
+            PacketRecorder.record_inbound(agent_id=AGENT_ID, src_ip=client_ip,
+                                          method="POST", path="/message",
+                                          content=msg.content, from_id=msg.from_id)
     else:
         inbox.append({"from": msg.from_id, "content": msg.content, "type": msg.type})
         if len(inbox) > 50:
             inbox.pop(0)
-    return {"received": True, "inbox_size": len(_agent.inbox) if _agent else len(inbox)}
+    return {"received": True, "inbox_size": _inbox_size()}
 
 
 @app.post("/event")
@@ -445,221 +769,18 @@ async def receive_event(event: Dict[str, Any]):
     event_name = event.get("event_name", "未知事件")
     impact = event.get("impact", "")
     t = event.get("turn", 0)
-    _agent._add_to_inbox(from_agent="系统", content=f"⚠️ 事件 [{event_name}]: {impact}", msg_type="system")
+    _agent._add_to_inbox(from_agent="系统",
+                         content=f"⚠️ 事件 [{event_name}]: {impact}",
+                         msg_type="system")
     _event_queue.append({"event_name": event_name, "impact": impact, "turn": t})
-    _log_agent("event_received", f"事件: {event_name} — {impact}", event_name=event_name, impact=impact, turn=t)
+    _log_agent("event_received", f"事件: {event_name} — {impact}",
+               event_name=event_name, impact=impact, turn=t)
     return {"received": True, "event": event_name}
 
 
 @app.get("/events")
 async def list_events():
     return {"agent_id": AGENT_ID, "events": _event_queue}
-
-
-@app.post("/decide")
-async def decide(req: DecideRequest = None):
-    global turn, last_action, _current_effective_id, _current_effective_name
-    turn += 1
-    ctx = req.context if req else {}
-    if "round" not in ctx:
-        ctx["round"] = turn
-
-    effective_id = ctx.get("agent_id", AGENT_ID)
-    effective_name = ctx.get("agent_name", AGENT_NAME)
-    _current_effective_id = effective_id
-    _current_effective_name = effective_name
-
-    global _allowed_targets
-    _allowed_targets = set(ctx.get("comm_matrix", {}).get(effective_id, []))
-
-    if BACKEND == "brain":
-        global _channel_map, _current_talk, _effective_id, _effective_name
-        _channel_map = ctx.get("channel_map", {})
-        _current_talk = ctx.get("talk", "")
-        _effective_id = effective_id
-        _effective_name = effective_name
-
-        if effective_id != AGENT_ID:
-            injected_goals = []
-            injected_prompt = AGENT_SYSTEM_PROMPT
-            if ctx.get("core_goal"): injected_goals.append(f"核心目标: {ctx['core_goal']}")
-            if ctx.get("hidden_secret"): injected_goals.append(f"隐藏秘密: {ctx['hidden_secret']}")
-            if ctx.get("action_space"): injected_goals.append(f"可用行动: {', '.join(ctx['action_space'])}")
-            if ctx.get("skills_list"):
-                skills_text = "\n".join(f"  - {s['name']}: {s.get('desc','')}" for s in ctx["skills_list"])
-                injected_goals.append(f"可用技能:\n{skills_text}")
-            if ctx.get("background_rules"): injected_prompt = ctx["background_rules"]
-            if injected_goals and effective_id != getattr(_agent, '_last_injected_id', None):
-                _agent._last_injected_id = effective_id
-                _agent.equip_brain(goals=injected_goals, config=_brain_config, system_prompt=injected_prompt)
-
-        action = await asyncio.to_thread(_agent.decide, ctx)
-        if action:
-            last_action = action.to_dict() if hasattr(action, 'to_dict') else str(action)
-            act_type = action.type if hasattr(action, 'type') else "unknown"
-            act_target = getattr(action, 'target', '')
-            content_text = getattr(action, 'content', '') or getattr(action, 'reasoning', '')
-            _log_agent("decide", content_text, from_id=effective_id, target=act_target,
-                       action_type=act_type, content=getattr(action, 'content', ''),
-                       reasoning=getattr(action, 'reasoning', ''), round=turn, status="decided")
-
-        if action and hasattr(action, 'to_dict'):
-            return {"agent_id": effective_id, "agent_name": effective_name, "turn": turn,
-                    "has_llm": bool(_brain_config.get("api_key")), **action.to_dict()}
-        return {"agent_id": effective_id, "agent_name": effective_name, "turn": turn,
-                "type": "wait", "target": "", "content": "", "reasoning": "no brain available"}
-
-    elif BACKEND == "openclaw":
-        if not API_KEY:
-            action = {"reasoning": "no API key configured", "action": "wait", "target": "", "content": ""}
-        else:
-            try:
-                system = _build_system_prompt(ctx)
-                user = _build_user_message(inbox, ctx)
-                action = await asyncio.to_thread(_call_openclaw, system, user)
-                last_action = action
-                _log_agent("decide", action.get('content', '') or action.get('reasoning', ''),
-                           action_type=action.get('action'), target=action.get('target', ''),
-                           content=action.get('content', ''), reasoning=action.get('reasoning', ''), status="decided")
-            except Exception as e:
-                action = {"reasoning": str(e), "action": "wait", "target": "", "content": ""}
-        return {"agent_id": effective_id, "agent_name": effective_name, "turn": turn, "backend": "openclaw",
-                "type": action.get("action", "wait"), "target": action.get("target", ""),
-                "content": action.get("content", ""), "reasoning": action.get("reasoning", "")}
-
-    elif BACKEND == "claude-code":
-        try:
-            prompt = _build_claude_prompt(inbox, ctx)
-            response = await asyncio.to_thread(_call_claude_code, prompt)
-            action = _parse_claude_response(response)
-            last_action = action
-            _log_agent("decide", action.get('content', '') or action.get('reasoning', ''),
-                       action_type=action.get('action'), target=action.get('target', ''),
-                       content=action.get('content', ''), reasoning=action.get('reasoning', ''), status="decided")
-        except Exception as e:
-            action = {"reasoning": str(e), "action": "wait", "target": "", "content": ""}
-        return {"agent_id": effective_id, "agent_name": effective_name, "turn": turn, "backend": "claude-code",
-                "type": action.get("action", "wait"), "target": action.get("target", ""),
-                "content": action.get("content", ""), "reasoning": action.get("reasoning", "")}
-
-
-@app.post("/act")
-async def act():
-    global last_action
-    if not last_action:
-        return {"status": "no_decision_yet"}
-
-    action_type = last_action.get("type", last_action.get("action", "wait"))
-    action_target = last_action.get("target", "")
-    action_content = last_action.get("content", "")
-    result: Dict[str, Any] = {"action": last_action, "backend": BACKEND}
-
-    # ── send_message / broadcast ──
-    if action_type in ("send_message", "broadcast"):
-        is_broadcast = (action_target == "0.0.0.0" or action_type == "broadcast")
-        if not is_broadcast and action_type == "send_message" and _allowed_targets and action_target not in _allowed_targets:
-            result["relayed"] = False
-            _log_agent("act", f"无通信权限: {action_target}（允许: {', '.join(sorted(_allowed_targets))}）",
-                       action_type=action_type, target=action_target, status="failed")
-        else:
-            try:
-                relay_start = time.time()
-                if BACKEND == "brain":
-                    chan_id = _channel_map.get(f"{_effective_id}->{action_target}", "") or \
-                              _channel_map.get(f"{_effective_id.lower()}->{action_target.lower()}", "")
-                else:
-                    chan_id = ""
-                    talk = ""
-                talk = _current_talk if BACKEND == "brain" else ""
-                if is_broadcast:
-                    ok = await asyncio.to_thread(comm.broadcast, _current_effective_id, _current_effective_name, action_content, _allowed_targets, chan_id, talk)
-                else:
-                    ok = await asyncio.to_thread(comm.send, _current_effective_id, _current_effective_name, action_target, action_content, chan_id, talk)
-                latency = (time.time() - relay_start) * 1000
-                result["relayed"] = ok
-                _log_agent("act", action_content or action_type, action_type=action_type, target=action_target,
-                           content=action_content, status="success" if ok else "failed")
-                if BACKEND == "brain":
-                    destination = "broadcast" if is_broadcast else action_target
-                    PacketRecorder.record_outbound(agent_id=_current_effective_id, dst_ip="bus", dst_port=9000,
-                                                   method="POST", path="/relay", status=200 if ok else 0,
-                                                   latency_ms=latency, content=action_content, agent_to=destination)
-                if PACKET_MONITOR_URL:
-                    try:
-                        requests.post(f"{PACKET_MONITOR_URL}/api/packets/ingest", json={
-                            "from_id": _current_effective_id, "from_name": _current_effective_name,
-                            "to": "broadcast" if is_broadcast else action_target,
-                            "content": action_content, "type": action_type, "direction": "outbound",
-                        }, timeout=1)
-                    except Exception:
-                        pass
-            except Exception as e:
-                result["relay_error"] = str(e)
-                _log_agent("act", f"发送异常: {e}", action_type=action_type, target=action_target, status="failed")
-
-    # ── execute_skill ──
-    elif action_type == "execute_skill":
-        skill_name = last_action.get("skill", action_target)
-        skill_params = last_action.get("params", action_content if isinstance(action_content, dict) else {})
-        if not isinstance(skill_params, dict):
-            skill_params = {}
-        try:
-            r = requests.post(f"{SERVER_URL}/api/skills/execute", json={
-                "skill_name": skill_name, "params": skill_params,
-            }, timeout=10)
-            skill_ret = r.json() if r.ok else {"error": r.text[:500]}
-            result["skill_result"] = skill_ret
-            # 将技能返回值写入收件箱，使 Agent 下一轮能看到结果
-            ret_str = json.dumps(skill_ret, ensure_ascii=False)
-            skill_feedback = f"[技能 {skill_name} 执行结果]\n{ret_str}"
-            if _agent:
-                _agent._add_to_inbox(from_agent="系统", content=skill_feedback, msg_type="system")
-            else:
-                inbox.append({"from": "系统", "content": skill_feedback, "type": "system"})
-                if len(inbox) > 50:
-                    inbox.pop(0)
-            _log_agent("act", f"技能调用: {skill_name} | 返回: {ret_str}",
-                       action_type="execute_skill", target=skill_name, status="success" if r.ok else "failed",
-                       skill_params=skill_params, skill_result=skill_ret)
-        except Exception as e:
-            result["skill_error"] = str(e)
-            _log_agent("act", f"技能调用异常: {skill_name} | {e}",
-                       action_type="execute_skill", target=skill_name, status="failed")
-
-    # ── execute_skill 后自动转发结果给最近发件人 ──
-    if action_type == "execute_skill" and result.get("skill_result"):
-        skill_ret = result["skill_result"]
-        is_error = isinstance(skill_ret, dict) and skill_ret.get("status") == "error"
-        if not is_error:
-            recent_sender = None
-            src = _agent.inbox if _agent else inbox
-            for msg in reversed(src):
-                if msg.get("type") in ("direct",) and msg.get("from"):
-                    sender = msg["from"]
-                    if sender not in ("系统", "self", _current_effective_name, _current_effective_id):
-                        recent_sender = sender
-                        break
-            if recent_sender:
-                ret_str = json.dumps(skill_ret, ensure_ascii=False)
-                auto_msg = f"[{skill_name} 执行结果]\n{ret_str}"
-                ok = await asyncio.to_thread(comm.send, _current_effective_id, _current_effective_name,
-                                             recent_sender, auto_msg, "", "")
-                _log_agent("act", auto_msg, action_type="send_message", target=recent_sender,
-                           content=auto_msg, status="success" if ok else "failed")
-
-    # ── LOG_COLLECTOR ──
-    if LOG_COLLECTOR_URL:
-        try:
-            requests.post(f"{LOG_COLLECTOR_URL}/api/logs/ingest", json={
-                "level": "INFO", "event": "agent_act",
-                "agent_id": _current_effective_id, "agent_name": _current_effective_name,
-                "index": "logs-agent", "message": f"Act: {str(last_action)}",
-                "details": result,
-            }, timeout=1)
-        except Exception:
-            pass
-
-    return result
 
 
 @app.get("/inbox")
@@ -670,10 +791,7 @@ async def get_inbox():
 
 @app.post("/clear")
 async def clear():
-    if _agent:
-        _agent.inbox.clear()
-    else:
-        inbox.clear()
+    _clear_inbox()
     return {"cleared": True}
 
 
@@ -702,7 +820,8 @@ async def reset_state():
             _agent.brain.turn = 0
     else:
         inbox.clear()
-    return {"status": "reset", "brain_cleared": bool(_agent and hasattr(_agent, 'brain') and _agent.brain)}
+    return {"status": "reset",
+            "brain_cleared": bool(_agent and hasattr(_agent, 'brain') and _agent.brain)}
 
 
 # ═══════════════════════════════════════════════
