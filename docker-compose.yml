@@ -2,12 +2,14 @@
 
 x-brain: &brain
   build: { context: ., dockerfile: Dockerfile }
+  cap_add: [NET_RAW, NET_ADMIN]
   environment:
     TZ: Asia/Shanghai
     AGENT_BACKEND: brain
     MESSAGE_BUS_URL: http://bus:9000
     SERVER_URL: http://srv:8000
-    LOG_TRAFFIC: "1"
+    LOG_TRAFFIC: "0"
+    LOG_LLM_API: "1"
     LLM_API_KEY: ${ANTHROPIC_API_KEY}
     LLM_MODEL: deepseek-chat
     LLM_API_BASE: https://api.deepseek.com/v1
@@ -17,12 +19,14 @@ x-brain: &brain
 
 x-claude: &claude
   build: { context: ., dockerfile: Dockerfile.claude }
+  cap_add: [NET_RAW, NET_ADMIN]
   environment:
     TZ: Asia/Shanghai
     AGENT_BACKEND: claude-code
     MESSAGE_BUS_URL: http://bus:9000
     SERVER_URL: http://srv:8000
-    LOG_TRAFFIC: "1"
+    LOG_TRAFFIC: "0"
+    LOG_LLM_API: "1"
     LLM_API_KEY: ${ANTHROPIC_API_KEY}
     LLM_MODEL: deepseek-chat
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -32,12 +36,14 @@ x-claude: &claude
 
 x-openclaw: &openclaw
   build: { context: ., dockerfile: Dockerfile.openclaw }
+  cap_add: [NET_RAW, NET_ADMIN]
   environment:
     TZ: Asia/Shanghai
     AGENT_BACKEND: openclaw
     MESSAGE_BUS_URL: http://bus:9000
     SERVER_URL: http://srv:8000
-    LOG_TRAFFIC: "1"
+    LOG_TRAFFIC: "0"
+    LOG_LLM_API: "1"
     LLM_API_KEY: ${ANTHROPIC_API_KEY}
     LLM_MODEL: deepseek-chat
     LLM_API_BASE: https://api.deepseek.com/v1
@@ -54,7 +60,7 @@ services:
     user: "1000:1000"
     ports: ["9000:9000"]
     volumes: ["./data/logs:/app/data/logs"]
-    environment: { TZ: "Asia/Shanghai", MESSAGE_BUS_PORT: "9000", SERVER_URL: "http://srv:8000", LOG_TRAFFIC: "1" }
+    environment: { TZ: "Asia/Shanghai", MESSAGE_BUS_PORT: "9000", SERVER_URL: "http://srv:8000", LOG_TRAFFIC: "0", LOG_LLM_API: "1" }
     restart: unless-stopped
     networks: [an]
 
@@ -68,7 +74,8 @@ services:
       TZ: Asia/Shanghai
       SERVER_PORT: "8000"
       MESSAGE_BUS_URL: http://bus:9000
-      LOG_TRAFFIC: "1"
+      LOG_TRAFFIC: "0"
+      LOG_LLM_API: "1"
       LLM_API_KEY: ${ANTHROPIC_API_KEY}
       LLM_MODEL: deepseek-chat
       LLM_API_BASE: https://api.deepseek.com/v1

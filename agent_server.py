@@ -443,11 +443,28 @@ def _build_system_prompt(ctx: dict = None) -> str:
 
 def _call_openclaw(system_prompt: str, user_message: str) -> dict:
     import anthropic
-    client = anthropic.Anthropic(api_key=API_KEY)
-    response = client.messages.create(
-        model=MODEL, max_tokens=1024, system=system_prompt,
-        tools=_TOOLS, messages=[{"role": "user", "content": user_message}],
-    )
+    from agent_network.llm_traffic import LLMCallTracker
+
+    # 从 base_url 推断 provider
+    base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+    provider = "deepseek" if "deepseek" in base_url else "anthropic"
+    host = base_url.replace("https://", "").replace("http://", "").rstrip("/") if base_url else "api.anthropic.com"
+
+    prompt_chars = len(system_prompt or "") + len(user_message or "")
+    with LLMCallTracker(provider=provider, model=MODEL, method="POST",
+                        path="/v1/messages", host=host,
+                        component=AGENT_ID, prompt_chars=prompt_chars,
+                        messages_count=1, max_tokens=1024) as tracker:
+        client = anthropic.Anthropic(api_key=API_KEY, base_url=base_url or None)
+        response = client.messages.create(
+            model=MODEL, max_tokens=1024, system=system_prompt,
+            tools=_TOOLS, messages=[{"role": "user", "content": user_message}],
+        )
+        # 估算响应字符数
+        resp_chars = sum(len(b.text) if b.type == "text" else len(str(b.input or ""))
+                        for b in (response.content or []))
+        tracker.ok(response_chars=resp_chars)
+
     tool_uses = [b for b in response.content if b.type == "tool_use"]
     if tool_uses:
         tb = tool_uses[0]
@@ -466,14 +483,27 @@ def _call_openclaw(system_prompt: str, user_message: str) -> dict:
 
 
 def _call_claude_code(prompt: str) -> str:
+    from agent_network.llm_traffic import log_llm_cli
+    import time as _time
+    start = _time.time()
     env = os.environ.copy()
-    result = subprocess.run(
-        ["claude", "-p", prompt, "--print", "--output-format", "text"],
-        capture_output=True, text=True, timeout=120, cwd="/app", env=env,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Claude Code failed (exit {result.returncode}): {result.stderr[:200]}")
-    return result.stdout.strip()
+    try:
+        result = subprocess.run(
+            ["claude", "-p", prompt, "--print", "--output-format", "text"],
+            capture_output=True, text=True, timeout=120, cwd="/app", env=env,
+        )
+        latency = (_time.time() - start) * 1000
+        if result.returncode != 0:
+            log_llm_cli(exit_code=result.returncode, latency_ms=latency,
+                        component=AGENT_ID, error=result.stderr[:200])
+            raise RuntimeError(f"Claude Code failed (exit {result.returncode}): {result.stderr[:200]}")
+        log_llm_cli(exit_code=0, latency_ms=latency, component=AGENT_ID)
+        return result.stdout.strip()
+    except Exception as e:
+        if not isinstance(e, RuntimeError):
+            latency = (_time.time() - start) * 1000
+            log_llm_cli(exit_code=-1, latency_ms=latency, component=AGENT_ID, error=str(e)[:200])
+        raise
 
 
 def _parse_claude_response(text: str) -> dict:
@@ -849,4 +879,12 @@ if __name__ == "__main__":
 
     print(f"[Agent {backend_label}] {AGENT_NAME} ({AGENT_ROLE}) starting on port {AGENT_PORT}")
     print(f"[Agent {backend_label}] Backend: {BACKEND} | Model: {MODEL} | Goal: {AGENT_CORE_GOAL or 'N/A'}")
-    uvicorn.run(app, host="0.0.0.0", port=AGENT_PORT, log_level="info")
+
+    # 启动网络抓包（LOG_TRAFFIC=1 时生效）
+    from agent_network.packet_capture import start_capture, stop_capture
+    start_capture(agent_id=AGENT_ID, server_url=SERVER_URL)
+
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=AGENT_PORT, log_level="info")
+    finally:
+        stop_capture()

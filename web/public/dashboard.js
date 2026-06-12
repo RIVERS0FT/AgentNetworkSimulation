@@ -35,6 +35,10 @@ function normalizeLogRecord(record, origin) {
   // 分类映射
   if (cat === 'frontend' || src === 'frontend' || origin === 'frontend') {
     result.field = 'frontend';
+  } else if (cat === 'llm_api') {
+    result.field = 'llm_api';
+  } else if (cat === 'network_capture') {
+    result.field = 'network_capture';
   } else if (cat === 'communication' || evt === 'agent_message') {
     result.field = 'message';
   } else if (cat === 'agent_behavior' || evt === 'decide' || evt === 'act' || evt === 'agent_action' || evt === 'agent_decide') {
@@ -66,6 +70,18 @@ function normalizeLogRecord(record, origin) {
     const content = payload.content || (record.details || {}).content || record.message || '';
     result.eventText = (from ? from + ' → ' + to : record.message || '');
     result.detailText = content.length > 200 ? content.slice(0, 200) + '…' : content;
+  } else if (result.field === 'llm_api') {
+    const tgt = record.target || {};
+    const pl = record.payload || {};
+    const net = record.network || {};
+    result.eventText = 'LLM ' + (tgt.provider || '') + '/' + (tgt.model || '') + ' → ' + (record.action?.status || '');
+    result.detailText = (net.latency_ms ? net.latency_ms + 'ms ' : '') + (pl.prompt_chars ? pl.prompt_chars + '→' + pl.response_chars + 'ch' : '');
+  } else if (result.field === 'network_capture') {
+    const tgt = record.target || {};
+    const net = record.network || {};
+    const pl = record.payload || {};
+    result.eventText = 'CAP ' + (record.actor?.id || '') + ' → ' + (tgt.host||tgt.ip||'?') + ':' + (tgt.port||'');
+    result.detailText = (pl.line_summary || '') + ' ' + (net.protocol||'');
   } else if (result.field === 'agent') {
     const st = result.status;
     const stIcon = st === 'success' ? '✅' : st === 'failed' ? '❌' : st === 'decided' ? '💭' : '➡️';

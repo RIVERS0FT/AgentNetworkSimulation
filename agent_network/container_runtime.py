@@ -128,6 +128,7 @@ class ContainerRuntime:
                 c = self._docker_client.containers.run(
                     img, name=auto_name, detach=True, command=cmd,
                     environment=env, network=self.NETWORK_NAME,
+                    cap_add=["NET_RAW", "NET_ADMIN"],
                 )
                 self._used_containers.add(auto_name)
                 print(f"[Runtime] Created {auto_name} ({backend}) container={c.id[:12]}")

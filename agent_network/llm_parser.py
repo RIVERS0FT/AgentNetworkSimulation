@@ -306,16 +306,23 @@ def parse_with_llm(script: str, config: Dict[str, str] = None) -> SceneDefinitio
 def _parse_with_anthropic(script: str, api_key: str, model: str = "") -> SceneDefinition:
     """使用 Anthropic Claude API 解析"""
     import anthropic
+    from agent_network.llm_traffic import LLMCallTracker
 
     client = anthropic.Anthropic(api_key=api_key)
     model = model or DEFAULT_LLM_MODEL
 
-    message = client.messages.create(
-        model=model,
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": script}],
-    )
+    with LLMCallTracker(provider="anthropic", model=model, method="POST",
+                        path="/v1/messages", host="api.anthropic.com",
+                        component="srv", prompt_chars=len(script),
+                        messages_count=1, max_tokens=1024) as tracker:
+        message = client.messages.create(
+            model=model,
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": script}],
+        )
+        resp_chars = len(message.content[0].text) if message.content else 0
+        tracker.ok(response_chars=resp_chars)
 
     response_text = message.content[0].text
     return _extract_json(response_text)
@@ -324,10 +331,15 @@ def _parse_with_anthropic(script: str, api_key: str, model: str = "") -> SceneDe
 def _parse_with_openai(script: str, api_key: str, model: str = "", api_base: str = "") -> SceneDefinition:
     """使用 OpenAI-compatible API 解析"""
     import requests
+    from agent_network.llm_traffic import LLMCallTracker
+    from urllib.parse import urlparse
 
     model = model or "gpt-4o"
     api_base = api_base or "https://api.openai.com/v1"
     url = f"{api_base.rstrip('/')}/chat/completions"
+    parsed = urlparse(url)
+    host = parsed.netloc
+    provider = "deepseek" if "deepseek" in host else "openai"
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -343,9 +355,16 @@ def _parse_with_openai(script: str, api_key: str, model: str = "", api_base: str
         "temperature": 0.3,
     }
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    with LLMCallTracker(provider=provider, model=model, method="POST",
+                        path="/v1/chat/completions", host=host,
+                        component="srv", prompt_chars=len(script),
+                        messages_count=2, max_tokens=1024) as tracker:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        resp_chars = len(json.dumps(data, ensure_ascii=False))
+        tracker.ok(response_chars=resp_chars, status=str(resp.status_code))
+
     response_text = data["choices"][0]["message"]["content"]
     return _extract_json(response_text)
 

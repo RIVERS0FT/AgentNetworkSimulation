@@ -253,7 +253,7 @@ body::after{
 .log-entry:hover{background:rgba(53,246,255,0.08);box-shadow:inset 0 0 18px rgba(53,246,255,0.06)}
 .log-entry.expanded{white-space:normal;word-break:break-all;overflow:visible;text-overflow:unset;max-width:none;background:rgba(255,46,212,0.10)}
 .log-entry .ts{color:var(--muted);margin-right:5px}.log-entry .lv{font-weight:800;margin-right:5px;text-shadow:0 0 10px currentColor}
-.lv-frontend{color:var(--cyan)}.lv-scene{color:var(--purple)}.lv-agent{color:var(--green)}.lv-message{color:var(--magenta)}.lv-system{color:var(--yellow)}
+.lv-frontend{color:var(--cyan)}.lv-scene{color:var(--purple)}.lv-agent{color:var(--green)}.lv-message{color:var(--magenta)}.lv-llm_api{color:var(--blue)}.lv-network_capture{color:var(--orange)}.lv-system{color:var(--yellow)}
 .lv.lv-err{color:var(--red)}.lv.lv-warn{color:var(--orange)}
 .log-entry .ev{color:var(--text)}.log-entry .ev-detail{color:var(--muted);font-style:italic}
 .minimized{flex:0!important;min-height:0!important}.minimized *{display:none!important}

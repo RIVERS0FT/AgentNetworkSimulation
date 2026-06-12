@@ -13,6 +13,7 @@ Agent LLM 大脑 — 让每个 Agent 拥有独立决策能力
 """
 
 import json
+import os
 import re
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
@@ -239,27 +240,43 @@ class Brain:
 
     def _call_anthropic(self, prompt: str, api_key: str, model: str = "") -> str:
         import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
+        from agent_network.llm_traffic import LLMCallTracker
         from .config import DEFAULT_LLM_MODEL
         model = model or DEFAULT_LLM_MODEL
-        # Split system and user
+        component = os.environ.get("AGENT_ID", "brain")
         parts = prompt.split("## 当前状态")
         system = parts[0].strip() if len(parts) > 1 else prompt
         user = prompt if len(parts) <= 1 else "## 当前状态" + parts[1]
 
-        message = client.messages.create(
-            model=model, max_tokens=512, system=system,
-            messages=[{"role": "user", "content": user}],
-        )
+        with LLMCallTracker(provider="anthropic", model=model, method="POST",
+                            path="/v1/messages", host="api.anthropic.com",
+                            component=component, prompt_chars=len(prompt),
+                            messages_count=1, max_tokens=512) as tracker:
+            client = anthropic.Anthropic(api_key=api_key)
+            message = client.messages.create(
+                model=model, max_tokens=512, system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+            resp_chars = len(message.content[0].text) if message.content else 0
+            tracker.ok(response_chars=resp_chars)
         return message.content[0].text
 
     def _call_openai_compat(self, prompt: str, api_key: str, model: str = "", api_base: str = "") -> str:
         import httpx
+        from agent_network.llm_traffic import LLMCallTracker
+        from urllib.parse import urlparse
         model = model or "deepseek-chat"
         api_base = api_base or "https://api.deepseek.com/v1"
         url = f"{api_base.rstrip('/')}/chat/completions"
+        parsed = urlparse(url)
+        host = parsed.netloc
+        provider = "deepseek" if "deepseek" in host else "openai"
+        component = os.environ.get("AGENT_ID", "brain")
 
-        try:
+        with LLMCallTracker(provider=provider, model=model, method="POST",
+                            path="/v1/chat/completions", host=host,
+                            component=component, prompt_chars=len(prompt),
+                            messages_count=1, max_tokens=512) as tracker:
             resp = httpx.post(url, headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -269,9 +286,10 @@ class Brain:
                 "max_tokens": 512, "temperature": 0.7,
             }, timeout=30.0)
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except httpx.HTTPError as e:
-            raise RuntimeError(f"LLM API call failed: {e}") from e
+            data = resp.json()
+            resp_chars = len(json.dumps(data, ensure_ascii=False))
+            tracker.ok(response_chars=resp_chars, status=str(resp.status_code))
+            return data["choices"][0]["message"]["content"]
 
     def _parse_response(self, text: str) -> Action:
         """从 LLM 响应中解析 Action"""
