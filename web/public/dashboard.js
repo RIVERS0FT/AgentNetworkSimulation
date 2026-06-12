@@ -149,7 +149,14 @@ const displayEntries = entries.slice(-200);
 if (!displayEntries.length) {
   const div = document.createElement('div');
   div.className = 'log-entry';
-  div.innerHTML = '<span class=ts>--</span> <span class=ev>无日志</span>';
+  const tsSpan = document.createElement('span');
+  tsSpan.className = 'ts';
+  tsSpan.textContent = '--';
+  const evSpan = document.createElement('span');
+  evSpan.className = 'ev';
+  evSpan.textContent = '无日志';
+  div.appendChild(tsSpan);
+  div.appendChild(evSpan);
   fragment.appendChild(div);
 } else {
   displayEntries.forEach(e => {
@@ -318,13 +325,14 @@ let _simState = new Map(); // agent_id → { x, y } in world coords
 
 // ============== Canvas Agent Rendering ==============
 const STATUS_COLORS = {
-  idle: '#6B8A5E', running: '#5A7A9A', paused: '#B8783A',
-  stopped: '#C0392B', error: '#C0392B', created: '#8B8475',
-  decided: '#7A6A8A', messaged: '#5A7A9A', send_failed: '#C0392B', analyzed: '#B8783A',
+  idle: '#35FF9D', running: '#35F6FF', paused: '#FFE45E',
+  stopped: '#FF3B67', error: '#FF3B67', created: '#7FA5B8',
+  decided: '#A56CFF', messaged: '#FF2ED4', send_failed: '#FF3B67', analyzed: '#4D8DFF',
 };
 
 const canvas = document.getElementById('agent-canvas');
 const ctx = canvas?.getContext('2d');
+const REDUCED_MOTION = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches || false;
 
 function resizeCanvas() {
   const container = document.getElementById('canvas-stage');
@@ -355,6 +363,76 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { resizeCanvas(); render(); }
 });
 
+function drawCyberBackground(canvasW, canvasH, now) {
+  const pulse = REDUCED_MOTION ? 0 : now * 0.001;
+  const bg = ctx.createLinearGradient(0, 0, canvasW, canvasH);
+  bg.addColorStop(0, '#020612');
+  bg.addColorStop(0.48, '#07172D');
+  bg.addColorStop(1, '#12091F');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  const glow1 = ctx.createRadialGradient(canvasW * 0.22, canvasH * 0.18, 0, canvasW * 0.22, canvasH * 0.18, canvasW * 0.75);
+  glow1.addColorStop(0, 'rgba(53,246,255,0.18)');
+  glow1.addColorStop(0.45, 'rgba(53,246,255,0.04)');
+  glow1.addColorStop(1, 'rgba(53,246,255,0)');
+  ctx.fillStyle = glow1;
+  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  const glow2 = ctx.createRadialGradient(canvasW * 0.84, canvasH * 0.28, 0, canvasW * 0.84, canvasH * 0.28, canvasW * 0.62);
+  glow2.addColorStop(0, 'rgba(255,46,212,0.16)');
+  glow2.addColorStop(0.48, 'rgba(255,46,212,0.035)');
+  glow2.addColorStop(1, 'rgba(255,46,212,0)');
+  ctx.fillStyle = glow2;
+  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  const grid = Math.max(28, Math.min(54, canvasW / 22));
+  const drift = REDUCED_MOTION ? 0 : (pulse * 18) % grid;
+  ctx.save();
+  ctx.lineWidth = 0.7;
+  ctx.strokeStyle = 'rgba(53,246,255,0.085)';
+  ctx.beginPath();
+  for (let x = -grid + drift; x <= canvasW + grid; x += grid) {
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, canvasH);
+  }
+  for (let y = -grid + drift; y <= canvasH + grid; y += grid) {
+    ctx.moveTo(0, y);
+    ctx.lineTo(canvasW, y);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,46,212,0.08)';
+  ctx.lineWidth = 0.35;
+  ctx.beginPath();
+  for (let x = -grid * 2 + drift * 0.5; x <= canvasW + grid * 2; x += grid * 2) {
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x + canvasH * 0.22, canvasH);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(221,247,255,0.38)';
+  for (let i = 0; i < 44; i++) {
+    const x = (i * 137.5 + (REDUCED_MOTION ? 0 : now * 0.018)) % Math.max(1, canvasW);
+    const y = (i * 59.7 + Math.sin(i * 2.3) * 44 + canvasH * 2) % Math.max(1, canvasH);
+    const a = 0.12 + ((i % 7) / 7) * 0.28;
+    ctx.globalAlpha = a;
+    ctx.fillRect(x, y, i % 5 === 0 ? 2 : 1, i % 3 === 0 ? 2 : 1);
+  }
+  ctx.restore();
+
+  if (!REDUCED_MOTION) {
+    const scanY = (now * 0.07) % (canvasH + 120) - 60;
+    const scan = ctx.createLinearGradient(0, scanY - 42, 0, scanY + 42);
+    scan.addColorStop(0, 'rgba(53,246,255,0)');
+    scan.addColorStop(0.5, 'rgba(53,246,255,0.12)');
+    scan.addColorStop(1, 'rgba(255,46,212,0)');
+    ctx.fillStyle = scan;
+    ctx.fillRect(0, scanY - 42, canvasW, 84);
+  }
+}
+
 // ── Draw permanent relationship lines ──
 function drawRelationshipLines(relationships, agents) {
   if (!ctx || !relationships.length || !agents.length) return;
@@ -376,20 +454,31 @@ function drawRelationshipLines(relationships, agents) {
     if (len === 0) continue;
 
     const isCooperative = (rel.value || 0) > 0;
-    const alpha = Math.min(1, Math.abs(rel.value || 50) / 100 + 0.15);
+    const alpha = Math.min(1, Math.abs(rel.value || 50) / 100 + 0.22);
     const color = isCooperative
-      ? `rgba(107,138,94,${alpha.toFixed(2)})`
-      : `rgba(192,57,43,${alpha.toFixed(2)})`;
+      ? `rgba(53,255,157,${alpha.toFixed(2)})`
+      : `rgba(255,59,103,${alpha.toFixed(2)})`;
+    const glow = isCooperative ? 'rgba(53,255,157,0.22)' : 'rgba(255,46,212,0.25)';
 
     ctx.beginPath();
     ctx.moveTo(from.sx, from.sy);
     ctx.lineTo(to.sx, to.sy);
-    ctx.setLineDash([4, 3]);
-    ctx.lineWidth = 0.6;
+    ctx.setLineDash([8, 6]);
+    ctx.lineWidth = 3.2;
+    ctx.strokeStyle = glow;
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = 14;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(from.sx, from.sy);
+    ctx.lineTo(to.sx, to.sy);
+    ctx.lineWidth = 0.85;
     ctx.strokeStyle = color;
+    ctx.shadowBlur = 8;
     ctx.stroke();
   }
   ctx.setLineDash([]);
+  ctx.shadowBlur = 0;
   ctx.restore();
 }
 
@@ -415,24 +504,40 @@ function drawOneTrajectory(traj, fromScr, toScr, now) {
   const headX = fromScr.sx + dx * progress + nx * off;
   const headY = fromScr.sy + dy * progress + ny * off;
 
-  // ── Short tail (3 dots fading behind head) ──
-  const tailAlpha = fadeOut * 0.75;
-  for (let t = 0; t < 3; t++) {
-    const tp = Math.max(0, progress - (t + 1) * 0.04);
+  const packetColor = traj.isBroadcast ? '255,46,212' : '53,246,255';
+
+  // ── High-energy packet trail ──
+  const tailAlpha = fadeOut * 0.9;
+  ctx.save();
+  ctx.shadowColor = `rgba(${packetColor},0.9)`;
+  ctx.shadowBlur = 14;
+  for (let t = 0; t < 7; t++) {
+    const tp = Math.max(0, progress - (t + 1) * 0.032);
     const tx = fromScr.sx + dx * tp + nx * off;
     const ty = fromScr.sy + dy * tp + ny * off;
-    const tr = 2.2 - t * 0.5;
-    const ta = tailAlpha * (1 - t * 0.3);
-    ctx.fillStyle = `rgba(90,122,154,${ta.toFixed(3)})`;
+    const tr = Math.max(0.7, 3.2 - t * 0.36);
+    const ta = tailAlpha * (1 - t / 8);
+    ctx.fillStyle = `rgba(${packetColor},${ta.toFixed(3)})`;
     ctx.beginPath();
     ctx.arc(tx, ty, tr, 0, Math.PI * 2);
     ctx.fill();
   }
+  const trailStart = Math.max(0, progress - 0.18);
+  ctx.beginPath();
+  ctx.moveTo(fromScr.sx + dx * trailStart + nx * off, fromScr.sy + dy * trailStart + ny * off);
+  ctx.lineTo(headX, headY);
+  ctx.strokeStyle = `rgba(${packetColor},${(fadeOut * 0.62).toFixed(3)})`;
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
 
   // ── Head (bright dot) ──
-  ctx.fillStyle = `rgba(90,122,154,${fadeOut.toFixed(3)})`;
+  ctx.fillStyle = `rgba(${packetColor},${fadeOut.toFixed(3)})`;
   ctx.beginPath();
-  ctx.arc(headX, headY, 3.2, 0, Math.PI * 2);
+  ctx.arc(headX, headY, traj.isBroadcast ? 4.2 : 3.6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = `rgba(255,255,255,${(fadeOut * 0.8).toFixed(3)})`;
+  ctx.beginPath();
+  ctx.arc(headX, headY, 1.3, 0, Math.PI * 2);
   ctx.fill();
 
   // ── Destination pulse ring (after arrival) ──
@@ -441,21 +546,24 @@ function drawOneTrajectory(traj, fromScr, toScr, now) {
     const pulseR = 4 + pulseAge * 0.04;
     const pulseAlpha = Math.max(0, (1 - pulseAge / 700)) * fadeOut * 0.7;
     if (pulseAlpha > 0.01) {
-      ctx.strokeStyle = `rgba(90,122,154,${pulseAlpha.toFixed(3)})`;
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = `rgba(${packetColor},${pulseAlpha.toFixed(3)})`;
+      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(toScr.sx + nx * off, toScr.sy + ny * off, pulseR, 0, Math.PI * 2);
       ctx.stroke();
     }
   }
+  ctx.restore();
 }
 
 // ── Draw temporary link line for agents without permanent relationship ──
 function drawTempLink(fromScr, toScr) {
   ctx.save();
-  ctx.setLineDash([2, 5]);
-  ctx.lineWidth = 0.5;
-  ctx.strokeStyle = 'rgba(90,122,154,0.28)';
+  ctx.setLineDash([3, 7]);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(53,246,255,0.28)';
+  ctx.shadowColor = 'rgba(255,46,212,0.25)';
+  ctx.shadowBlur = 10;
   ctx.beginPath();
   ctx.moveTo(fromScr.sx, fromScr.sy);
   ctx.lineTo(toScr.sx, toScr.sy);
@@ -643,45 +751,75 @@ function drawAgents(agents, hoveredId, time) {
     const wx = sp ? sp.x : a.x;
     const wy = sp ? sp.y : a.y;
     const p = worldToScreen(wx, wy);
-    const color = STATUS_COLORS[a.status] || '#8B8475';
+    const color = STATUS_COLORS[a.status] || '#7FA5B8';
+    const pulse = REDUCED_MOTION ? 0.5 : (Math.sin(now / 360 + p.sx * 0.01) + 1) / 2;
+    const active = ['running', 'decided', 'messaged', 'analyzed'].includes(a.status);
 
-    // Selection ring for hovered agent
-    if (hoveredId === a.agent_id) {
-      ctx.beginPath(); ctx.arc(p.sx, p.sy, r + 3, 0, Math.PI * 2);
-      ctx.strokeStyle = color; ctx.lineWidth = 2;
-      ctx.setLineDash([2, 2]); ctx.stroke(); ctx.setLineDash([]);
-    }
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = active ? 22 + pulse * 12 : 12;
 
-    // Body
-    ctx.beginPath(); ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
-    ctx.fillStyle = color + 'cc';
+    // Soft aura
+    const aura = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, r * 4.2);
+    aura.addColorStop(0, color + (active ? '66' : '40'));
+    aura.addColorStop(0.42, color + '18');
+    aura.addColorStop(1, color + '00');
+    ctx.fillStyle = aura;
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, r * 4.2, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 0.8;
+
+    // Outer rings
+    ctx.shadowBlur = active ? 18 : 8;
+    ctx.lineWidth = hoveredId === a.agent_id ? 2.1 : 1.2;
+    ctx.strokeStyle = color + (hoveredId === a.agent_id ? 'ee' : 'aa');
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, r + 4 + pulse * 2, 0, Math.PI * 2);
     ctx.stroke();
 
-    // ── 思考动画：decided / analyzed 状态时绘制旋转弧线 ──
-    if (a.status === 'decided' || a.status === 'analyzed') {
-      const spinAngle = (now / 600) % (Math.PI * 2); // 每 600ms 转一圈
-      const arcLen = Math.PI * 1.4; // 约 252°
-      ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 0.8;
+    ctx.strokeStyle = color + '88';
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, r + 9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Core
+    const core = ctx.createRadialGradient(p.sx - r * 0.3, p.sy - r * 0.35, 0, p.sx, p.sy, r);
+    core.addColorStop(0, '#FFFFFF');
+    core.addColorStop(0.22, color);
+    core.addColorStop(1, color + '88');
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#DDF7FF';
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+
+    // Status spinner
+    if (active) {
+      const spinAngle = REDUCED_MOTION ? 0 : (now / 480) % (Math.PI * 2);
       ctx.beginPath();
-      ctx.arc(p.sx, p.sy, r + 3.5, spinAngle, spinAngle + arcLen);
-      ctx.strokeStyle = color + '99';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
+      ctx.arc(p.sx, p.sy, r + 13, spinAngle, spinAngle + Math.PI * 1.35);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.8;
       ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
     }
+    ctx.restore();
 
     // Label
-    ctx.fillStyle = '#2A2A2A';
+    ctx.save();
+    ctx.shadowColor = 'rgba(53,246,255,0.8)';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = '#DDF7FF';
     const labelSize = Math.max(9, Math.min(14, canvasW / 60));
     ctx.font = labelSize + 'px Inter, IBM Plex Sans, system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(a.name || a.agent_id, p.sx, p.sy - r - 4);
     ctx.textAlign = 'start';
+    ctx.restore();
   }
 }
 
@@ -695,13 +833,20 @@ function render() {
   const { w: canvasW, h: canvasH } = canvasCSS();
   const now = performance.now();
 
-  // Clear canvas with paper background
-  ctx.fillStyle = '#ECE8DF';
-  ctx.fillRect(0, 0, canvasW, canvasH);
+  drawCyberBackground(canvasW, canvasH, now);
 
   if (agents.length > 0) {
     drawRelationshipsComposite(agents, _relationships, now);
     drawAgents(agents, hoveredAgent?.agent_id, now);
+  } else {
+    ctx.save();
+    ctx.fillStyle = 'rgba(221,247,255,0.72)';
+    ctx.shadowColor = 'rgba(53,246,255,0.75)';
+    ctx.shadowBlur = 18;
+    ctx.font = '12px JetBrains Mono, IBM Plex Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('WAITING FOR AGENT TELEMETRY', canvasW / 2, canvasH / 2);
+    ctx.restore();
   }
 
   ctx.restore();
@@ -713,6 +858,12 @@ const statusLabel = { idle:'空闲', running:'运行中', paused:'已暂停', st
 const roleLabel = { scout:'侦察兵', commander:'指挥官', analyst:'分析师', support:'支援', brain:'Brain', 'claude-code':'Claude Code', openclaw:'OpenClaw', observer:'观察员' };
 const backendLabel = { brain:'Brain', 'claude-code':'Claude Code', openclaw:'OpenClaw' };
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
 function showTooltip(agent, mx, my) {
   const tt = document.getElementById('tooltip');
   if (!agent) {
@@ -721,21 +872,21 @@ function showTooltip(agent, mx, my) {
     return;
   }
   hoveredAgent = agent;
-  let html = '<div class=tt-name>' + (agent.name || agent.agent_id) + '</div>';
+  let html = '<div class=tt-name>' + escapeHtml(agent.name || agent.agent_id) + '</div>';
   const backend = (agent.extra_meta || {}).backend || '';
-  html += '<div class=tt-role>' + (roleLabel[agent.role] || backendLabel[backend] || agent.role) + '</div>';
-  html += '<div class=tt-row><span class=lbl>ID</span><span class=val>' + agent.agent_id + '</span></div>';
-  html += '<div class=tt-row><span class=lbl>状态</span><span class=val>' + (statusLabel[agent.status] || agent.status) + '</span></div>';
+  html += '<div class=tt-role>' + escapeHtml(roleLabel[agent.role] || backendLabel[backend] || agent.role) + '</div>';
+  html += '<div class=tt-row><span class=lbl>ID</span><span class=val>' + escapeHtml(agent.agent_id) + '</span></div>';
+  html += '<div class=tt-row><span class=lbl>状态</span><span class=val>' + escapeHtml(statusLabel[agent.status] || agent.status) + '</span></div>';
   if (agent.x !== undefined) {
     html += '<div class=tt-row><span class=lbl>坐标</span><span class=val>(' + agent.x.toFixed(0) + ', ' + agent.y.toFixed(0) + ')</span></div>';
   }
   const tasks = agent.pending_task_descs || [];
-  if (tasks.length > 0) { html += '<div class=tt-section>任务</div>'; tasks.forEach((t, i) => { html += '<div class=tt-task><span class=tt-task-n>' + (i+1) + '.</span> ' + t + '</div>'; }); }
+  if (tasks.length > 0) { html += '<div class=tt-section>任务</div>'; tasks.forEach((t, i) => { html += '<div class=tt-task><span class=tt-task-n>' + (i+1) + '.</span> ' + escapeHtml(t) + '</div>'; }); }
   const meta = agent.extra_meta || {};
-  if (meta.core_goal) { html += '<div class=tt-section>目标</div><div class=tt-task>' + meta.core_goal + '</div>'; }
-  if (meta.hidden_secret) { html += '<div class=tt-section>秘密</div><div class=tt-task style=color:#C0392B>' + meta.hidden_secret + '</div>'; }
+  if (meta.core_goal) { html += '<div class=tt-section>目标</div><div class=tt-task>' + escapeHtml(meta.core_goal) + '</div>'; }
+  if (meta.hidden_secret) { html += '<div class=tt-section>秘密</div><div class="tt-task tt-secret">' + escapeHtml(meta.hidden_secret) + '</div>'; }
   if (meta.action_space && meta.action_space.length) {
-    html += '<div class=tt-section>行动</div><div class=tt-skills>' + meta.action_space.map(a => '<span class=tt-tag>' + a + '</span>').join('') + '</div>';
+    html += '<div class=tt-section>行动</div><div class=tt-skills>' + meta.action_space.map(a => '<span class=tt-tag>' + escapeHtml(a) + '</span>').join('') + '</div>';
   }
   tt.innerHTML = html;
   tt.style.display = 'block';
@@ -1074,14 +1225,17 @@ function onSceneSelect() {}
 // ============== Scene Panel ==============
 function loadScenePanel(name) {
   const iframe = document.getElementById('fp-iframe');
+  const titleEl = document.getElementById('fp-title');
   if (iframe && name) {
     iframe.src = API + '/scenes/' + encodeURIComponent(name) + '/panel';
     sessionStorage.setItem('lastScenePanel', name);
   }
+  if (titleEl) titleEl.textContent = name || '场景面板';
 }
 
 function toggleScenePanel() {
-  document.getElementById('scene-panel').classList.toggle('collapsed');
+  document.getElementById('scene-panel')?.classList.toggle('collapsed');
+  document.getElementById('canvas-panel')?.classList.toggle('scene-collapsed');
 }
 
 async function runSelectedScene() {
