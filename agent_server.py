@@ -428,11 +428,11 @@ async def status():
 async def receive_message(msg: MessageIn, request: Request = None):
     if _agent:
         client_ip = request.client.host if request and request.client else "unknown"
-        _agent._add_to_inbox(from_agent=msg.from_name or msg.from_id, content=msg.content, msg_type=msg.type or "direct")
+        _agent._add_to_inbox(from_agent=msg.from_id, content=msg.content, msg_type=msg.type or "direct")
         if BACKEND == "brain":
             PacketRecorder.record_inbound(agent_id=AGENT_ID, src_ip=client_ip, method="POST", path="/message", content=msg.content, from_id=msg.from_id)
     else:
-        inbox.append({"from": msg.from_name or msg.from_id, "content": msg.content, "type": msg.type})
+        inbox.append({"from": msg.from_id, "content": msg.content, "type": msg.type})
         if len(inbox) > 50:
             inbox.pop(0)
     return {"received": True, "inbox_size": len(_agent.inbox) if _agent else len(inbox)}

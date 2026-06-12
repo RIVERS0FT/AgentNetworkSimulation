@@ -48,6 +48,7 @@ services:
   bus:
     build: { context: ., dockerfile: Dockerfile.message-bus }
     container_name: bus
+    user: "1000:1000"
     ports: ["9000:9000"]
     volumes: ["./data/logs:/app/data/logs"]
     environment: { TZ: "Asia/Shanghai", MESSAGE_BUS_PORT: "9000" }
@@ -57,8 +58,9 @@ services:
   srv:
     build: { context: ., dockerfile: Dockerfile.server }
     container_name: srv
+    user: "1000:1000"
     ports: ["8000:8000"]
-    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "./data/logs:/app/data/logs"]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "./data/logs:/app/data/logs", "./web/dist:/app/web/dist"]
     environment:
       TZ: Asia/Shanghai
       SERVER_PORT: "8000"

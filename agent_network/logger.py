@@ -4,7 +4,7 @@
 日志条目格式:
 {
   "timestamp": "2026-06-09T03:20:00.123",
-  "level": "INFO" | "DEBUG" | "WARN" | "ERROR",
+  "level": "INFO" | "WARN" | "ERROR",
   "event": "message_relayed" | "agent_decide" | "agent_act" | "container_start" | ...,
   "agent_id": "agent-001" (可选),
   "message": "人类可读的描述",
@@ -23,13 +23,9 @@ from collections import deque
 
 
 class LogLevel(Enum):
-    TRACE = 0
-    DEBUG = 1
-    INFO = 2
-    WARN = 3
-    ERROR = 4
-    FATAL = 5
-    AUDIT = 6
+    INFO = 0
+    WARN = 1
+    ERROR = 2
 
 
 class LogEntry:
@@ -290,7 +286,7 @@ class SimulationLogger:
 
     def event_trigger(self, turn: int, event_name: str, impact: str):
         """记录场景事件触发"""
-        self._log(LogLevel.AUDIT, "event_trigger",
+        self._log(LogLevel.INFO, "event_trigger",
                   f"Round {turn}: {event_name} — {impact}",
                   details={"turn": turn, "event_name": event_name, "impact": impact})
 

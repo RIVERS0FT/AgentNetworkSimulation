@@ -149,9 +149,11 @@ function getAgentWorldPos(agentId) {
 }
 
 function hasRelationship(fromId, toId) {
-  return _relationships.some(r =>
-    r.from.toLowerCase() === fromId && r.to.toLowerCase() === toId
-  );
+  return _relationships.some(r => {
+    const f = r.from.toLowerCase();
+    const t = r.to.toLowerCase();
+    return (f === fromId && t === toId) || (f === toId && t === fromId);
+  });
 }
 
 // ============== Client-side Force Simulation State ==============
@@ -776,10 +778,14 @@ if (msg.type === 'agent_log' && msg.data) {
         pushCommEvent(from.toLowerCase(), to.toLowerCase(), false);
       } else if (action === 'broadcast') {
         if (to === '0.0.0.0') {
-          // 广播：在发送者的所有出边上展示轨迹
+          // 广播：在发送者的所有边上展示轨迹（双向）
           for (const rel of _relationships) {
-            if (rel.from.toLowerCase() === from.toLowerCase()) {
-              pushCommEvent(from.toLowerCase(), rel.to.toLowerCase(), true);
+            const rf = rel.from.toLowerCase();
+            const rt = rel.to.toLowerCase();
+            if (rf === from.toLowerCase()) {
+              pushCommEvent(from.toLowerCase(), rt, true);
+            } else if (rt === from.toLowerCase()) {
+              pushCommEvent(from.toLowerCase(), rf, true);
             }
           }
         } else {

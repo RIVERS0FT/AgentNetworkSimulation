@@ -1695,8 +1695,10 @@ async def agent_log_ingest(req: Request):
     details = body.get("details", {})
 
     # 同时写入旧缓冲（兼容）+ 统一日志器
+    action_status = body.get("action_status", "success")
     _agent_logs.append({
         "timestamp": _beijing_time(body.get("timestamp", "")),
+        "level": "ERROR" if action_status == "failed" else "INFO",
         "agent_id": agent_id,
         "agent_name": body.get("agent_name", "?"),
         "event": event,
@@ -1704,7 +1706,7 @@ async def agent_log_ingest(req: Request):
         "from_agent": body.get("from_agent", agent_id),
         "to_agent": body.get("to_agent", ""),
         "action": body.get("action", event),
-        "action_status": body.get("action_status", "success"),
+        "action_status": action_status,
     })
     if len(_agent_logs) > 500:
         _agent_logs.pop(0)
@@ -1719,7 +1721,6 @@ async def agent_log_ingest(req: Request):
     })
     # 更新 AgentRegistry 中的 Agent 状态（悬浮框用）
     action_type = body.get("action", "")
-    action_status = body.get("action_status", "")
     agent = AgentRegistry.get(agent_id)
     if agent:
         if event == "decide":
