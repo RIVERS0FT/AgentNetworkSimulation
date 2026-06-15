@@ -55,7 +55,10 @@ from agent_network.container_runtime import get_runtime, ContainerRuntime
 from agent_network.container_controller import ContainerController
 from agent_network.workflow import WorkflowEngine, WorkflowDAG, WorkflowStep
 from agent_network.agent_scheduler import TaskPriority, TaskStatus
-from agent_network.logger import SimulationLogger, LogLevel, get_logger, normalize_log_timestamp
+from agent_network.logger import (
+    SimulationLogger, LogLevel, get_logger, normalize_log_timestamp,
+    infer_log_layer, is_agent_message_record, is_agent_network_record,
+)
 from agent_network.event_bus import PacketRecorder
 from agent_network.tool import ToolRegistry
 from agent_network.skill import SkillRegistry
@@ -1107,14 +1110,18 @@ async def query_logs(
     agent_id: Optional[str] = Query(None),
     level: Optional[str] = Query(None),
     event: Optional[str] = Query(None),
+    layer: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
     keyword: Optional[str] = Query(None),
     limit: int = Query(default=100, le=1000),
 ):
-    """日志查询 API — 支持按 agent/level/event/keyword 过滤"""
+    """日志查询 API — 支持按 agent/level/event/layer/category/keyword 过滤"""
     entries = logger.query(
         agent_id=agent_id,
         level=level,
         event=event,
+        layer=layer,
+        category=category,
         keyword=keyword,
         limit=limit,
     )
@@ -1142,13 +1149,24 @@ async def agent_logs(agent_id: str, limit: int = 50):
 
 @app.get("/api/logs/messages")
 async def message_logs(limit: int = 50):
-    """获取 Agent 间通信报文 + Docker HTTP 流量"""
+    """获取 Agent 应用层业务消息，不包含 Docker HTTP 流量。"""
     with logger._lock:
-        comm_entries = [e for e in logger._entries if e.get("category") == "communication"]
+        comm_entries = [e for e in logger._entries if is_agent_message_record(e)]
     total = len(comm_entries)
     return {
         "total": total,
         "entries": comm_entries[-limit:],
+    }
+
+
+@app.get("/api/logs/network")
+async def network_logs(limit: int = Query(default=100, le=1000)):
+    """获取 Agent 网络层日志，包括 Docker HTTP 收发和 tcpdump 聚合包。"""
+    with logger._lock:
+        entries = [e for e in logger._entries if is_agent_network_record(e)]
+    return {
+        "total": len(entries),
+        "entries": entries[-limit:],
     }
 
 
@@ -1794,7 +1812,8 @@ async def agent_log_ingest(req: Request):
         "level": "ERROR" if action_status == "failed" else "INFO",
         "source": "agent",
         "component": agent_id,
-        "category": "agent_behavior",
+        "category": "agent_application",
+        "layer": "agent_application",
         "event": event,
         "actor": {"id": from_agent},
         "target": {"id": to_agent} if to_agent else {},
@@ -1829,7 +1848,7 @@ async def log_ingest(req: Request):
         body = {}
     if (
         not _simulation_active
-        and body.get("category") == "network_capture"
+        and infer_log_layer(body) == "agent_network"
         and body.get("event") == "llm_api_packet"
     ):
         return {"status": "dropped", "reason": "simulation_inactive"}
@@ -1839,6 +1858,7 @@ async def log_ingest(req: Request):
         "source": body.get("source", "external"),
         "component": body.get("component", "unknown"),
         "category": body.get("category", "system"),
+        "layer": body.get("layer", ""),
         "event": body.get("event", "log"),
         "actor": body.get("actor", {}),
         "target": body.get("target", {}),

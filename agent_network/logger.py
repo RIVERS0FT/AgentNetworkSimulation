@@ -9,7 +9,8 @@
   "level": "INFO",
   "source": "backend",          # backend | agent | bus | frontend
   "component": "srv",           # srv | bus | ag-c1 | dashboard
-  "category": "communication",  # communication | agent_behavior | system | frontend | lifecycle
+  "category": "agent_application",  # agent_application | agent_network | system | frontend | lifecycle
+  "layer": "agent_application",     # agent_application | agent_network
   "event": "agent_message",
 
   "actor": {"id": "cmdr_01"},
@@ -44,9 +45,11 @@
 }
 
 路由规则:
-  - category == "communication"  → global.jsonl + communication.jsonl
-  - category == "agent_behavior" → global.jsonl + behavior.jsonl
-  - 其他                         → global.jsonl
+  - global.jsonl: 全部日志
+  - application.jsonl: layer == agent_application
+  - network.jsonl: layer == agent_network
+  - communication.jsonl: event == agent_message 的兼容视图
+  - behavior.jsonl: decide/act/agent_action/agent_decide 的兼容视图
 """
 
 import json
@@ -63,6 +66,60 @@ class LogLevel(Enum):
     INFO = 0
     WARN = 1
     ERROR = 2
+
+
+AGENT_APPLICATION_LAYER = "agent_application"
+AGENT_NETWORK_LAYER = "agent_network"
+
+APPLICATION_EVENTS = {
+    "agent_message",
+    "decide",
+    "act",
+    "agent_action",
+    "agent_decide",
+    "llm_api_call",
+    "llm_cli_call",
+}
+NETWORK_EVENTS = {
+    "docker_http_inbound",
+    "docker_http_outbound",
+    "llm_api_packet",
+}
+APPLICATION_CATEGORIES = {AGENT_APPLICATION_LAYER, "agent_behavior", "llm_api", "communication"}
+NETWORK_CATEGORIES = {AGENT_NETWORK_LAYER, "network_capture"}
+
+
+def infer_log_layer(record: Dict) -> str:
+    """Infer the two-layer Agent log model for new and legacy records."""
+    layer = record.get("layer")
+    if layer:
+        return layer
+    category = record.get("category", "")
+    event = record.get("event", "")
+    if event in NETWORK_EVENTS or category in NETWORK_CATEGORIES:
+        return AGENT_NETWORK_LAYER
+    if event in APPLICATION_EVENTS or category in APPLICATION_CATEGORIES:
+        return AGENT_APPLICATION_LAYER
+    return ""
+
+
+def is_agent_application_record(record: Dict) -> bool:
+    return infer_log_layer(record) == AGENT_APPLICATION_LAYER
+
+
+def is_agent_network_record(record: Dict) -> bool:
+    return infer_log_layer(record) == AGENT_NETWORK_LAYER
+
+
+def is_agent_message_record(record: Dict) -> bool:
+    return record.get("event") == "agent_message"
+
+
+def is_behavior_record(record: Dict) -> bool:
+    return (
+        record.get("event") in {"decide", "act", "agent_action", "agent_decide"}
+        or record.get("category") == "agent_behavior"
+    )
 
 
 # ── 统一日志记录 schema ──
@@ -117,6 +174,7 @@ def _base_record(level: str, source: str, component: str, category: str,
         "source": source,
         "component": component,
         "category": category,
+        "layer": "",
         "event": event,
         "actor": {},
         "target": {},
@@ -162,6 +220,8 @@ class SimulationLogger:
         self._file_path = ""            # global.jsonl
         self._session_dir = ""
         self._session_comm_path = ""    # communication.jsonl
+        self._session_application_path = ""  # application.jsonl
+        self._session_network_path = ""  # network.jsonl
         self._session_behavior_path = ""  # behavior.jsonl
         self._session_active = False
         self._file_lock = threading.Lock()
@@ -210,6 +270,8 @@ class SimulationLogger:
     def _set_session_paths(self):
         self._file_path = os.path.join(self._session_dir, "global.jsonl")
         self._session_comm_path = os.path.join(self._session_dir, "communication.jsonl")
+        self._session_application_path = os.path.join(self._session_dir, "application.jsonl")
+        self._session_network_path = os.path.join(self._session_dir, "network.jsonl")
         self._session_behavior_path = os.path.join(self._session_dir, "behavior.jsonl")
 
     def _append_file(self, filepath: str, entry: Dict):
@@ -228,12 +290,30 @@ class SimulationLogger:
             return
         # global.jsonl: 全部写入
         self._append_file(self._file_path, record)
-        # communication.jsonl: 仅通信类
-        if record.get("category") == "communication" and self._session_comm_path:
+        if is_agent_application_record(record) and self._session_application_path:
+            self._append_file(self._session_application_path, record)
+        if is_agent_network_record(record) and self._session_network_path:
+            self._append_file(self._session_network_path, record)
+        # communication.jsonl: legacy view, only business Agent messages.
+        if is_agent_message_record(record) and self._session_comm_path:
             self._append_file(self._session_comm_path, record)
-        # behavior.jsonl: 仅 agent 行为类
-        if record.get("category") == "agent_behavior" and self._session_behavior_path:
+        # behavior.jsonl: legacy view, only decision/action behavior.
+        if is_behavior_record(record) and self._session_behavior_path:
             self._append_file(self._session_behavior_path, record)
+
+    def _normalize_record(self, record: Dict) -> Dict:
+        layer = infer_log_layer(record)
+        if layer:
+            record["layer"] = layer
+        else:
+            record.setdefault("layer", "")
+        record.setdefault("actor", {})
+        record.setdefault("target", {})
+        record.setdefault("action", {})
+        record.setdefault("payload", {})
+        record.setdefault("network", {})
+        record.setdefault("trace", {})
+        return record
 
     # ═══════════════════════════════════════════
     # 核心 emit 方法 — 唯一写入入口
@@ -245,6 +325,7 @@ class SimulationLogger:
         record["session_id"] = self._session_id
         if not record.get("timestamp"):
             record["timestamp"] = current_log_timestamp()
+        self._normalize_record(record)
 
         self._append_memory(record)
         self._write_file(record)
@@ -258,6 +339,7 @@ class SimulationLogger:
         record["seq"] = self._next_seq()
         record["session_id"] = self._session_id
         record["timestamp"] = normalize_log_timestamp(record.get("timestamp", ""))
+        self._normalize_record(record)
         self._append_memory(record)
         self._write_file(record)
 
@@ -289,8 +371,9 @@ class SimulationLogger:
 
     def agent_action(self, agent_id: str, action: str, result: Dict = None, **kw):
         """Agent 动作执行"""
-        rec = _base_record("INFO", "agent", agent_id, "agent_behavior",
+        rec = _base_record("INFO", "agent", agent_id, AGENT_APPLICATION_LAYER,
                            "agent_action", f"[{agent_id}] {action}")
+        rec["layer"] = AGENT_APPLICATION_LAYER
         rec["actor"] = {"id": agent_id}
         rec["action"] = {"name": action, "status": "success"}
         rec["payload"] = kw
@@ -300,8 +383,9 @@ class SimulationLogger:
 
     def agent_decide(self, agent_id: str, prompt_snippet: str, decision: Dict = None):
         """Agent 决策"""
-        rec = _base_record("INFO", "agent", agent_id, "agent_behavior",
+        rec = _base_record("INFO", "agent", agent_id, AGENT_APPLICATION_LAYER,
                            "agent_decide", f"[{agent_id}] 决策: {prompt_snippet}")
+        rec["layer"] = AGENT_APPLICATION_LAYER
         rec["actor"] = {"id": agent_id}
         rec["action"] = {"name": "decide", "status": "decided"}
         rec["payload"] = {
@@ -321,8 +405,9 @@ class SimulationLogger:
                       message_type: str = "relay",
                       talk: str = ""):
         """Agent 间通信报文 — 正文进 payload，网络层进 network"""
-        rec = _base_record("INFO", "bus", "bus", "communication",
+        rec = _base_record("INFO", "bus", "bus", AGENT_APPLICATION_LAYER,
                            "agent_message", f"{from_id} → {to}")
+        rec["layer"] = AGENT_APPLICATION_LAYER
         rec["actor"] = {"id": from_id}
         rec["target"] = {"id": to}
         rec["action"] = {"name": message_type, "status": status}
@@ -388,7 +473,8 @@ class SimulationLogger:
             return list(self._entries)[-limit:]
 
     def query(self, agent_id: str = None, event: str = None, level: str = None,
-              keyword: str = None, limit: int = 50) -> List[Dict]:
+              keyword: str = None, layer: str = None, category: str = None,
+              limit: int = 50) -> List[Dict]:
         with self._lock:
             results = list(self._entries)
         if agent_id:
@@ -396,6 +482,10 @@ class SimulationLogger:
                        if (e.get("actor") or {}).get("id") == agent_id]
         if event:
             results = [e for e in results if e.get("event") == event]
+        if layer:
+            results = [e for e in results if infer_log_layer(e) == layer]
+        if category:
+            results = [e for e in results if e.get("category") == category]
         if level:
             results = [e for e in results if e.get("level") == level.upper()]
         if keyword:
@@ -416,7 +506,7 @@ class SimulationLogger:
     def get_message_log(self, limit: int = 50) -> List[Dict]:
         """获取 Agent 间通信报文（兼容旧 API）"""
         with self._lock:
-            results = [e for e in self._entries if e.get("category") == "communication"]
+            results = [e for e in self._entries if is_agent_message_record(e)]
         return results[-limit:]
 
     def export(self, fmt: str = "jsonl", limit: int = 0) -> str:
@@ -428,7 +518,7 @@ class SimulationLogger:
             import csv
             buf = io.StringIO()
             fieldnames = ["timestamp", "seq", "session_id", "level", "source",
-                          "component", "category", "event", "message"]
+                          "component", "category", "layer", "event", "message"]
             writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             for d in entries:

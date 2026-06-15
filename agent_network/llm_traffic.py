@@ -1,7 +1,7 @@
 """
 外部 LLM API 调用元数据记录 — 不记录 prompt/response 正文，只记录元数据。
 
-写入 global.jsonl (category: llm_api)，由 LOG_LLM_API=1 开关控制。
+写入 agent_application 应用层日志，由 LOG_LLM_API=1 开关控制。
 
 用法:
   from agent_network.llm_traffic import log_llm_call, log_llm_cli
@@ -87,7 +87,8 @@ def log_llm_call(*,
         "level": "ERROR" if error or (status and not status.startswith("2")) else "INFO",
         "source": _infer_source(component, actor_id),
         "component": component,
-        "category": "llm_api",
+        "category": "agent_application",
+        "layer": "agent_application",
         "event": "llm_api_call",
         "actor": _actor(actor_id, actor_name),
         "target": {
@@ -133,7 +134,8 @@ def log_llm_cli(*,
         "level": "ERROR" if exit_code != 0 else "INFO",
         "source": _infer_source(component, actor_id),
         "component": component,
-        "category": "llm_api",
+        "category": "agent_application",
+        "layer": "agent_application",
         "event": "llm_cli_call",
         "actor": _actor(actor_id, actor_name),
         "target": {

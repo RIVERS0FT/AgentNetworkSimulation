@@ -1,7 +1,7 @@
 """
 Agent 容器内 tcpdump 网络抓包 — 捕获外部 LLM API 访问的 TCP/TLS 元数据。
 
-写入 global.jsonl (category: network_capture)，由 LOG_LLM_API=1 控制。
+写入 agent_network 网络层日志，由 LOG_LLM_API=1 控制。
 不做 HTTPS 解密，不记录 payload 明文。
 
 用法（由仿真生命周期接口控制）:
@@ -160,7 +160,8 @@ def _flush_aggregated(agent_id: str, server_url: str, connections: dict,
             "level": "INFO",
             "source": "agent",
             "component": agent_id,
-            "category": "network_capture",
+            "category": "agent_network",
+            "layer": "agent_network",
             "event": "llm_api_packet",
             "actor": _actor(agent_id, agent_name),
             "target": {
