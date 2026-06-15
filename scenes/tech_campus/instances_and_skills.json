@@ -1,0 +1,77 @@
+{
+  "container_instances": {
+    "DEV_FE": {
+      "skills": [
+        "submit_code",
+        "request_copilot_assist"
+      ]
+    },
+    "DEV_BE": {
+      "skills": [
+        "submit_code",
+        "request_copilot_assist"
+      ]
+    },
+    "DEV_FW": {
+      "skills": [
+        "submit_code",
+        "request_copilot_assist"
+      ]
+    },
+    "DEV_AI": {
+      "skills": [
+        "submit_model",
+        "request_external_api"
+      ]
+    },
+    "DEV_IC": {
+      "skills": [
+        "request_external_api",
+        "submit_design"
+      ]
+    },
+    "ARCHITECT": {
+      "skills": [
+        "review_document",
+        "notify_team"
+      ]
+    },
+    "PM": {
+      "skills": [
+        "write_document",
+        "request_copilot_assist"
+      ]
+    },
+    "DOC_WRITER": {
+      "skills": [
+        "write_document",
+        "request_copilot_assist"
+      ]
+    },
+    "QA": {
+      "skills": [
+        "run_test",
+        "notify_team"
+      ]
+    },
+    "COPILOT": {
+      "skills": [
+        "assist_code",
+        "assist_document"
+      ]
+    },
+    "REPO_ADMIN": {
+      "skills": [
+        "handle_push",
+        "trigger_ci_cd",
+        "notify_team"
+      ]
+    },
+    "API_GW": {
+      "skills": [
+        "rate_limit",
+        "forward_request"
+      ]
+    }
+  }
+}

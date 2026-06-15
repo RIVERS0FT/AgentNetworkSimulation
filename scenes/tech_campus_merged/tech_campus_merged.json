@@ -1,0 +1,272 @@
+{
+  "scenario_metadata": {
+    "title": "华为范式科技园区仿真",
+    "global_rules": "仿真模拟华为科技园区内部跨部门协作与外部资源调用，包括东西向内部流量和南北向外部API调用。所有节点遵守园区网络策略，外部API调用需通过API网关限流。仿真时限为10轮，僵局检测为3轮。",
+    "max_rounds": 10,
+    "stalemate_rounds": 3
+  },
+  "global_topology_type": "HYBRID_MESH",
+  "roles": {
+    "DEV_FE": {
+      "name": "前端开发工程师",
+      "model_backbone": "openclaw",
+      "identity": "消费者BG研发部前端开发，负责手机/平板UI开发",
+      "core_goal": "在10轮内完成3个前端模块的代码提交并通过CI流水线",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "peers": [
+        "ARCHITECT",
+        "COPILOT",
+        "DEV_BE",
+        "PM",
+        "QA",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "submit_code",
+        "request_copilot_assist"
+      ]
+    },
+    "DEV_BE": {
+      "name": "后端开发工程师",
+      "model_backbone": "openclaw",
+      "identity": "云计算与AI部后端开发，负责大模型推理服务API",
+      "core_goal": "在10轮内完成2个后端微服务的代码提交并通过CI",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "peers": [
+        "API_GW",
+        "ARCHITECT",
+        "COPILOT",
+        "DEV_AI",
+        "DEV_FE",
+        "PM",
+        "QA",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "submit_code",
+        "request_copilot_assist"
+      ]
+    },
+    "DEV_FW": {
+      "name": "嵌入式固件工程师",
+      "model_backbone": "claudecode",
+      "identity": "无线通信研发部固件开发，负责5G基站设备固件",
+      "core_goal": "在10轮内修复3个固件bug并提交代码",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "peers": [
+        "ARCHITECT",
+        "COPILOT",
+        "QA",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "submit_code",
+        "request_copilot_assist"
+      ]
+    },
+    "DEV_AI": {
+      "name": "AI模型训练工程师",
+      "model_backbone": "claudecode",
+      "identity": "云计算与AI部AI训练，负责大模型训练与推理",
+      "core_goal": "在10轮内完成1次模型训练任务并提交模型文件",
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION",
+      "peers": [
+        "API_GW",
+        "ARCHITECT",
+        "DEV_BE",
+        "QA",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "submit_model",
+        "request_external_api"
+      ]
+    },
+    "DEV_IC": {
+      "name": "IC设计工程师",
+      "model_backbone": "claudecode",
+      "identity": "芯片设计部IC设计，负责芯片仿真",
+      "core_goal": "在10轮内通过外部EDA云仿真资源完成1次芯片仿真",
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION",
+      "peers": [
+        "API_GW",
+        "ARCHITECT",
+        "QA",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "request_external_api",
+        "submit_design"
+      ]
+    },
+    "ARCHITECT": {
+      "name": "技术架构师",
+      "model_backbone": "openclaw",
+      "identity": "基础平台部架构师，负责整体技术架构审查",
+      "core_goal": "在10轮内审查5份设计文档并通知修改",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "peers": [
+        "DEV_AI",
+        "DEV_BE",
+        "DEV_FE",
+        "DEV_FW",
+        "DEV_IC",
+        "DOC_WRITER",
+        "QA",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "review_document",
+        "notify_team"
+      ]
+    },
+    "PM": {
+      "name": "产品经理",
+      "model_backbone": "openclaw",
+      "identity": "消费者BG产品经理，负责产品需求定义",
+      "core_goal": "在10轮内输出3份产品需求文档",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "peers": [
+        "COPILOT",
+        "DEV_BE",
+        "DEV_FE",
+        "DOC_WRITER",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "write_document",
+        "request_copilot_assist"
+      ]
+    },
+    "DOC_WRITER": {
+      "name": "技术文档工程师",
+      "model_backbone": "openclaw",
+      "identity": "基础平台部文档，负责技术文档编写",
+      "core_goal": "在10轮内完成4份文档的协作编辑",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "peers": [
+        "ARCHITECT",
+        "COPILOT",
+        "PM",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "write_document",
+        "request_copilot_assist"
+      ]
+    },
+    "QA": {
+      "name": "QA测试工程师",
+      "model_backbone": "openclaw",
+      "identity": "智能制造部QA，负责产线软件测试",
+      "core_goal": "在10轮内执行3次自动化测试并报告结果",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "peers": [
+        "ARCHITECT",
+        "DEV_AI",
+        "DEV_BE",
+        "DEV_FE",
+        "DEV_FW",
+        "DEV_IC",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "run_test",
+        "notify_team"
+      ]
+    },
+    "COPILOT": {
+      "name": "AI编程助手Copilot",
+      "model_backbone": "claudecode",
+      "identity": "基础平台部AI助手，辅助代码生成与文档",
+      "core_goal": "在10轮内响应10次代码辅助请求",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "peers": [
+        "API_GW",
+        "DEV_BE",
+        "DEV_FE",
+        "DEV_FW",
+        "DOC_WRITER",
+        "PM",
+        "REPO_ADMIN"
+      ],
+      "skills": [
+        "assist_code",
+        "assist_document"
+      ]
+    },
+    "REPO_ADMIN": {
+      "name": "内部代码仓库管理员",
+      "model_backbone": "openclaw",
+      "identity": "基础平台部仓库管理，维护Git/Registry",
+      "core_goal": "在10轮内处理5次代码推送和2次镜像推送",
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "peers": [
+        "ARCHITECT",
+        "COPILOT",
+        "DEV_AI",
+        "DEV_BE",
+        "DEV_FE",
+        "DEV_FW",
+        "DEV_IC",
+        "DOC_WRITER",
+        "PM",
+        "QA"
+      ],
+      "skills": [
+        "handle_push",
+        "trigger_ci_cd",
+        "notify_team"
+      ]
+    },
+    "API_GW": {
+      "name": "外部API网关",
+      "model_backbone": "claudecode",
+      "identity": "基础平台部API网关，控制外部API调用限流",
+      "core_goal": "在10轮内处理20次API请求，限流不超过5次",
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION",
+      "peers": [
+        "COPILOT",
+        "DEV_AI",
+        "DEV_BE",
+        "DEV_IC"
+      ],
+      "skills": [
+        "rate_limit",
+        "forward_request"
+      ]
+    }
+  },
+  "business_topology": {
+    "links": [
+      {
+        "source": "DEV_AI",
+        "target": "API_GW",
+        "status": "NEGOTIATING",
+        "value": 2000,
+        "desc": "AI训练→LLM推理API(南北向)"
+      },
+      {
+        "source": "DEV_IC",
+        "target": "API_GW",
+        "status": "NEGOTIATING",
+        "value": 5000,
+        "desc": "IC设计→EDA云仿真(南北向)"
+      },
+      {
+        "source": "COPILOT",
+        "target": "API_GW",
+        "status": "NEGOTIATING",
+        "value": 1000,
+        "desc": "Copilot→LLM推理API(南北向,高频小包)"
+      },
+      {
+        "source": "DEV_BE",
+        "target": "API_GW",
+        "status": "NEGOTIATING",
+        "value": 500,
+        "desc": "后端→Cloud Build API(南北向)"
+      }
+    ]
+  }
+}
