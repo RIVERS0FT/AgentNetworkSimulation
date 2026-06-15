@@ -43,6 +43,25 @@ def llm_api_enabled() -> bool:
     return os.environ.get("LOG_LLM_API", os.environ.get("LOG_TRAFFIC", "0")) == "1"
 
 
+def _infer_source(component: str, actor_id: str = "") -> str:
+    if actor_id:
+        return "agent"
+    if "bus" in component:
+        return "bus"
+    if component in ("srv", "server", "backend"):
+        return "backend"
+    return "agent" if component not in ("unknown", "") else "backend"
+
+
+def _actor(actor_id: str = "", actor_name: str = "") -> dict:
+    if not actor_id:
+        return {}
+    actor = {"id": actor_id}
+    if actor_name:
+        actor["name"] = actor_name
+    return actor
+
+
 def log_llm_call(*,
                  provider: str = "",
                  model: str = "",
@@ -56,6 +75,8 @@ def log_llm_call(*,
                  max_tokens: int = 0,
                  messages_count: int = 0,
                  component: str = "unknown",
+                 actor_id: str = "",
+                 actor_name: str = "",
                  error: str = ""):
     """记录一次外部 LLM HTTP/SDK 调用的元数据"""
     if not llm_api_enabled():
@@ -64,11 +85,11 @@ def log_llm_call(*,
     record = {
         "timestamp": _now_iso(),
         "level": "ERROR" if error or (status and not status.startswith("2")) else "INFO",
-        "source": "agent" if "ag-" in component else "backend",
+        "source": _infer_source(component, actor_id),
         "component": component,
         "category": "llm_api",
         "event": "llm_api_call",
-        "actor": {},
+        "actor": _actor(actor_id, actor_name),
         "target": {
             "provider": provider,
             "model": model,
@@ -100,6 +121,8 @@ def log_llm_cli(*,
                 exit_code: int = 0,
                 latency_ms: float = 0,
                 component: str = "unknown",
+                actor_id: str = "",
+                actor_name: str = "",
                 error: str = ""):
     """记录一次 Claude CLI 调用的元数据（不记录 prompt/response）"""
     if not llm_api_enabled():
@@ -108,11 +131,11 @@ def log_llm_cli(*,
     record = {
         "timestamp": _now_iso(),
         "level": "ERROR" if exit_code != 0 else "INFO",
-        "source": "agent",
+        "source": _infer_source(component, actor_id),
         "component": component,
         "category": "llm_api",
         "event": "llm_cli_call",
-        "actor": {},
+        "actor": _actor(actor_id, actor_name),
         "target": {
             "provider": "anthropic",
             "method": "cli",
@@ -140,13 +163,16 @@ class LLMCallTracker:
 
     def __init__(self, provider: str, model: str, method: str = "POST",
                  path: str = "", host: str = "", component: str = "unknown",
-                 prompt_chars: int = 0, messages_count: int = 0, max_tokens: int = 0):
+                 prompt_chars: int = 0, messages_count: int = 0, max_tokens: int = 0,
+                 actor_id: str = "", actor_name: str = ""):
         self.provider = provider
         self.model = model
         self.method = method
         self.path = path
         self.host = host
         self.component = component
+        self.actor_id = actor_id
+        self.actor_name = actor_name
         self.prompt_chars = prompt_chars
         self.messages_count = messages_count
         self.max_tokens = max_tokens
@@ -165,6 +191,7 @@ class LLMCallTracker:
                 status="0", latency_ms=latency_ms,
                 prompt_chars=self.prompt_chars, max_tokens=self.max_tokens,
                 messages_count=self.messages_count, component=self.component,
+                actor_id=self.actor_id, actor_name=self.actor_name,
                 error=f"{exc_type.__name__}: {exc_val}",
             )
         return False  # 不吞异常
@@ -178,4 +205,5 @@ class LLMCallTracker:
             prompt_chars=self.prompt_chars, response_chars=response_chars,
             max_tokens=self.max_tokens, messages_count=self.messages_count,
             component=self.component,
+            actor_id=self.actor_id, actor_name=self.actor_name,
         )

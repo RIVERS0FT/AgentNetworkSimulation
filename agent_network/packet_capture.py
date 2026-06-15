@@ -103,20 +103,49 @@ def _parse_tcpdump_line(line: str) -> Optional[dict]:
     }
 
 
-def _is_llm_traffic(parsed: dict, llm_hosts: List[str]) -> bool:
-    """判断是否为外部 HTTPS/HTTP 流量（捕获所有非内网 443/80）"""
-    dst = parsed["dst_ip"]
-    src = parsed["src_ip"]
-    if dst in INTERNAL_HOSTS or src in INTERNAL_HOSTS:
-        return False
-    if dst.startswith("172.") or dst.startswith("10.") or dst.startswith("192.168."):
-        return False
+def _is_internal_endpoint(host: str) -> bool:
+    if host in INTERNAL_HOSTS:
+        return True
+    return host.startswith("172.") or host.startswith("10.") or host.startswith("192.168.")
+
+
+def _external_endpoint(parsed: dict) -> Optional[dict]:
+    """返回外部 LLM 端点和方向；TLS 回包通常是 src_port=443/80。"""
     if parsed["dst_port"] in INTERNAL_PORTS or parsed["src_port"] in INTERNAL_PORTS:
-        return False
-    return parsed["dst_port"] in (443, 80)
+        return None
+    if parsed["dst_port"] in (443, 80) and not _is_internal_endpoint(parsed["dst_ip"]):
+        return {
+            "direction": "out",
+            "ip": parsed["dst_ip"],
+            "port": parsed["dst_port"],
+            "local_ip": parsed["src_ip"],
+            "local_port": parsed["src_port"],
+        }
+    if parsed["src_port"] in (443, 80) and not _is_internal_endpoint(parsed["src_ip"]):
+        return {
+            "direction": "in",
+            "ip": parsed["src_ip"],
+            "port": parsed["src_port"],
+            "local_ip": parsed["dst_ip"],
+            "local_port": parsed["dst_port"],
+        }
+    return None
 
 
-def _flush_aggregated(agent_id: str, server_url: str, connections: dict, force: bool = False):
+def _is_llm_traffic(parsed: dict, llm_hosts: List[str]) -> bool:
+    """判断是否为外部 HTTPS/HTTP 流量（包含请求包和回包）。"""
+    return _external_endpoint(parsed) is not None
+
+
+def _actor(agent_id: str, agent_name: str = "") -> dict:
+    actor = {"id": agent_id}
+    if agent_name:
+        actor["name"] = agent_name
+    return actor
+
+
+def _flush_aggregated(agent_id: str, server_url: str, connections: dict,
+                      force: bool = False, agent_name: str = ""):
     """将聚合的连接数据写入日志"""
     now = time.time()
     expired = []
@@ -133,14 +162,14 @@ def _flush_aggregated(agent_id: str, server_url: str, connections: dict, force: 
             "component": agent_id,
             "category": "network_capture",
             "event": "llm_api_packet",
-            "actor": {"id": agent_id},
+            "actor": _actor(agent_id, agent_name),
             "target": {
                 "host": data["host"],
-                "ip": data["dst_ip"],
-                "port": data["dst_port"],
+                "ip": data["external_ip"],
+                "port": data["external_port"],
             },
             "action": {"name": f"SEND" if direction == "out" else "RECV", "status": f"{data['count']} packets"},
-            "message": f"{dir_label} {agent_id} → {data['host']}:{data['dst_port']} {data['count']}pkts {data['total_bytes']}B",
+            "message": f"{dir_label} {agent_id} → {data['host']}:{data['external_port']} {data['count']}pkts {data['total_bytes']}B",
             "payload": {
                 "line_summary": f"{dir_label}: {data['count']} packets, {data['total_bytes']} bytes",
                 "capture_source": "tcpdump",
@@ -153,6 +182,10 @@ def _flush_aggregated(agent_id: str, server_url: str, connections: dict, force: 
                 "src_port": data["src_port"],
                 "dst_ip": data["dst_ip"],
                 "dst_port": data["dst_port"],
+                "external_ip": data["external_ip"],
+                "external_port": data["external_port"],
+                "local_ip": data["local_ip"],
+                "local_port": data["local_port"],
                 "tcp_flags": data.get("last_flags", ""),
                 "packet_len": data["total_bytes"],
                 "capture_interface": data.get("interface", "any"),
@@ -166,7 +199,7 @@ def _flush_aggregated(agent_id: str, server_url: str, connections: dict, force: 
         del connections[key]
 
 
-def _capture_loop(agent_id: str, server_url: str):
+def _capture_loop(agent_id: str, agent_name: str, server_url: str):
     """后台抓包线程 — 运行 tcpdump 并解析输出"""
     global _running, _capture_process
     llm_hosts = _resolve_llm_hosts()
@@ -189,6 +222,7 @@ def _capture_loop(agent_id: str, server_url: str):
             "timestamp": _now_iso(), "level": "WARN",
             "source": "agent", "component": agent_id,
             "category": "system", "event": "tcpdump_missing",
+            "actor": _actor(agent_id, agent_name),
             "message": f"[{agent_id}] tcpdump not found, packet capture disabled",
         }
         _send_record(server_url, record)
@@ -199,6 +233,7 @@ def _capture_loop(agent_id: str, server_url: str):
             "timestamp": _now_iso(), "level": "WARN",
             "source": "agent", "component": agent_id,
             "category": "system", "event": "tcpdump_permission_denied",
+            "actor": _actor(agent_id, agent_name),
             "message": f"[{agent_id}] No permission for tcpdump (NET_RAW/NET_ADMIN needed)",
         }
         _send_record(server_url, record)
@@ -211,6 +246,7 @@ def _capture_loop(agent_id: str, server_url: str):
         "component": agent_id,
         "category": "system",
         "event": "tcpdump_started",
+        "actor": _actor(agent_id, agent_name),
         "message": f"[{agent_id}] tcpdump started for LLM API network capture",
         "payload": {"command": " ".join(cmd), "llm_hosts": llm_hosts},
     })
@@ -235,6 +271,7 @@ def _capture_loop(agent_id: str, server_url: str):
                     "component": agent_id,
                     "category": "system",
                     "event": "tcpdump_parse_miss",
+                    "actor": _actor(agent_id, agent_name),
                     "message": f"[{agent_id}] tcpdump output parse miss x{parse_miss}",
                     "payload": {"sample": line.strip()[:300]},
                 })
@@ -242,16 +279,19 @@ def _capture_loop(agent_id: str, server_url: str):
         if not _is_llm_traffic(parsed, llm_hosts):
             continue
 
-        # 聚合：按 (src_ip, dst_ip, dst_port, direction) 分组，收发分离
-        dir_key = "out" if parsed.get("interface_direction") in ("out", "Out") else "in"
-        key = f"{parsed['src_ip']}:{parsed['dst_ip']}:{parsed['dst_port']}:{dir_key}"
+        # 聚合：按外部端点 + 本地端口 + 方向分组，收发分离。
+        endpoint = _external_endpoint(parsed)
+        if not endpoint:
+            continue
+        dir_key = endpoint["direction"]
+        key = f"{endpoint['local_ip']}:{endpoint['local_port']}:{endpoint['ip']}:{endpoint['port']}:{dir_key}"
         if key not in connections:
             # 尝试 DNS 解析 host
-            host = parsed["dst_ip"]
+            host = endpoint["ip"]
             for h in llm_hosts:
                 try:
                     ips = socket.getaddrinfo(h, 443, proto=socket.IPPROTO_TCP)
-                    if any(addr[4][0] == parsed["dst_ip"] for addr in ips):
+                    if any(addr[4][0] == endpoint["ip"] for addr in ips):
                         host = h
                         break
                 except Exception:
@@ -262,6 +302,10 @@ def _capture_loop(agent_id: str, server_url: str):
                 "src_port": parsed["src_port"],
                 "dst_ip": parsed["dst_ip"],
                 "dst_port": parsed["dst_port"],
+                "external_ip": endpoint["ip"],
+                "external_port": endpoint["port"],
+                "local_ip": endpoint["local_ip"],
+                "local_port": endpoint["local_port"],
                 "interface": parsed.get("interface", "any"),
                 "interface_direction": parsed.get("interface_direction", ""),
                 "direction": dir_key,
@@ -278,11 +322,11 @@ def _capture_loop(agent_id: str, server_url: str):
 
         # 定期刷新聚合数据
         if time.time() - last_flush > AGGREGATION_WINDOW:
-            _flush_aggregated(agent_id, server_url, connections)
+            _flush_aggregated(agent_id, server_url, connections, agent_name=agent_name)
             last_flush = time.time()
 
     # 非主动停止时才冲刷缓冲；仿真停止时不补写尾部 llm_api_packet。
-    _flush_aggregated(agent_id, server_url, connections, force=_running)
+    _flush_aggregated(agent_id, server_url, connections, force=_running, agent_name=agent_name)
     stderr = ""
     returncode = _capture_process.poll() if _capture_process else None
     try:
@@ -296,24 +340,27 @@ def _capture_loop(agent_id: str, server_url: str):
         "component": agent_id,
         "category": "system",
         "event": "tcpdump_exited",
+        "actor": _actor(agent_id, agent_name),
         "message": f"[{agent_id}] tcpdump exited rc={returncode}",
         "payload": {"returncode": returncode, "stderr": stderr[-500:]},
     })
     _running = False
 
 
-def start_capture(agent_id: str = "", server_url: str = "http://srv:8000"):
+def start_capture(agent_id: str = "", agent_name: str = "", server_url: str = "http://srv:8000"):
     """启动后台抓包（由 agent_server main 调用）"""
     global _capture_thread, _running
     if not _llm_capture_enabled():
         return {"status": "disabled"}
+    agent_id = agent_id or os.environ.get("AGENT_ID", "agent-001")
+    agent_name = agent_name or os.environ.get("AGENT_NAME", agent_id)
     with _capture_lock:
         if _running or (_capture_thread and _capture_thread.is_alive()):
             return {"status": "running"}
         _running = True
         _capture_thread = threading.Thread(
             target=_capture_loop,
-            args=(agent_id, server_url),
+            args=(agent_id, agent_name, server_url),
             daemon=True,
         )
         _capture_thread.start()

@@ -454,7 +454,9 @@ def _call_openclaw(system_prompt: str, user_message: str) -> dict:
     prompt_chars = len(system_prompt or "") + len(user_message or "")
     with LLMCallTracker(provider=provider, model=MODEL, method="POST",
                         path="/v1/messages", host=host,
-                        component=AGENT_ID, prompt_chars=prompt_chars,
+                        component=_current_effective_id, actor_id=_current_effective_id,
+                        actor_name=_current_effective_name,
+                        prompt_chars=prompt_chars,
                         messages_count=1, max_tokens=1024) as tracker:
         client = anthropic.Anthropic(api_key=API_KEY, base_url=base_url or None)
         response = client.messages.create(
@@ -496,14 +498,21 @@ def _call_claude_code(prompt: str) -> str:
         latency = (_time.time() - start) * 1000
         if result.returncode != 0:
             log_llm_cli(exit_code=result.returncode, latency_ms=latency,
-                        component=AGENT_ID, error=result.stderr[:200])
+                        component=_current_effective_id, actor_id=_current_effective_id,
+                        actor_name=_current_effective_name,
+                        error=result.stderr[:200])
             raise RuntimeError(f"Claude Code failed (exit {result.returncode}): {result.stderr[:200]}")
-        log_llm_cli(exit_code=0, latency_ms=latency, component=AGENT_ID)
+        log_llm_cli(exit_code=0, latency_ms=latency,
+                    component=_current_effective_id, actor_id=_current_effective_id,
+                    actor_name=_current_effective_name)
         return result.stdout.strip()
     except Exception as e:
         if not isinstance(e, RuntimeError):
             latency = (_time.time() - start) * 1000
-            log_llm_cli(exit_code=-1, latency_ms=latency, component=AGENT_ID, error=str(e)[:200])
+            log_llm_cli(exit_code=-1, latency_ms=latency,
+                        component=_current_effective_id, actor_id=_current_effective_id,
+                        actor_name=_current_effective_name,
+                        error=str(e)[:200])
         raise
 
 
@@ -580,6 +589,8 @@ def _prepare_decision_context(ctx: dict):
     effective_name = ctx.get("agent_name", AGENT_NAME)
     _current_effective_id = effective_id
     _current_effective_name = effective_name
+    os.environ["EFFECTIVE_AGENT_ID"] = effective_id
+    os.environ["EFFECTIVE_AGENT_NAME"] = effective_name
     _allowed_targets = set(ctx.get("comm_matrix", {}).get(effective_id, []))
     return effective_id, effective_name
 
@@ -839,9 +850,15 @@ async def clear():
 
 
 @app.post("/capture/start")
-async def capture_start():
+async def capture_start(request: Request):
     """启动当前 Agent 的 LLM API 网络抓包。"""
-    return start_capture(agent_id=AGENT_ID, server_url=SERVER_URL)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    capture_agent_id = body.get("agent_id") or _current_effective_id or AGENT_ID
+    capture_agent_name = body.get("agent_name") or _current_effective_name or AGENT_NAME
+    return start_capture(agent_id=capture_agent_id, agent_name=capture_agent_name, server_url=SERVER_URL)
 
 
 @app.post("/capture/stop")
@@ -859,6 +876,8 @@ async def reset_state():
     _allowed_targets = set()
     _current_effective_id = AGENT_ID
     _current_effective_name = AGENT_NAME
+    os.environ.pop("EFFECTIVE_AGENT_ID", None)
+    os.environ.pop("EFFECTIVE_AGENT_NAME", None)
     if _agent:
         global _channel_map, _current_talk, _event_queue
         _channel_map = {}

@@ -243,14 +243,17 @@ class Brain:
         from agent_network.llm_traffic import LLMCallTracker
         from .config import DEFAULT_LLM_MODEL
         model = model or DEFAULT_LLM_MODEL
-        component = os.environ.get("AGENT_ID", "brain")
+        component = os.environ.get("EFFECTIVE_AGENT_ID") or os.environ.get("AGENT_ID", "brain")
+        actor_id = os.environ.get("EFFECTIVE_AGENT_ID", "")
+        actor_name = os.environ.get("EFFECTIVE_AGENT_NAME", "")
         parts = prompt.split("## 当前状态")
         system = parts[0].strip() if len(parts) > 1 else prompt
         user = prompt if len(parts) <= 1 else "## 当前状态" + parts[1]
 
         with LLMCallTracker(provider="anthropic", model=model, method="POST",
                             path="/v1/messages", host="api.anthropic.com",
-                            component=component, prompt_chars=len(prompt),
+                            component=component, actor_id=actor_id, actor_name=actor_name,
+                            prompt_chars=len(prompt),
                             messages_count=1, max_tokens=512) as tracker:
             client = anthropic.Anthropic(api_key=api_key)
             message = client.messages.create(
@@ -271,11 +274,14 @@ class Brain:
         parsed = urlparse(url)
         host = parsed.netloc
         provider = "deepseek" if "deepseek" in host else "openai"
-        component = os.environ.get("AGENT_ID", "brain")
+        component = os.environ.get("EFFECTIVE_AGENT_ID") or os.environ.get("AGENT_ID", "brain")
+        actor_id = os.environ.get("EFFECTIVE_AGENT_ID", "")
+        actor_name = os.environ.get("EFFECTIVE_AGENT_NAME", "")
 
         with LLMCallTracker(provider=provider, model=model, method="POST",
                             path="/v1/chat/completions", host=host,
-                            component=component, prompt_chars=len(prompt),
+                            component=component, actor_id=actor_id, actor_name=actor_name,
+                            prompt_chars=len(prompt),
                             messages_count=1, max_tokens=512) as tracker:
             resp = httpx.post(url, headers={
                 "Authorization": f"Bearer {api_key}",

@@ -136,7 +136,10 @@ def _control_agent_capture(created_cas: List[tuple], enabled: bool, requests_mod
             continue
         results["requested"] += 1
         try:
-            resp = requests_module.post(f"{ca.url}{path}", timeout=3)
+            kwargs = {"timeout": 3}
+            if enabled:
+                kwargs["json"] = {"agent_id": ca.agent_id, "agent_name": ca.name}
+            resp = requests_module.post(f"{ca.url}{path}", **kwargs)
             if resp.ok:
                 results["ok"] += 1
             else:
