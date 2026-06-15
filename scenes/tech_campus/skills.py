@@ -309,3 +309,160 @@ def trigger_ci_cd(**kwargs):
 
     return {"status": "success", "result": "ci_triggered", "data": {"pipeline_id": pipeline_id, "round": current_round}}
 SkillRegistry.register("trigger_ci_cd", trigger_ci_cd)
+
+
+# ============================================================
+# 前端可视化查询接口 — 供 panel.html 通过 API 调用
+# ============================================================
+
+def query_dashboard(**kwargs):
+    """
+    获取面板全量数据。无参数，返回 agent/拓扑/流量/任务/事件的聚合快照。
+    """
+    current_round = kwargs.get("round", 0)
+
+    # 通信拓扑节点（meta_and_roles 的角色）
+    from pathlib import Path as _Path
+    import json as _json
+    _base = str(_Path(__file__).parent)
+    try:
+        with open(_Path(_base) / "meta_and_roles.json", "r", encoding="utf-8") as f:
+            _meta = _json.load(f)
+        _roles = _meta.get("roles", {})
+    except Exception:
+        _roles = {}
+
+    # Agent 状态卡片
+    agents = []
+    for rid, rd in _roles.items():
+        agents.append({
+            "agent_id": rid,
+            "name": rd.get("name", rid),
+            "identity": rd.get("identity", ""),
+            "category": rid,  # 小规模下 role 即 category
+            "model_backbone": rd.get("model_backbone", ""),
+            "skills": [],  # 由 instances_and_skills 注入
+            "status": "idle",
+            "core_goal": rd.get("core_goal", ""),
+        })
+
+    # 注入技能
+    try:
+        with open(_Path(_base) / "instances_and_skills.json", "r", encoding="utf-8") as f:
+            _inst = _json.load(f)
+        _containers = _inst.get("container_instances", {})
+        for a in agents:
+            ci = _containers.get(a["agent_id"], {})
+            a["skills"] = ci.get("skills", [])
+    except Exception:
+        pass
+
+    # 拓扑边
+    topology_edges = []
+    try:
+        with open(_Path(_base) / "network_topology.json", "r", encoding="utf-8") as f:
+            _topo = _json.load(f)
+        for sn in _topo.get("sub_networks", []):
+            for e in sn.get("edges", []):
+                topology_edges.append({
+                    "source": e["source"], "target": e["target"],
+                    "paradigm": e["paradigm"],
+                    "sub_id": sn["sub_id"],
+                    "channel_id": e.get("channel_id", ""),
+                })
+    except Exception:
+        pass
+
+    # 业务拓扑
+    biz_links = []
+    try:
+        with open(_Path(_base) / "business_topology.json", "r", encoding="utf-8") as f:
+            _biz = _json.load(f)
+        biz_links = _biz.get("links", [])
+    except Exception:
+        pass
+
+    # 运行时流量统计
+    ew = [t for t in traffic_log if t["type"] == "EAST_WEST"]
+    ns = [t for t in traffic_log if t["type"] == "NORTH_SOUTH"]
+    it = [t for t in traffic_log if t["type"] == "INTERNAL"]
+    traffic_summary = {
+        "total_events": len(traffic_log),
+        "EAST_WEST":   {"count": len(ew), "total_kb": sum(t["bytes"] for t in ew) // 1024},
+        "NORTH_SOUTH": {"count": len(ns), "total_kb": sum(t["bytes"] for t in ns) // 1024},
+        "INTERNAL":    {"count": len(it), "total_kb": sum(t["bytes"] for t in it) // 1024},
+        "recent": traffic_log[-10:] if traffic_log else [],
+    }
+
+    # 运行时事件
+    recent_events = event_log[-20:] if event_log else []
+
+    # CI/CD 流水线
+    ci_status = {
+        "total_pipelines": len(ci_pipelines),
+        "running": len([p for p in ci_pipelines if p.get("status") == "running"]),
+        "success": len([p for p in ci_pipelines if p.get("status") == "success"]),
+        "failed": len([p for p in ci_pipelines if p.get("status") == "failed"]),
+        "recent": ci_pipelines[-10:] if ci_pipelines else [],
+    }
+
+    # 文档/提交/测试统计
+    task_stats = {
+        "git_commits": len(git_commits),
+        "model_submissions": len(model_submissions),
+        "design_submissions": len(design_submissions),
+        "documents": len(documents),
+        "test_reports": len(test_reports),
+        "external_api_calls": len(external_api_calls),
+        "test_pass_rate": round(
+            sum(1 for t in test_reports if t.get("passed")) / max(len(test_reports), 1) * 100, 1
+        ) if test_reports else 0,
+    }
+
+    return {
+        "status": "success",
+        "result": "dashboard_snapshot",
+        "data": {
+            "round": current_round,
+            "agents": agents,
+            "topology_edges": topology_edges,
+            "biz_links": biz_links,
+            "traffic": traffic_summary,
+            "events": recent_events,
+            "ci_status": ci_status,
+            "task_stats": task_stats,
+            "traffic_log": traffic_log,
+            "event_log": event_log,
+        }
+    }
+SkillRegistry.register("query_dashboard", query_dashboard)
+
+
+def query_traffic_stream(**kwargs):
+    """实时流量流 — 返回最近的流量事件"""
+    limit = kwargs.get("limit", 20)
+    return {
+        "status": "success",
+        "data": {
+            "traffic_log": traffic_log[-limit:] if traffic_log else [],
+            "event_log": event_log[-limit:] if event_log else [],
+        }
+    }
+SkillRegistry.register("query_traffic_stream", query_traffic_stream)
+
+
+def query_task_progress(**kwargs):
+    """任务进度 — 各类提交/文档/测试的完成情况"""
+    return {
+        "status": "success",
+        "data": {
+            "git_commits": [{"id": c["commit_id"], "developer": c["developer"], "repo": c.get("repo",""), "files": c.get("files",0)} for c in git_commits[-20:]],
+            "model_submissions": [{"id": m["model_id"], "name": m.get("model_name",""), "size_mb": m.get("size_mb",0)} for m in model_submissions[-10:]],
+            "design_submissions": [{"id": d["design_id"], "name": d.get("design_name",""), "size_mb": d.get("size_mb",0)} for d in design_submissions[-10:]],
+            "documents": [{"id": d["doc_id"], "author": d["author"], "title": d.get("title",""), "type": d.get("type","")} for d in documents[-20:]],
+            "test_reports": [{"id": t["test_id"], "tester": t["tester"], "target": t.get("target",""), "passed": t.get("passed",False)} for t in test_reports[-20:]],
+            "ci_pipelines": [{"id": p["pipeline_id"], "type": p.get("type",""), "status": p.get("status","")} for p in ci_pipelines[-10:]],
+            "external_api_calls": [{"id": c["call_id"], "api": c.get("api_name",""), "latency_ms": c.get("latency_ms",0)} for c in external_api_calls[-20:]],
+        }
+    }
+SkillRegistry.register("query_task_progress", query_task_progress)
