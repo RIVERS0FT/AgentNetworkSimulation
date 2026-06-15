@@ -50,6 +50,7 @@ class RelayMessage(BaseModel):
     to: str
     content: str
     reasoning: str = ""
+    protocol: str = "TCP/HTTP"
     allowed: Optional[list] = None  # broadcast 时的通信权限过滤
     channel_id: str = ""   # 信道标识（来自 topology edge）
     talk: str = ""         # 会话/对话 ID（仿真启动时生成）
