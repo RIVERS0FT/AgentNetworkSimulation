@@ -104,8 +104,7 @@ def _parse_tcpdump_line(line: str) -> Optional[dict]:
 
 
 def _is_llm_traffic(parsed: dict, llm_hosts: List[str]) -> bool:
-    """判断是否为外部 LLM API 流量"""
-    # 排除内部
+    """判断是否为外部 HTTPS/HTTP 流量（捕获所有非内网 443/80）"""
     dst = parsed["dst_ip"]
     src = parsed["src_ip"]
     if dst in INTERNAL_HOSTS or src in INTERNAL_HOSTS:
@@ -114,14 +113,7 @@ def _is_llm_traffic(parsed: dict, llm_hosts: List[str]) -> bool:
         return False
     if parsed["dst_port"] in INTERNAL_PORTS or parsed["src_port"] in INTERNAL_PORTS:
         return False
-    # 匹配已知 LLM host
-    for host in llm_hosts:
-        if host in dst or host in src:
-            return True
-    # 外部 443/80 流量
-    if parsed["dst_port"] in (443, 80) and not dst.startswith("172."):
-        return True
-    return False
+    return parsed["dst_port"] in (443, 80)
 
 
 def _flush_aggregated(agent_id: str, server_url: str, connections: dict, force: bool = False):
