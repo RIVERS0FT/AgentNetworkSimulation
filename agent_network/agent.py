@@ -58,7 +58,7 @@ class Agent:
         self.skills = skills or []
         self.tags = tags or []
         self.capability_scores = capability_scores or {}
-        self.status = "created"  # created, idle, running, paused, stopped, error
+        self.status = "idle"  # idle, thinking, acting, error
         self.container_id = f"docker-{self.agent_id}"
         self.event_bus = None  # 由仿真引擎注入
         self.comm = None       # 统一通信层 (LocalBus/RemoteBus)
@@ -199,7 +199,7 @@ class Agent:
         results = []
 
         if action.type == "send_message":
-            self.status = "running"
+            self.status = "acting"
             target_agent = None
             if registry:
                 # 按名字或 ID 查找目标
@@ -221,7 +221,7 @@ class Agent:
             self.status = "idle"
 
         elif action.type == "broadcast":
-            self.status = "running"
+            self.status = "acting"
             msg = Message(
                 source=self.agent_id, target="broadcast", type="broadcast",
                 payload={"action": action.content, "from_name": self.name},
@@ -232,7 +232,7 @@ class Agent:
             self.status = "idle"
 
         elif action.type in ("search", "analyze", "plan"):
-            self.status = "running"
+            self.status = "acting"
             # 使用 Tool 执行
             from .tool import ToolRegistry
             try:
@@ -258,7 +258,7 @@ class Agent:
             results.append({"status": "waiting"})
 
         elif action.type == "move_to":
-            self.status = "running"
+            self.status = "acting"
             tx = getattr(action, "target_x", -1)
             ty = getattr(action, "target_y", -1)
             if tx >= 0 and ty >= 0:
@@ -289,7 +289,7 @@ class Agent:
 
         子类可重写以定制行为。
         """
-        self.status = "running"
+        self.status = "acting"
         action = message.payload.get("action", "unknown")
 
         result = {
@@ -341,19 +341,9 @@ class Agent:
         """启动 Agent"""
         self.status = "idle"
 
-    def pause(self):
-        """暂停 Agent"""
-        if self.status == "running":
-            self.status = "paused"
-
-    def resume(self):
-        """恢复 Agent"""
-        if self.status == "paused":
-            self.status = "running"
-
     def stop(self):
         """停止 Agent"""
-        self.status = "stopped"
+        self.status = "error"
 
     def error(self, reason: str = ""):
         """标记为错误状态"""

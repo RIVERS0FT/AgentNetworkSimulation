@@ -23,7 +23,7 @@ class ContainerAgent:
     container_id: str = ""
     container_name: str = ""
     port: int = 8000
-    status: str = "created"
+    status: str = "idle"
     url: str = ""
 
     def to_dict(self):
@@ -253,7 +253,7 @@ class ContainerRuntime:
                 if isinstance(result, dict) and result.get("error"):
                     self._set_status(ca, "error", {"phase": "decide:error", "error": result.get("error")})
                 else:
-                    self._set_status(ca, "decided", {"phase": "decide:done"})
+                    self._set_status(ca, "idle", {"phase": "decide:done"})
                 return result
             except Exception as e:
                 self._set_status(ca, "error", {"phase": "decide:exception", "error": str(e)})
@@ -295,7 +295,7 @@ class ContainerRuntime:
     def stop_all(self):
         for ca in list(self.agents.values()):
             if ca.status != "error":
-                self._set_status(ca, "stopped", {"phase": "stop"})
+                self._set_status(ca, "error", {"phase": "stop"})
         self.agents.clear()
 
     def reset(self):

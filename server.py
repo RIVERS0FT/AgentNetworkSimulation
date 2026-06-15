@@ -808,7 +808,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
         capture_stop = _control_agent_capture(created_cas, False, _req)
         logger.system("capture_control", "network_capture stopped",
                       details={"enabled": False, **capture_stop})
-        final_status = "stopped" if stop_reason == "user_stopped" else "idle"
+        final_status = "error" if stop_reason == "user_stopped" else "idle"
         for ca, _ in created_cas:
             if ca.status != "error":
                 runtime._set_status(ca, final_status, {"phase": "simulation:finish", "stop_reason": stop_reason})

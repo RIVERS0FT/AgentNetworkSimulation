@@ -194,7 +194,7 @@ class MetricsRegistry:
     def set_agent_active(self, agent_id: str, role: str, status: str):
         """更新 Agent 活跃状态"""
         self.agent_status.labels(agent_id=agent_id, role=role, status=status).set(
-            1 if status in ("idle", "running") else 0
+            1 if status in ("idle", "acting") else 0
         )
 
     def set_container_resource(self, agent_id: str, cpu_percent: float, memory_mb: float):

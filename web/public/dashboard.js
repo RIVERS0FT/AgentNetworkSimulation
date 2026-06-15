@@ -341,9 +341,8 @@ let _simState = new Map(); // agent_id → { x, y } in world coords
 
 // ============== Canvas Agent Rendering ==============
 const STATUS_COLORS = {
-  idle: '#38D5FF', running: '#2F8CFF', thinking: '#BFEAFF', acting: '#58F0C2', paused: '#FFBF5A',
-  stopped: '#FF4E5E', error: '#FF4E5E', created: '#7B8EA5',
-  decided: '#8EA7FF', messaged: '#58F0C2', send_failed: '#FF4E5E', analyzed: '#BFEAFF',
+  idle: '#38D5FF', thinking: '#BFEAFF', acting: '#58F0C2',
+  error: '#FF4E5E',
 };
 
 const canvas = document.getElementById('agent-canvas');
@@ -663,8 +662,8 @@ function drawAgents(agents, hoveredId, time) {
   // ── Client-side force simulation (prevent overlap) ──
   // Convert screen-pixel thresholds to world-space using current scale
   const worldR = r / viewport.scale;
-  const minDistWorld = worldR * 10;
-  const damping = 0.12;
+  const minDistWorld = worldR * 18;
+  const damping = 0.08;
 
   // Init new agents
   for (const a of agents) {
@@ -714,6 +713,11 @@ function drawAgents(agents, hoveredId, time) {
       const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
       const isLinked = neighbors?.has(jid);
 
+      // Global weak repulsion: all agents push apart
+      const globalRepel = 1.5 / Math.max(d, 1);
+      fx += (dx / d) * globalRepel;
+      fy += (dy / d) * globalRepel;
+
       if (d < minDistWorld) {
         const force = (minDistWorld - d) / minDistWorld * (isLinked ? 2 : 1);
         fx += (dx / d) * force;
@@ -739,7 +743,7 @@ function drawAgents(agents, hoveredId, time) {
     const p = worldToScreen(wx, wy);
     const color = STATUS_COLORS[a.status] || '#7B8EA5';
     const pulse = REDUCED_MOTION ? 0.5 : (Math.sin(now / 360 + p.sx * 0.01) + 1) / 2;
-    const active = ['thinking', 'acting', 'running', 'decided', 'messaged', 'analyzed'].includes(a.status);
+    const active = ['thinking', 'acting'].includes(a.status);
 
     ctx.save();
     ctx.shadowColor = color;
@@ -771,7 +775,7 @@ function drawAgents(agents, hoveredId, time) {
     ctx.lineWidth = 0.8;
     ctx.stroke();
 
-    // Active sweep arc (only when thinking)
+    // thinking sweep arc
     if (a.status === 'thinking') {
       const spinAngle = REDUCED_MOTION ? 0 : (now / 220) % (Math.PI * 2);
       ctx.setLineDash([4, 6]);
@@ -830,7 +834,7 @@ function render() {
 render();
 
 // ============== Canvas Mouse Events ==============
-const statusLabel = { idle:'空闲', running:'运行中', thinking:'思考中', acting:'执行中', paused:'已暂停', stopped:'已停止', error:'异常', created:'已创建', decided:'已决策', messaged:'已发送', send_failed:'发送失败', analyzed:'已分析' };
+const statusLabel = { idle:'空闲', thinking:'思考中', acting:'执行中', error:'异常' };
 const roleLabel = { scout:'侦察兵', commander:'指挥官', analyst:'分析师', support:'支援', brain:'Brain', 'claude-code':'Claude Code', openclaw:'OpenClaw', observer:'观察员' };
 const backendLabel = { brain:'Brain', 'claude-code':'Claude Code', openclaw:'OpenClaw' };
 
