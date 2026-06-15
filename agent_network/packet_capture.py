@@ -132,6 +132,8 @@ def _flush_aggregated(agent_id: str, server_url: str, connections: dict, force: 
         if not force and now - data["last_time"] < AGGREGATION_WINDOW:
             continue
         expired.append(key)
+        direction = data.get("direction", "out")
+        dir_label = direction.upper()
         record = {
             "timestamp": _now_iso(),
             "level": "INFO",
@@ -145,15 +147,15 @@ def _flush_aggregated(agent_id: str, server_url: str, connections: dict, force: 
                 "ip": data["dst_ip"],
                 "port": data["dst_port"],
             },
-            "action": {"name": "CAPTURE", "status": f"{data['count']} packets"},
-            "message": f"CAPTURE {agent_id} → {data['host']}:{data['dst_port']} {data['count']}pkts {data['total_bytes']}B",
+            "action": {"name": f"SEND" if direction == "out" else "RECV", "status": f"{data['count']} packets"},
+            "message": f"{dir_label} {agent_id} → {data['host']}:{data['dst_port']} {data['count']}pkts {data['total_bytes']}B",
             "payload": {
-                "line_summary": f"{data['count']} packets, {data['total_bytes']} bytes total",
+                "line_summary": f"{dir_label}: {data['count']} packets, {data['total_bytes']} bytes",
                 "capture_source": "tcpdump",
                 "body_logged": False,
             },
             "network": {
-                "direction": "outbound",
+                "direction": direction,
                 "protocol": "TCP/TLS",
                 "src_ip": data["src_ip"],
                 "src_port": data["src_port"],
@@ -248,8 +250,9 @@ def _capture_loop(agent_id: str, server_url: str):
         if not _is_llm_traffic(parsed, llm_hosts):
             continue
 
-        # 聚合：按 (src_ip, dst_ip, dst_port) 分组
-        key = f"{parsed['src_ip']}:{parsed['dst_ip']}:{parsed['dst_port']}"
+        # 聚合：按 (src_ip, dst_ip, dst_port, direction) 分组，收发分离
+        dir_key = "out" if parsed.get("interface_direction") in ("out", "Out") else "in"
+        key = f"{parsed['src_ip']}:{parsed['dst_ip']}:{parsed['dst_port']}:{dir_key}"
         if key not in connections:
             # 尝试 DNS 解析 host
             host = parsed["dst_ip"]
@@ -269,6 +272,7 @@ def _capture_loop(agent_id: str, server_url: str):
                 "dst_port": parsed["dst_port"],
                 "interface": parsed.get("interface", "any"),
                 "interface_direction": parsed.get("interface_direction", ""),
+                "direction": dir_key,
                 "count": 0,
                 "total_bytes": 0,
                 "last_time": time.time(),
