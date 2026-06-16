@@ -25,7 +25,7 @@ canvas{display:block}
 #statBox span{white-space:nowrap}
 #statBox .v{color:var(--white);font-weight:600}
 
-/* Category legend top-right */
+/* 分类图例 */
 </style></head>
 <body>
 <div id="hud"><span class="title">TECH CAMPUS · 任务态势</span><span id="roundLabel">R0</span></div>
@@ -60,9 +60,9 @@ canvas{display:block}
 const CAT_COLORS = {dev:'#5b9bd5',ai_ic:'#e07b5a',mgmt:'#6bae85',content:'#9b8ec4',infra:'#c47b8b'};
 const CAT_ICONS = {dev:'🖥',ai_ic:'🔬',mgmt:'📋',content:'📝',infra:'⚙'};
 
-// Each agent has a task goal and current progress
+// 每个 Agent 的任务目标和当前进度
 const AGENTS = {
-  // dev: each has a code commit target
+  // 开发组：各有代码提交目标
   DEV_FE:{name:'前端开发',dept:'消费者BG',cat:'dev',task:'代码提交',goal:3,icon:'🖥'},
   DEV_BE:{name:'后端开发',dept:'云计算与AI',cat:'dev',task:'代码提交',goal:2,icon:'🖥'},
   DEV_FW:{name:'固件开发',dept:'无线通信',cat:'dev',task:'Bug修复',goal:3,icon:'🖥'},
@@ -76,11 +76,11 @@ const AGENTS = {
   DEV_OPS:{name:'DevOps',dept:'基础平台',cat:'infra',task:'CI流水线',goal:3,icon:'⚙'},
 };
 
-// Per-agent progress
+// 每个 Agent 的当前进度值
 let progress = {};
 for(const id of Object.keys(AGENTS)) progress[id] = 0;
 
-// Comms edges (very subtle)
+// 通信链路（极淡）
 const COMM_EDGES=[
   ['PM','DEV_FE'],['PM','DEV_BE'],['ARCHITECT','DEV_FE'],['ARCHITECT','DEV_BE'],['ARCHITECT','DEV_FW'],
   ['ARCHITECT','DEV_AI'],['ARCHITECT','DEV_IC'],['ARCHITECT','DOC_WRITER'],
@@ -90,7 +90,7 @@ const COMM_EDGES=[
   ['QA','REPO_ADMIN'],['DEV_OPS','REPO_ADMIN'],
 ];
 
-// Layout: 5 groups
+// 布局：5 个职能分组
 const GROUPS = {
   dev:{ids:['DEV_FE','DEV_BE','DEV_FW'],cx:0.18,cy:0.36,spread:65},
   ai_ic:{ids:['DEV_AI','DEV_IC'],cx:0.16,cy:0.64,spread:55},
@@ -124,12 +124,12 @@ function draw(){
   const w=window.innerWidth,h=window.innerHeight;
   ctx.clearRect(0,0,w,h);
 
-  // Background grid
+  // ── 背景网格 ──
   ctx.strokeStyle='rgba(255,255,255,0.015)';ctx.lineWidth=0.4;
   for(let x=0;x<w;x+=70){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();}
   for(let y=0;y<h;y+=70){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
 
-  // Group zones with category labels
+  // ── 职能分组区域 + 分类标签 ──
   const CAT_LABELS={dev:'🖥 开发',ai_ic:'🔬 AI/芯片',mgmt:'📋 管理',content:'📝 文档/测试',infra:'⚙ 基础设施'};
   for(const[gid,g]of Object.entries(GROUPS)){
     const cx=g.cx*w,cy=g.cy*h,r=g.spread+45;
@@ -141,7 +141,7 @@ function draw(){
     ctx.fillText(CAT_LABELS[gid],cx-r+8,cy-r-6);ctx.globalAlpha=1;
   }
 
-  // Comm edges — very faint
+  // ── 通信链路 — 极淡 ──
   COMM_EDGES.forEach(([s,t])=>{
     const sn=nodes.find(n=>n.id===s),tn=nodes.find(n=>n.id===t);
     if(!sn||!tn)return;
@@ -149,7 +149,7 @@ function draw(){
     ctx.strokeStyle='rgba(255,255,255,0.04)';ctx.lineWidth=0.5;ctx.stroke();
   });
 
-  // Biz edges
+  // ── 业务流向线 — 金橙色 ──
   [{s:'DEV_AI',t:'LLM'},{s:'DEV_IC',t:'EDA'},{s:'DEV_BE',t:'BUILD'}].forEach(l=>{
     const sn=nodes.find(n=>n.id===l.s);
     if(!sn)return;
@@ -161,34 +161,34 @@ function draw(){
     ctx.strokeStyle='#d4a853';ctx.lineWidth=0.6;ctx.globalAlpha=0.4;ctx.stroke();ctx.globalAlpha=1;
     ctx.setLineDash([]);
     ctx.fillStyle='#d4a853';ctx.font='8px monospace';ctx.textAlign='center';ctx.fillText(l.t,(sn.x+tx)/2,(sn.y+ty)/2-5);
-    // Ext dot
+    // 外部端点圆点
     ctx.beginPath();ctx.arc(tx,ty,4,0,Math.PI*2);ctx.fillStyle='#d4a853';ctx.globalAlpha=0.3;ctx.fill();ctx.globalAlpha=1;
     ctx.fillStyle='#d4a853';ctx.font='7px monospace';ctx.fillText(l.t,tx,ty-10);
   });
 
-  // Agent nodes with task progress rings
+  // ── Agent 节点 + 任务进度环 ──
   nodes.forEach(n=>{
     const pct=n.goal>0?n.progress/n.goal:0;
-    const r=22; // node radius
-    // Outer glow
+    const r=22; // Agent 节点半径
+    // 外发光
     ctx.beginPath();ctx.arc(n.x,n.y,r+4,0,Math.PI*2);ctx.fillStyle=n.color;ctx.globalAlpha=pct*0.08+0.02;ctx.fill();ctx.globalAlpha=1;
-    // Progress ring background
+    // 进度环底色
     ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);ctx.strokeStyle='rgba(255,255,255,0.06)';ctx.lineWidth=4;ctx.stroke();
-    // Progress ring fill
+    // 进度环填充（从 12 点方向顺时针）
     if(pct>0){
       ctx.beginPath();ctx.arc(n.x,n.y,r,-Math.PI/2,-Math.PI/2+pct*Math.PI*2);ctx.strokeStyle=n.color;ctx.lineWidth=4;ctx.lineCap='round';ctx.stroke();ctx.lineCap='butt';
     }
-    // Inner icon
+    // 图标
     ctx.font='22px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(n.icon,n.x,n.y-2);
-    // Name below
+    // 名称
     ctx.fillStyle='#d0d7e4';ctx.font='9px monospace';ctx.textAlign='center';ctx.fillText(n.name,n.x,n.y+r+14);
-    // Task fraction
+    // 进度分数
     ctx.fillStyle=n.color;ctx.font='10px monospace';ctx.fillText(n.progress+'/'+n.goal,n.x,n.y+r+25);
-    // Task label
+    // 任务标签
     ctx.fillStyle='#8892a4';ctx.font='8px monospace';ctx.fillText(n.task,n.x,n.y+r+36);
   });
 
-  // Event feed top-right
+  // ── 右上角事件摘要 ──
   const ev=(state.custom?.recent_events||[]).slice(-6);
   ev.forEach((e,i)=>{
     const y=48+i*18,x=w-280;
@@ -197,7 +197,7 @@ function draw(){
     ctx.fillText('R'+(e.round||'')+' '+(e.type||'')+' '+(e.detail||'').slice(0,30),x+5,y);
   });
 
-  // Overall progress bar — centered top
+  // ── 顶部居中总体进度条 ──
   const totalProgress=Object.values(progress).reduce((a,b)=>a+b,0);
   const totalGoal=Object.values(AGENTS).reduce((a,b)=>a+b.goal,0);
   const overallPct=totalGoal>0?totalProgress/totalGoal:0;
