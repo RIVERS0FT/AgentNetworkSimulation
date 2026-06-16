@@ -212,7 +212,7 @@ function getCoverage(){return getApData()?.latest_coverage||null;}
 function getCost(){return getApData()?.latest_cost||null;}
 function getAICalls(){return getApData()?.ai_call_log||[];}
 function getFeasibility(){return getApData()?.feasibility_checks||[];}
-function getEvents(){return data?.custom?.recent_events||getApData()?.event_log||[];}
+function getEvents(){return data?.custom?.recent_events||data?.event_log||[];}
 
 async function poll(){
   try{const r=await fetch(API_URL);if(!r.ok)throw new Error('HTTP '+r.status);data=await r.json();}
