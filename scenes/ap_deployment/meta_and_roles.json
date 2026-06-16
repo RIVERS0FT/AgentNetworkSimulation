@@ -3,7 +3,21 @@
     "title": "园区WiFi AP部署规划仿真",
     "global_rules": "园区为1000m×400m矩形区域，内有5个固定干扰源（坐标随机，干扰半径50-150m）。AP部署需覆盖≥95%区域，成本不超过预算。仿真最多10轮，僵局检测4轮。",
     "max_rounds": 10,
-    "stalemate_rounds": 4
+    "stalemate_rounds": 4,
+    "execution_order": [
+      { "phase": 1, "agent": "PLANNER",    "action": "call_ai_optimizer",    "target": "AI_ASSISTANT",  "desc": "调用AI获取初始AP候选位置" },
+      { "phase": 2, "agent": "RF_ENGINEER","action": "simulate_coverage",     "target": "PLANNER",       "desc": "仿真初始方案覆盖情况" },
+      { "phase": 2, "agent": "RF_ENGINEER","action": "analyze_interference",  "target": "PLANNER",       "desc": "分析干扰源对AP的影响" },
+      { "phase": 3, "agent": "COST_ANALYST","action":"evaluate_cost",         "target": "PLANNER",       "desc": "评估方案成本是否在预算内" },
+      { "phase": 4, "agent": "SURVEYOR",   "action": "check_feasibility",     "target": "PLANNER",       "desc": "勘测AP位置的物理可行性" },
+      { "phase": 4, "agent": "ARCHITECT",  "action": "validate_topology",     "target": "PLANNER",       "desc": "验证网络拓扑无冲突" },
+      { "phase": 5, "agent": "AI_ASSISTANT","action":"suggest_improvements",  "target": "PLANNER",       "desc": "基于所有反馈给出优化建议" },
+      { "phase": 6, "agent": "PLANNER",    "action": "call_ai_optimizer",    "target": "AI_ASSISTANT",  "desc": "根据反馈重新优化AP位置(迭代)" },
+      { "phase": 7, "agent": "VERIFIER",   "action": "verify_coverage",       "target": "PLANNER",       "desc": "验证最终方案覆盖是否达标" },
+      { "phase": 8, "agent": "DEPLOYER",   "action": "plan_deployment",       "target": "PLANNER",       "desc": "制定AP部署执行计划" },
+      { "phase": 9, "agent": "QA_ENGINEER","action": "acceptance_test",       "target": "PLANNER",       "desc": "最终验收测试" },
+      { "phase": 10,"agent": "DOCUMENTER", "action": "archive_solution",      "target": "PLANNER",       "desc": "归档最终部署方案" }
+    ]
   },
   "roles": {
     "PLANNER": {

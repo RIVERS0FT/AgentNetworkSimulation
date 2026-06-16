@@ -1,0 +1,352 @@
+{
+  "_description": "ap_deployment 百万级AP部署仿真 — 10类角色、5层网络、多园区并行规划",
+  "version": "1.0",
+  "target_scale": "1,000,000 agents",
+
+  "agent_categories": [
+    {
+      "category_id": "ap_planner",
+      "name": "AP规划师",
+      "identity": "负责统筹单个园区的AP部署规划，调用AI优化助手获取最优位置建议，协调各方意见",
+      "spawn_count": { "base": 50000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": false, "llm_ratio": 0.02 },
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "skills": ["call_ai_optimizer", "evaluate_cost", "plan_deployment"],
+      "persona_templates": [
+        { "role": "campus_planner",   "ratio": 0.50, "expertise": "large_campus" },
+        { "role": "building_planner", "ratio": 0.35, "expertise": "indoor" },
+        { "role": "outdoor_planner",  "ratio": 0.15, "expertise": "outdoor" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "call_ai_optimizer": [2, 5], "plan_deployment": [1, 2], "idle": [3, 7] },
+        "traffic_mix": { "EAST_WEST": 0.60, "NORTH_SOUTH": 0.25, "INTERNAL": 0.15 },
+        "avg_payload_kb": { "EAST_WEST": 16, "NORTH_SOUTH": 128, "INTERNAL": 64 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 30,
+        "preferred_connection_categories": ["rf_engineer", "cost_analyst", "surveyor", "architect", "ai_assistant", "verifier", "deployer", "qa_engineer", "documenter"],
+        "connection_affinity": { "rf_engineer": 0.15, "cost_analyst": 0.10, "surveyor": 0.10, "ai_assistant": 0.20, "verifier": 0.10, "deployer": 0.10, "other": 0.25 }
+      }
+    },
+    {
+      "category_id": "rf_engineer",
+      "name": "射频工程师",
+      "identity": "分析干扰源影响范围，进行信号覆盖仿真，提交覆盖热力图",
+      "spawn_count": { "base": 120000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": false, "llm_ratio": 0.01 },
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION",
+      "skills": ["simulate_coverage", "analyze_interference", "generate_heatmap"],
+      "persona_templates": [
+        { "role": "coverage_analyst",  "ratio": 0.50, "specialty": "signal_simulation" },
+        { "role": "interference_expert","ratio":0.35, "specialty": "interference_mitigation" },
+        { "role": "heatmap_generator", "ratio": 0.15, "specialty": "visualization" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "simulate_coverage": [3, 8], "analyze_interference": [1, 4], "generate_heatmap": [1, 3], "idle": [1, 4] },
+        "traffic_mix": { "EAST_WEST": 0.55, "NORTH_SOUTH": 0.20, "INTERNAL": 0.25 },
+        "avg_payload_kb": { "EAST_WEST": 32, "NORTH_SOUTH": 64, "INTERNAL": 1024 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 20,
+        "preferred_connection_categories": ["ap_planner", "ai_assistant", "rf_engineer"],
+        "connection_affinity": { "ap_planner": 0.40, "ai_assistant": 0.20, "rf_engineer": 0.10, "other": 0.30 }
+      }
+    },
+    {
+      "category_id": "cost_analyst",
+      "name": "成本分析师",
+      "identity": "评估不同AP方案的预算和性价比，控制成本在预算范围内",
+      "spawn_count": { "base": 60000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": false, "llm_ratio": 0.01 },
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION",
+      "skills": ["evaluate_cost"],
+      "persona_templates": [
+        { "role": "budget_controller", "ratio": 0.60, "focus": "cost_optimization" },
+        { "role": "procurement_advisor","ratio":0.40, "focus": "vendor_negotiation" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "evaluate_cost": [2, 6], "idle": [4, 8] },
+        "traffic_mix": { "EAST_WEST": 0.40, "NORTH_SOUTH": 0.20, "INTERNAL": 0.40 },
+        "avg_payload_kb": { "EAST_WEST": 8, "NORTH_SOUTH": 32, "INTERNAL": 128 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 15,
+        "preferred_connection_categories": ["ap_planner", "surveyor"],
+        "connection_affinity": { "ap_planner": 0.60, "surveyor": 0.15, "other": 0.25 }
+      }
+    },
+    {
+      "category_id": "surveyor",
+      "name": "现场勘测员",
+      "identity": "实地检查AP部署位置的物理可行性，报告部署障碍",
+      "spawn_count": { "base": 80000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": false, "llm_ratio": 0.0 },
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "skills": ["check_feasibility", "report_obstacles"],
+      "persona_templates": [
+        { "role": "site_surveyor",  "ratio": 0.70, "method": "on_site" },
+        { "role": "remote_surveyor","ratio":0.30, "method": "drone_lidar" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "check_feasibility": [3, 7], "report_obstacles": [1, 3], "idle": [2, 5] },
+        "traffic_mix": { "EAST_WEST": 0.45, "NORTH_SOUTH": 0.10, "INTERNAL": 0.45 },
+        "avg_payload_kb": { "EAST_WEST": 16, "NORTH_SOUTH": 8, "INTERNAL": 512 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 15,
+        "preferred_connection_categories": ["ap_planner", "cost_analyst", "deployer"],
+        "connection_affinity": { "ap_planner": 0.50, "cost_analyst": 0.15, "deployer": 0.15, "other": 0.20 }
+      }
+    },
+    {
+      "category_id": "architect",
+      "name": "网络架构师",
+      "identity": "验证AP网络拓扑的合理性和可扩展性，检查冗余和冲突",
+      "spawn_count": { "base": 40000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": false, "llm_ratio": 0.01 },
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "skills": ["validate_topology"],
+      "persona_templates": [
+        { "role": "topology_architect", "ratio": 0.55, "focus": "network_design" },
+        { "role": "security_architect", "ratio": 0.45, "focus": "access_control" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "validate_topology": [1, 4], "idle": [6, 9] },
+        "traffic_mix": { "EAST_WEST": 0.50, "NORTH_SOUTH": 0.10, "INTERNAL": 0.40 },
+        "avg_payload_kb": { "EAST_WEST": 16, "NORTH_SOUTH": 8, "INTERNAL": 256 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 20,
+        "preferred_connection_categories": ["ap_planner", "rf_engineer", "deployer"],
+        "connection_affinity": { "ap_planner": 0.50, "rf_engineer": 0.20, "other": 0.30 }
+      }
+    },
+    {
+      "category_id": "ai_assistant",
+      "name": "AI优化助手",
+      "identity": "外部LLM/工具节点，提供AP位置优化、信号仿真、改进建议等AI服务",
+      "spawn_count": { "base": 3000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": true, "llm_ratio": 1.0 },
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION",
+      "skills": ["optimize_ap_positions", "simulate_signal", "suggest_improvements"],
+      "persona_templates": [
+        { "role": "optimizer",       "ratio": 0.40, "expertise": "ap_positioning" },
+        { "role": "signal_simulator","ratio": 0.35, "expertise": "rf_simulation" },
+        { "role": "improvement_ai",  "ratio": 0.25, "expertise": "iterative_refinement" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "optimize_ap_positions": [5, 15], "simulate_signal": [3, 10], "suggest_improvements": [2, 6], "idle": [0, 2] },
+        "traffic_mix": { "NORTH_SOUTH": 0.70, "EAST_WEST": 0.25, "INTERNAL": 0.05 },
+        "avg_payload_kb": { "EAST_WEST": 16, "NORTH_SOUTH": 512, "INTERNAL": 64 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 200,
+        "preferred_connection_categories": ["ap_planner", "rf_engineer", "verifier"],
+        "connection_affinity": { "ap_planner": 0.50, "rf_engineer": 0.25, "verifier": 0.15, "other": 0.10 }
+      }
+    },
+    {
+      "category_id": "verifier",
+      "name": "覆盖验证员",
+      "identity": "使用AI助手仿真信号强度，验证最终方案覆盖是否达标",
+      "spawn_count": { "base": 50000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": false, "llm_ratio": 0.01 },
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "skills": ["verify_coverage"],
+      "persona_templates": [
+        { "role": "coverage_verifier", "ratio": 0.60, "method": "automated_test" },
+        { "role": "field_tester",      "ratio": 0.40, "method": "manual_survey" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "verify_coverage": [2, 5], "idle": [5, 8] },
+        "traffic_mix": { "EAST_WEST": 0.40, "NORTH_SOUTH": 0.35, "INTERNAL": 0.25 },
+        "avg_payload_kb": { "EAST_WEST": 8, "NORTH_SOUTH": 256, "INTERNAL": 128 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 15,
+        "preferred_connection_categories": ["ap_planner", "ai_assistant", "rf_engineer"],
+        "connection_affinity": { "ap_planner": 0.45, "ai_assistant": 0.30, "other": 0.25 }
+      }
+    },
+    {
+      "category_id": "deployer",
+      "name": "部署管理员",
+      "identity": "协调AP的物理部署执行，安排时间表和人员",
+      "spawn_count": { "base": 40000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": false, "llm_ratio": 0.0 },
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "skills": ["plan_deployment", "schedule_tasks"],
+      "persona_templates": [
+        { "role": "deployment_manager", "ratio": 0.50, "scale": "district" },
+        { "role": "crew_supervisor",    "ratio": 0.50, "scale": "building" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "plan_deployment": [1, 3], "schedule_tasks": [1, 3], "idle": [4, 8] },
+        "traffic_mix": { "EAST_WEST": 0.50, "NORTH_SOUTH": 0.05, "INTERNAL": 0.45 },
+        "avg_payload_kb": { "EAST_WEST": 16, "NORTH_SOUTH": 8, "INTERNAL": 256 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 15,
+        "preferred_connection_categories": ["ap_planner", "surveyor", "architect", "qa_engineer"],
+        "connection_affinity": { "ap_planner": 0.50, "surveyor": 0.20, "qa_engineer": 0.15, "other": 0.15 }
+      }
+    },
+    {
+      "category_id": "qa_engineer",
+      "name": "质量保证工程师",
+      "identity": "最终测试验收，确保AP部署方案满足所有技术和业务要求",
+      "spawn_count": { "base": 30000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": false, "llm_ratio": 0.01 },
+      "primary_interaction_paradigm": "EXTERNAL_NEGOTIATION",
+      "skills": ["final_inspection", "acceptance_test"],
+      "persona_templates": [
+        { "role": "quality_inspector", "ratio": 0.55, "standard": "iso" },
+        { "role": "compliance_auditor","ratio":0.45, "standard": "regulatory" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "final_inspection": [1, 3], "acceptance_test": [1, 3], "idle": [4, 8] },
+        "traffic_mix": { "EAST_WEST": 0.35, "NORTH_SOUTH": 0.15, "INTERNAL": 0.50 },
+        "avg_payload_kb": { "EAST_WEST": 12, "NORTH_SOUTH": 16, "INTERNAL": 256 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 15,
+        "preferred_connection_categories": ["ap_planner", "deployer", "verifier"],
+        "connection_affinity": { "ap_planner": 0.50, "deployer": 0.20, "verifier": 0.15, "other": 0.15 }
+      }
+    },
+    {
+      "category_id": "documenter",
+      "name": "文档记录员",
+      "identity": "记录规划过程、决策参数和最终方案，归档保存",
+      "spawn_count": { "base": 25000, "scale_factor": 1.0 },
+      "model_backbone": { "enabled": false, "llm_ratio": 0.0 },
+      "primary_interaction_paradigm": "INTERNAL_COLLABORATION",
+      "skills": ["record_decision", "archive_solution"],
+      "persona_templates": [
+        { "role": "technical_writer", "ratio": 0.60, "output": "documentation" },
+        { "role": "archivist",       "ratio": 0.40, "output": "knowledge_base" }
+      ],
+      "behavior_profile": {
+        "actions_per_10_rounds": { "record_decision": [3, 8], "archive_solution": [1, 2], "idle": [2, 5] },
+        "traffic_mix": { "EAST_WEST": 0.30, "NORTH_SOUTH": 0.05, "INTERNAL": 0.65 },
+        "avg_payload_kb": { "EAST_WEST": 8, "NORTH_SOUTH": 4, "INTERNAL": 512 }
+      },
+      "topology_constraints": {
+        "max_peers_per_agent": 10,
+        "preferred_connection_categories": ["ap_planner", "qa_engineer"],
+        "connection_affinity": { "ap_planner": 0.70, "other": 0.30 }
+      }
+    }
+  ],
+
+  "network_generation_rules": [
+    {
+      "sub_id": "sub_planning_plane",
+      "topology_type": "STAR",
+      "description": "规划平面：AP规划师为Hub，协调所有技术角色",
+      "generation_rule": "STAR_HUB",
+      "hub_categories": ["ap_planner"],
+      "spoke_categories": ["rf_engineer", "cost_analyst", "surveyor", "architect", "verifier", "deployer", "qa_engineer", "documenter"],
+      "paradigm": "COLLABORATION",
+      "edge_density": { "hub_to_spoke": 0.005 },
+      "max_total_edges": 10000000,
+      "channel_prefix": "vlan_plan"
+    },
+    {
+      "sub_id": "sub_ai_gateway",
+      "topology_type": "STAR",
+      "description": "AI网关：ai_assistant为Hub，技术角色通过此子网调用AI服务",
+      "generation_rule": "STAR_HUB",
+      "hub_categories": ["ai_assistant"],
+      "spoke_categories": ["ap_planner", "rf_engineer", "verifier"],
+      "paradigm": "NEGOTIATION",
+      "edge_density": { "hub_to_spoke": 0.05 },
+      "max_total_edges": 3000000,
+      "channel_prefix": "vlan_ai"
+    },
+    {
+      "sub_id": "sub_tech_collab",
+      "topology_type": "MESH",
+      "description": "技术协作网络：射频/勘测/架构/验证互相交流",
+      "generation_rule": "INTRA_CATEGORY_FULL_INTER_CATEGORY_SPARSE",
+      "source_categories": ["rf_engineer", "cost_analyst", "surveyor", "architect", "verifier"],
+      "target_categories": ["rf_engineer", "cost_analyst", "surveyor", "architect", "verifier"],
+      "paradigm": "COLLABORATION",
+      "edge_density": { "intra": 0.0001, "inter": 0.00003 },
+      "max_total_edges": 5000000,
+      "channel_prefix": "vlan_tech"
+    },
+    {
+      "sub_id": "sub_deploy_flow",
+      "topology_type": "MESH",
+      "description": "部署执行网络：部署/QA/文档三方协作",
+      "generation_rule": "INTRA_CATEGORY_FULL_INTER_CATEGORY_SPARSE",
+      "source_categories": ["deployer", "qa_engineer", "documenter"],
+      "target_categories": ["deployer", "qa_engineer", "documenter"],
+      "paradigm": "COLLABORATION",
+      "edge_density": { "intra": 0.0005, "inter": 0.0001 },
+      "max_total_edges": 2000000,
+      "channel_prefix": "vlan_deploy"
+    }
+  ],
+
+  "network_global_constraints": {
+    "max_total_edges_across_all_subnets": 20000000,
+    "max_edges_per_agent_global": 250,
+    "bandwidth_limits_gbps": {
+      "EAST_WEST":   { "per_agent_avg_mbps": 0.3, "total_aggregate_gbps": 300 },
+      "NORTH_SOUTH": { "per_agent_avg_mbps": 5,   "total_aggregate_gbps": 5000 },
+      "INTERNAL":    { "per_agent_avg_mbps": 2,   "total_aggregate_gbps": 2000 }
+    }
+  },
+
+  "traffic_generation_rules": {
+    "EAST_WEST": {
+      "description": "Agent间东西向协作流量（覆盖报告/成本评估/勘测反馈/拓扑验证）",
+      "generated_by": ["simulate_coverage", "evaluate_cost", "check_feasibility", "validate_topology", "verify_coverage"],
+      "avg_requests_per_agent_per_round": 0.25,
+      "size_distribution": { "min_kb": 1, "p50_kb": 16, "p95_kb": 64, "max_kb": 512 }
+    },
+    "NORTH_SOUTH": {
+      "description": "外部AI调用南北向流量（AP优化/信号仿真/改进建议）",
+      "generated_by": ["call_ai_optimizer", "optimize_ap_positions", "simulate_signal", "suggest_improvements"],
+      "avg_requests_per_agent_per_round": 0.10,
+      "size_distribution": { "min_kb": 4, "p50_kb": 128, "p95_kb": 512, "max_kb": 4096 },
+      "rate_limit_per_round_global": 100000
+    },
+    "INTERNAL": {
+      "description": "内部管理流量（部署计划/验收报告/文档归档）",
+      "generated_by": ["plan_deployment", "schedule_tasks", "final_inspection", "acceptance_test", "archive_solution"],
+      "avg_requests_per_agent_per_round": 0.12,
+      "size_distribution": { "min_kb": 1, "p50_kb": 64, "p95_kb": 512, "max_kb": 4096 }
+    }
+  },
+
+  "mapping_rules": {
+    "_description": "agent_categories → network subnets 映射",
+    "rules": [
+      { "category_id": "ap_planner",    "subnets": ["sub_planning_plane","sub_ai_gateway"],                "roles": ["hub","spoke"] },
+      { "category_id": "rf_engineer",   "subnets": ["sub_planning_plane","sub_ai_gateway","sub_tech_collab"], "roles": ["spoke","spoke","peer"] },
+      { "category_id": "cost_analyst",  "subnets": ["sub_planning_plane","sub_tech_collab"],                "roles": ["spoke","peer"] },
+      { "category_id": "surveyor",      "subnets": ["sub_planning_plane","sub_tech_collab"],                "roles": ["spoke","peer"] },
+      { "category_id": "architect",     "subnets": ["sub_planning_plane","sub_tech_collab"],                "roles": ["spoke","peer"] },
+      { "category_id": "ai_assistant",  "subnets": ["sub_ai_gateway"],                                     "roles": ["hub"] },
+      { "category_id": "verifier",      "subnets": ["sub_planning_plane","sub_ai_gateway","sub_tech_collab"], "roles": ["spoke","spoke","peer"] },
+      { "category_id": "deployer",      "subnets": ["sub_planning_plane","sub_deploy_flow"],                "roles": ["spoke","peer"] },
+      { "category_id": "qa_engineer",   "subnets": ["sub_planning_plane","sub_deploy_flow"],                "roles": ["spoke","peer"] },
+      { "category_id": "documenter",    "subnets": ["sub_planning_plane","sub_deploy_flow"],                "roles": ["spoke","peer"] }
+    ]
+  },
+
+  "scaling_parameters": {
+    "_description": "全局缩放参数",
+    "total_agents_target": 1000000,
+    "llm_enabled_agents_ratio": 0.01,
+    "llm_enabled_agents_estimate": 10000,
+    "scale_factors": {
+      "agent_count":        { "min": 100000, "default": 500000, "max": 5000000 },
+      "edges_per_subnet":   { "formula": "min(agents * avg_peers * density / 2, max_total_edges)" },
+      "traffic_throughput": { "formula": "agents * avg_requests_per_round * avg_payload / round_duration" }
+    }
+  }
+}

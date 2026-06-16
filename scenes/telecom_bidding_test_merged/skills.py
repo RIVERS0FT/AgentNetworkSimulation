@@ -591,3 +591,18 @@ def broker_deal(**kwargs):
 
     return result
 SkillRegistry.register("broker_deal", broker_deal)
+
+
+def get_panel_state(**kwargs):
+    return {
+        "active_contracts": [{"source": k[0], "target": k[1], "status": v["contract_status"], "value": v.get("contract_value", 0)} for k, v in active_contracts.items()],
+        "complaint_log": complaint_log[-20:],
+        "sanction_log": sanction_log[-20:],
+        "summary": {
+            "total_contracts": len(active_contracts),
+            "signed": sum(1 for v in active_contracts.values() if v["contract_status"] == "SIGNED"),
+            "negotiating": sum(1 for v in active_contracts.values() if v["contract_status"] == "NEGOTIATING"),
+            "breach_flashing": sum(1 for v in active_contracts.values() if v["contract_status"] == "BREACH_FLASHING"),
+        }
+    }
+SkillRegistry.register("get_panel_state", get_panel_state)

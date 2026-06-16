@@ -334,6 +334,120 @@ SkillRegistry.register("record_decision", record_decision)
 
 
 # ============================================================
+# 补充技能
+# ============================================================
+
+def generate_heatmap(**kwargs):
+    """RF_ENGINEER: 生成覆盖热力图数据"""
+    round_num = kwargs.get("round", 0)
+    aps = kwargs.get("ap_placements", ap_placements)
+    grid = []
+    for gx in range(0, CAMPUS_W + 1, 50):
+        for gy in range(0, CAMPUS_H + 1, 50):
+            best_signal = -90
+            for ap in aps:
+                dist = math.sqrt((gx - ap["x"]) ** 2 + (gy - ap["y"]) ** 2)
+                if dist < ap.get("radius", AP_COVERAGE_RADIUS):
+                    best_signal = max(best_signal, -30 - int(dist / 2))
+            in_int = any(math.sqrt((gx - s["x"]) ** 2 + (gy - s["y"]) ** 2) < s["radius"] for s in INTERFERENCE)
+            grid.append({"x": gx, "y": gy, "signal_dbm": best_signal if not in_int else min(best_signal, -85)})
+    _emit_event("HEATMAP", round_num, "RF_ENGINEER", "PLANNER", "generate_heatmap", f"{len(grid)} grid points")
+    return {"status": "success", "result": "heatmap_generated", "data": {"grid": grid, "round": round_num}}
+SkillRegistry.register("generate_heatmap", generate_heatmap)
+
+
+def report_obstacles(**kwargs):
+    """SURVEYOR: 报告部署障碍"""
+    round_num = kwargs.get("round", 0)
+    obstacles = []
+    for ap in ap_placements:
+        if not random.random() > 0.85:
+            continue
+        obstacles.append({"ap_id": ap.get("id", "?"), "issue": random.choice(["电源不可达", "承重不足", "信号遮挡", "无安装支架"]),
+                          "x": ap["x"], "y": ap["y"]})
+    _emit_event("OBSTACLE_REPORT", round_num, "SURVEYOR", "PLANNER", "report_obstacles", f"{len(obstacles)} obstacles")
+    return {"status": "success", "result": "obstacles_reported", "data": {"obstacles": obstacles, "round": round_num}}
+SkillRegistry.register("report_obstacles", report_obstacles)
+
+
+def validate_topology(**kwargs):
+    """ARCHITECT: 验证AP网络拓扑"""
+    round_num = kwargs.get("round", 0)
+    aps = kwargs.get("ap_placements", ap_placements)
+    issues = []
+    for i, ap1 in enumerate(aps):
+        for ap2 in aps[i + 1:]:
+            dist = math.sqrt((ap1["x"] - ap2["x"]) ** 2 + (ap1["y"] - ap2["y"]) ** 2)
+            if dist < 20:
+                issues.append(f"AP {ap1.get('id', '?')} 与 {ap2.get('id', '?')} 距离过近({dist:.0f}m)")
+    valid = len(issues) == 0
+    _emit_event("TOPOLOGY_CHECK", round_num, "ARCHITECT", "PLANNER", "validate_topology",
+                "PASS" if valid else f"{len(issues)} issues")
+    return {"status": "success", "result": "valid" if valid else "issues_found",
+            "data": {"valid": valid, "issues": issues, "round": round_num}}
+SkillRegistry.register("validate_topology", validate_topology)
+
+
+def suggest_improvements(**kwargs):
+    """AI_ASSISTANT: 基于当前方案建议改进点"""
+    round_num = kwargs.get("round", 0)
+    current_cov = kwargs.get("current_coverage", 0)
+    suggestions = []
+    if current_cov < TARGET_COVERAGE:
+        suggestions.append({"type": "add_ap", "desc": f"覆盖仅{current_cov}%，建议在盲区边缘增加1-2个AP"})
+    for src in INTERFERENCE:
+        affected = [ap for ap in ap_placements if math.sqrt((ap["x"] - src["x"]) ** 2 + (ap["y"] - src["y"]) ** 2) < src["radius"]]
+        if affected:
+            suggestions.append({"type": "relocate", "desc": f"{src['id']}干扰区内有{len(affected)}个AP,建议外移{src['radius'] * 0.3:.0f}m"})
+    _emit_event("AI_SUGGEST", round_num, "AI_ASSISTANT", "PLANNER", "suggest_improvements", f"{len(suggestions)} suggestions")
+    return {"status": "success", "result": "suggestions_ready", "data": {"suggestions": suggestions, "round": round_num}}
+SkillRegistry.register("suggest_improvements", suggest_improvements)
+
+
+def schedule_tasks(**kwargs):
+    """DEPLOYER: 制定部署时间表"""
+    round_num = kwargs.get("round", 0)
+    aps = kwargs.get("ap_placements", ap_placements)
+    schedule = [{"ap_id": ap.get("id", f"AP_{i + 1}"), "start_h": i * 2, "duration_h": random.randint(2, 6),
+                 "crew": f"team_{random.choice(['A', 'B', 'C'])}"} for i, ap in enumerate(aps)]
+    _emit_event("SCHEDULE", round_num, "DEPLOYER", "PLANNER", "schedule_tasks", f"{len(schedule)} tasks")
+    return {"status": "success", "result": "schedule_created", "data": {"schedule": schedule, "round": round_num}}
+SkillRegistry.register("schedule_tasks", schedule_tasks)
+
+
+def acceptance_test(**kwargs):
+    """QA_ENGINEER: 验收测试"""
+    round_num = kwargs.get("round", 0)
+    tests = {
+        "signal_strength": random.random() > 0.05,
+        "coverage_completeness": random.random() > 0.08,
+        "interference_resilience": random.random() > 0.12,
+        "throughput_benchmark": random.random() > 0.10,
+    }
+    all_pass = all(tests.values())
+    _emit_event("ACCEPTANCE", round_num, "QA_ENGINEER", "PLANNER", "acceptance_test",
+                "ALL PASS" if all_pass else f"FAIL: {[k for k, v in tests.items() if not v]}")
+    return {"status": "success", "result": "pass" if all_pass else "fail", "data": {"tests": tests, "all_pass": all_pass, "round": round_num}}
+SkillRegistry.register("acceptance_test", acceptance_test)
+
+
+def archive_solution(**kwargs):
+    """DOCUMENTER: 归档最终方案"""
+    round_num = kwargs.get("round", 0)
+    archive = {
+        "ap_count": len(ap_placements),
+        "total_cost": sum(e["total_cost"] for e in cost_estimates[-1:]) if cost_estimates else 0,
+        "coverage_pct": coverage_reports[-1]["coverage_pct"] if coverage_reports else 0,
+        "interference_sources": len(INTERFERENCE),
+        "rounds_taken": round_num,
+    }
+    _emit_event("ARCHIVE", round_num, "DOCUMENTER", "PLANNER", "archive_solution",
+                f"{archive['ap_count']} APs, {archive['coverage_pct']}%, ¥{archive['total_cost']}")
+    return {"status": "success", "result": "archived", "data": {"archive": archive, "round": round_num}}
+SkillRegistry.register("archive_solution", archive_solution)
+
+
+# ============================================================
 # get_panel_state — 供 GET /api/scenes/{name}/state 调用
 # ============================================================
 def get_panel_state(**kwargs):
