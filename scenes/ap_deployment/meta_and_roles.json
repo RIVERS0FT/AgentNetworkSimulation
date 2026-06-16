@@ -2,7 +2,7 @@
   "scenario_metadata": {
     "title": "园区WiFi AP部署规划仿真",
     "global_rules": "园区为1000m×400m矩形区域，内有5个固定干扰源（坐标随机，干扰半径50-150m）。AP部署需覆盖≥95%区域，成本不超过预算。仿真最多10轮，僵局检测4轮。",
-    "max_rounds": 10,
+    "max_rounds": 50,
     "stalemate_rounds": 4,
     "execution_order": [
       { "phase": 1, "agent": "PLANNER",    "action": "call_ai_optimizer",    "target": "AI_ASSISTANT",  "desc": "调用AI获取初始AP候选位置" },

@@ -141,55 +141,6 @@ GET /api/logs/messages?limit=100
 
 只返回 `event == "agent_message"` 的业务通信，不包含 Docker HTTP 观测。
 
-### Agent 网络层日志
-
-```http
-GET /api/logs/network?limit=100
-```
-
-返回 `layer == "agent_network"` 的日志，包括：
-
-- `docker_http_inbound`
-- `docker_http_outbound`
-- `llm_api_packet`
-
-适合网络态势、南北向/东西向流量统计类 panel。
-
-### PacketRecorder 内存报文
-
-```http
-GET /api/packets?limit=100
-GET /api/packets?agent_id=DEV_AI&direction=outbound
-GET /api/packets/stats
-```
-
-这是内存中的模拟报文记录，不是 JSONL 日志文件。适合展示 Agent 间通信轨迹。
-
-## 专用场景接口
-
-### 扫雷棋盘
-
-```http
-GET /api/minesweeper/board
-```
-
-仅供扫雷类面板使用。
-
-返回结构：
-
-```json
-{
-  "board": [[null, 1, -1]],
-  "soldiers": {
-    "soldier_01": {"x": 1, "y": 2}
-  },
-  "discovered_mines": [{"x": 2, "y": 0}],
-  "game_state": "RUNNING",
-  "cells_revealed": 12,
-  "completion_percentage": "18.2%"
-}
-```
-
 ## WebSocket
 
 ```js
@@ -223,12 +174,8 @@ ws.onopen = () => ws.send("all");
 
 - 静态剧本信息使用 `/api/scenes/{scene_name}`。
 - 当前运行态使用 `/api/scenes/state`。
-- 场景私有运行态优先放在 `skills.py#get_panel_state()`，由 `/api/scenes/state.custom` 或 `/api/scenes/{scene_name}/state` 读取。
+- 场景私有运行态优先放在 `skills.py#get_panel_state()`，由 `/api/scenes/state.custom`读取。
 - 所有轮询都应有失败兜底，避免 iframe 空白。
-- 动态轮询建议停止条件：
-  - `running === false`
-  - 或连续多次请求失败
-  - 或场景结束状态已明确
 - 面板不要调用会改变仿真状态的接口，除非明确设计为控制面板。
 
 ## 不建议在普通 Panel 中调用的接口
