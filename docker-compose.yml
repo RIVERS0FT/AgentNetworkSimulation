@@ -18,6 +18,10 @@ x-brain: &brain
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
     AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
+    AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
+    AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
+    AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
+    AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
   volumes: ["./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
   restart: unless-stopped
   networks: [an]
@@ -40,6 +44,10 @@ x-claude: &claude
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
     AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
+    AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
+    AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
+    AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
+    AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
   volumes: ["./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
   restart: unless-stopped
   networks: [an]
@@ -62,6 +70,10 @@ x-openclaw: &openclaw
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
     AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
+    AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
+    AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
+    AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
+    AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
   volumes: ["./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
   restart: unless-stopped
   networks: [an]
@@ -98,6 +110,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
       AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
+      AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
+      AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
+      AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
+      AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
     restart: unless-stopped
     networks: [an]
 

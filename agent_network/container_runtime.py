@@ -224,7 +224,9 @@ class ContainerRuntime:
                 }
                 for key in ("LLM_API_KEY", "LLM_MODEL", "LLM_API_BASE", "LLM_PROVIDER",
                             "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_BASE",
-                            "OPENAI_API_KEY", "AGENT_MESSAGE_HISTORY_TURNS"):
+                            "OPENAI_API_KEY", "AGENT_MESSAGE_HISTORY_TURNS",
+                            "AGENT_RECENT_HISTORY_TURNS", "AGENT_FACT_BOARD_MAX_ITEMS",
+                            "AGENT_FACT_BOARD_MAX_CHARS", "AGENT_FACT_ITEM_MAX_CHARS"):
                     if os.environ.get(key):
                         env[key] = os.environ[key]
 

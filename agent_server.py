@@ -29,6 +29,7 @@ from typing import List, Optional, Dict, Any
 import uvicorn, requests
 
 from agent_network.comm import RemoteBus
+from agent_network.brain import BoundedFactBoard
 from agent_network.packet_capture import start_capture, stop_capture
 
 # ═══════════════════════════════════════════════
@@ -179,7 +180,18 @@ turn = 0
 last_action: Dict[str, Any] = {}
 inbox: list = []                  # openclaw / claude-code 用的独立收件箱
 _openclaw_histories: Dict[str, List[Dict[str, Any]]] = {}
-_openclaw_history_turns = max(0, int(os.environ.get("AGENT_MESSAGE_HISTORY_TURNS", "8")))
+_openclaw_fact_boards: Dict[str, BoundedFactBoard] = {}
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+_default_recent_history_turns = _int_env("AGENT_MESSAGE_HISTORY_TURNS", 2)
+_openclaw_history_turns = max(0, _int_env("AGENT_RECENT_HISTORY_TURNS", _default_recent_history_turns))
 _current_effective_id = AGENT_ID
 _current_effective_name = AGENT_NAME
 _allowed_targets: set = set()
@@ -221,6 +233,13 @@ def _append_inbox(from_agent: str, content: str, msg_type: str = "direct"):
         inbox.append({"from": from_agent, "content": content, "type": msg_type})
         if len(inbox) > 50:
             inbox.pop(0)
+    if msg_type == "system":
+        text = content or ""
+        lower = text.lower()
+        section = "recent_skill_results" if (
+            "skill" in lower or "result" in lower or "技能" in text or "执行结果" in text
+        ) else "key_constraints"
+        _add_fact_for_current_agent(section, text)
 
 
 def _clear_inbox():
@@ -390,12 +409,15 @@ def _build_claude_prompt(inbox_msgs: list, ctx: dict = None) -> str:
 
     direct, broadcast, system_msgs = _partition_inbox_messages(inbox_msgs)
     inbox_text = _format_inbox_sections(direct, broadcast, system_msgs)
+    fact_board_text = _agent_fact_board(_current_effective_id).to_message_content()
 
     return f"""{system}
 
 {_build_identity_block(ctx, skills_list)}
 ## 已知其它 Agent（发消息时 target 必须用 agent_id）
 {_format_known_agents(known)}
+
+{fact_board_text}
 
 ## 当前回合: {turn}
 
@@ -454,6 +476,30 @@ def _openclaw_history(agent_id: str) -> list:
     return _openclaw_histories.setdefault(agent_id, [])
 
 
+def _agent_fact_board(agent_id: str) -> BoundedFactBoard:
+    return _openclaw_fact_boards.setdefault(agent_id, BoundedFactBoard())
+
+
+def _add_fact_for_current_agent(section: str, text):
+    if BACKEND == "brain" and _agent and getattr(_agent, "brain", None):
+        if hasattr(_agent.brain, "fact_board"):
+            _agent.brain.fact_board.add(section, text)
+    else:
+        _agent_fact_board(_current_effective_id).add(section, text)
+
+
+def _add_skill_fact_for_current_agent(skill_name: str, result):
+    if BACKEND == "brain" and _agent and getattr(_agent, "brain", None):
+        if hasattr(_agent.brain, "fact_board"):
+            _agent.brain.fact_board.add_skill_result(skill_name, result)
+    else:
+        _agent_fact_board(_current_effective_id).add_skill_result(skill_name, result)
+
+
+def _update_openclaw_fact_board(agent_id: str, action: dict):
+    _agent_fact_board(agent_id).add_action(action)
+
+
 def _append_openclaw_history(agent_id: str, user_message: str, assistant_message: dict):
     history = _openclaw_history(agent_id)
     history.append({"role": "user", "content": user_message})
@@ -468,6 +514,7 @@ def _append_openclaw_history(agent_id: str, user_message: str, assistant_message
 def _build_openclaw_messages(system_prompt: str, user_message: str, agent_id: str) -> list:
     return [
         {"role": "system", "content": system_prompt},
+        {"role": "user", "content": _agent_fact_board(agent_id).to_message_content()},
         *_openclaw_history(agent_id),
         {"role": "user", "content": user_message},
     ]
@@ -572,7 +619,8 @@ def _call_openclaw(system_prompt: str, user_message: str) -> dict:
             "content": text,
         })
         parsed = _parse_claude_response(text)
-        return parsed if parsed.get("action") != "wait" else {"action": "wait", "target": "", "content": "", "reasoning": text}
+        action = parsed if parsed.get("action") != "wait" else {"action": "wait", "target": "", "content": "", "reasoning": text}
+        return action
 
     import anthropic
 
@@ -760,7 +808,9 @@ async def _decide_with_openclaw(ctx: dict):
     system = _build_system_prompt(ctx)
     user = _build_user_message(inbox, ctx)
     action_raw = await asyncio.to_thread(_call_openclaw, system, user)
-    return _normalize_action(action_raw)
+    action = _normalize_action(action_raw)
+    _update_openclaw_fact_board(_current_effective_id, action)
+    return action
 
 
 async def _decide_with_claude_code(ctx: dict):
@@ -768,7 +818,9 @@ async def _decide_with_claude_code(ctx: dict):
     prompt = _build_claude_prompt(inbox, ctx)
     response = await asyncio.to_thread(_call_claude_code, prompt)
     action_raw = _parse_claude_response(response)
-    return _normalize_action(action_raw)
+    action = _normalize_action(action_raw)
+    _update_openclaw_fact_board(_current_effective_id, action)
+    return action
 
 
 @app.post("/decide")
@@ -865,6 +917,7 @@ async def _handle_skill_action(action_target: str, action_content, la: dict) -> 
         )
         skill_ret = r.json() if r.ok else {"error": r.text[:500]}
         result["skill_result"] = skill_ret
+        _add_skill_fact_for_current_agent(skill_name, skill_ret)
         ret_str = json.dumps(skill_ret, ensure_ascii=False)
         _append_inbox("系统", f"[技能 {skill_name} 执行结果]\n{ret_str}", "system")
         _log_agent("act", f"技能调用: {skill_name} | 返回: {ret_str}",
@@ -998,12 +1051,13 @@ async def capture_stop():
 @app.post("/reset")
 async def reset_state():
     global turn, last_action, _allowed_targets, _current_effective_id, _current_effective_name
-    global _openclaw_histories
+    global _openclaw_histories, _openclaw_fact_boards
     stop_capture()
     turn = 0
     last_action = {}
     _allowed_targets = set()
     _openclaw_histories = {}
+    _openclaw_fact_boards = {}
     _current_effective_id = AGENT_ID
     _current_effective_name = AGENT_NAME
     os.environ.pop("EFFECTIVE_AGENT_ID", None)
@@ -1023,6 +1077,8 @@ async def reset_state():
         if hasattr(_agent, 'brain') and _agent.brain:
             if hasattr(_agent.brain, 'message_history'):
                 _agent.brain.message_history = []
+            if hasattr(_agent.brain, 'fact_board'):
+                _agent.brain.fact_board.clear()
             _agent.brain.turn = 0
     else:
         inbox.clear()
