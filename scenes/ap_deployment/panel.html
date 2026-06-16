@@ -169,6 +169,7 @@ function draw(){
 
 function updateStats(){
   if(!data&&window.location.protocol!=='file:')return;
+  const custom=data?.custom||{};
   const cov=getCoverage();
   const el=document.getElementById('sCov');el.textContent=cov?cov.coverage_pct+'%':'--';el.className='v '+(cov&&cov.coverage_pct>=95?'g':'y');
   document.getElementById('sAP').textContent=(getAps()||[]).length;
@@ -176,7 +177,7 @@ function updateStats(){
   document.getElementById('sAI').textContent=(getAICalls()||[]).length;
   const feas=getFeasibility()||[];document.getElementById('sFeas').textContent=feas.length?Math.round(feas.filter(function(f){return f.feasible}).length/feas.length*100)+'%':'--';
   document.getElementById('sStatus').textContent=cov&&cov.coverage_pct>=95?'✓达标':'↻迭代';
-  document.getElementById('roundLabel').textContent=data&&data.round!=null?'R'+data.round:'R0';
+  document.getElementById('roundLabel').textContent=data.round!=null?'R'+data.round+'/'+data.max_rounds:'R0';
 }
 
 // Hover detection
