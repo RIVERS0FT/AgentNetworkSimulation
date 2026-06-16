@@ -219,13 +219,16 @@ canvas.onmousemove=function(e){
 };
 canvas.onmouseleave=function(){tip.style.display='none';};
 
+// ========== HUD 数据刷新 — 从 /api/scenes/state 读取并更新所有面板元素 ==========
 function updateHUD(){
+  // ── 左上角回合标签 ──
+  // state.running → ▶ 运行中  state.round>0 → ⏹ 已结束  → 否则 R0 等待
   document.getElementById('roundLabel').textContent=
     (state.running?'▶ R'+state.round+'/'+state.max_rounds:
     state.round>0?'⏹ R'+state.round+'/'+state.max_rounds+' (已结束)':'R0/'+state.max_rounds)
     +' ['+_pollCount+']';
 
-  // Status counts
+  // ── Agent 状态统计：空闲/思考/执行/异常 ──
   let idle=0,think=0,act=0,err=0;
   for(const a of state.agents){
     if(a.status==='idle') idle++;
@@ -233,36 +236,46 @@ function updateHUD(){
     else if(a.status==='acting') act++;
     else if(a.status==='error') err++;
   }
+  // 已完成数：所有 Agent 的 done 之和
   const done = Object.values(state.custom?.agent_progress||{}).reduce((s,p)=>s+(p.done||0),0);
   document.getElementById('nIdle').textContent=idle;
   document.getElementById('nThink').textContent=think;
   document.getElementById('nAct').textContent=act;
   document.getElementById('nErr').textContent=err;
   document.getElementById('nDone').textContent=done;
+  // 总体完成百分比 = 已完成数 / 所有 Agent goal 总和
   document.getElementById('totalPct').textContent=
     Math.round(Object.values(state.custom?.agent_progress||{}).reduce((s,p)=>s+(p.done||0),0)/
     Object.values(AGENTS).reduce((a,b)=>a+b.goal,0)*100)+'%';
 
-  // Custom stats from skills
+  // ── 技能统计数字 ──
   const c=state.custom;
   if(c){
+    // 提交数 = git_commit 代码提交 + 设计提交
     document.getElementById('sCommit').textContent=(c.task_stats?.git_commits||0)+(c.task_stats?.design_submissions||0);
+    // 文档数 = write_document 写入的 documents 列表长度
     document.getElementById('sDoc').textContent=c.task_stats?.documents||0;
+    // 测试数 = run_test 写入的 test_reports 列表长度
     document.getElementById('sTest').textContent=c.task_stats?.test_reports||0;
+    // CI 流水线总数 = handle_push + git_commit + trigger_ci_cd 写入的 ci_pipelines 列表长度
     document.getElementById('sCI').textContent=(c.ci_status?.total||0);
+    // 外部 API 调用次数
     document.getElementById('sAPI').textContent=c.task_stats?.external_api_calls||0;
+    // 东西向流量（KB）
     document.getElementById('sEW').textContent=c.traffic?.EAST_WEST?.total_kb||0;
+    // 南北向流量（KB）
     document.getElementById('sNS').textContent=c.traffic?.NORTH_SOUTH?.total_kb||0;
   }
 
-  // Traffic bars
+  // ── 底部流量条（按最大值为基准等比缩放宽度）──
   const ew=c?.traffic?.EAST_WEST?.total_kb||0;
   const ns=c?.traffic?.NORTH_SOUTH?.total_kb||0;
   const it=c?.traffic?.INTERNAL?.total_kb||0;
-  const mx=Math.max(ew,ns,it,1);
+  const mx=Math.max(ew,ns,it,1);  // 最大值作为 100% 基准，避免除0
   document.getElementById('bEW').style.width=(ew/mx*100)+'%';document.getElementById('vEW').textContent=ew+' KB';
   document.getElementById('bNS').style.width=(ns/mx*100)+'%';document.getElementById('vNS').textContent=ns+' KB';
   document.getElementById('bINT').style.width=(it/mx*100)+'%';document.getElementById('vINT').textContent=it+' KB';
+  // 隐藏的详细统计（备用）
   document.getElementById('com').textContent=(c?.task_stats?.git_commits||0);
   document.getElementById('mod').textContent=(c?.task_stats?.model_submissions||0);
   document.getElementById('doc').textContent=(c?.task_stats?.documents||0);
@@ -272,18 +285,20 @@ function updateHUD(){
   document.getElementById('pass').textContent=(c?.task_stats?.test_pass_rate||0)+'%';
 }
 
-// ── API polling ──
+// ========== API 轮询 — 每秒从 /api/scenes/state 获取最新面板数据 ==========
 let _pollCount = 0;
 async function poll(){
   try{
     const r=await fetch('/api/scenes/state');
     if(!r.ok){console.error('poll HTTP',r.status);return;}
-    state = await r.json();
+    state = await r.json();               // state = {scene, running, round, max_rounds, agents, custom}
     _pollCount++;
-    // Update per-agent progress from skills data
+    // 从 skills.py 的 get_panel_state() 返回的 agent_progress 更新每个 Agent 的 done/goal
+    // agent_progress 由 skills.py 中各列表（git_commits, documents, test_reports, ci_pipelines...）统计得到
     const ap = state.custom?.agent_progress;
     if(ap){
       for(const[id, p] of Object.entries(ap)){
+        // 限制进度不超过 goal（防止显示超过 100%）
         if(AGENTS[id]) progress[id] = Math.min(p.done, AGENTS[id].goal);
       }
     }
@@ -291,11 +306,12 @@ async function poll(){
   }catch(e){console.error('poll error',e);}
 }
 
-layout();
-poll();
+// ========== 启动 ==========
+layout();           // 首次布局
+poll();             // 立即请求一次数据
 function frame(){layout();draw();updateHUD();requestAnimationFrame(frame);}
-frame();
-setInterval(poll,1000);
-window.addEventListener('resize',layout);
+frame();            // Canvas 动画循环（60fps）
+setInterval(poll,1000);  // HUD 数据每秒刷新
+window.addEventListener('resize',layout);  // 窗口缩放时重新布局
 </script>
 </body></html>

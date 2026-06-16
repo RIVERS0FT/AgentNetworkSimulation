@@ -422,6 +422,8 @@ def get_panel_state():
     test_counts = Counter(t.get("tester", "").lower() for t in test_reports)
     # 审查: ARCHITECT → goal 5
     review_counts = Counter(r.get("reviewer", "").lower() for r in reviews)
+    # push/CI: REPO_ADMIN → goal 5, DEV_OPS → goal 3 (handle_push 技能)
+    push_counts = Counter(p.get("triggered_by", "").lower() for p in ci_pipelines)
 
     goals = {"dev_fe": 3, "dev_be": 2, "dev_fw": 3, "dev_ai": 1, "dev_ic": 1,
              "architect": 5, "pm": 3, "doc_writer": 4, "qa": 3,
@@ -429,7 +431,8 @@ def get_panel_state():
     for aid, goal in goals.items():
         done = (commit_counts.get(aid, 0) + model_counts.get(aid, 0) +
                 design_counts.get(aid, 0) + doc_counts.get(aid, 0) +
-                test_counts.get(aid, 0) + review_counts.get(aid, 0))
+                test_counts.get(aid, 0) + review_counts.get(aid, 0) +
+                push_counts.get(aid, 0))
         agent_progress[aid.upper()] = {"done": done, "goal": goal}
 
     return {

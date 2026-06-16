@@ -737,7 +737,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
     silent_rounds = 0
     stop_reason = "hard_limit"
 
-    global _simulation_stop_requested
+    global _simulation_stop_requested, _current_turn
     _simulation_stop_requested = False
     try:
         for round_num in range(MAX_ROUNDS):
@@ -746,6 +746,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
                 logger.system("simulation_stopped", "用户手动停止仿真", details={"round": round_num + 1})
                 break
             current_turn = round_num + 1
+            _current_turn = current_turn
 
             # 检查事件触发
             for trigger in event_triggers:
