@@ -17,6 +17,23 @@ ci_pipelines = []
 reviews = []
 
 
+def _norm_actor(value):
+    return str(value or "").strip().upper()
+
+
+def _is_missing_actor(value):
+    return _norm_actor(value) in ("", "UNKNOWN", "NONE", "NULL")
+
+
+def _infer_document_author(author, doc_type="", title=""):
+    if not _is_missing_actor(author):
+        return author
+    text = f"{doc_type} {title}".lower()
+    if any(k in text for k in ("requirement", "需求", "prd", "product", "spec")):
+        return "PM"
+    return "DOC_WRITER"
+
+
 def _emit_traffic(round_num, traffic_type, source, target, action, bytes_est=0):
     event = {
         "round": round_num,
@@ -203,9 +220,9 @@ def write_document(**kwargs):
     编写/协作编辑文档。
     参数: author(str), doc_type(str), title(str), round(int)
     """
-    author = kwargs.get("author", "unknown")
     doc_type = kwargs.get("doc_type", "requirement")
     title = kwargs.get("title", "untitled")
+    author = _infer_document_author(kwargs.get("author", "unknown"), doc_type, title)
     current_round = kwargs.get("round", 0)
 
     doc_id = f"doc_{len(documents)+1}_{int(time.time()%100000)}"
@@ -270,15 +287,25 @@ def handle_push(**kwargs):
     参数: pusher(str), push_type(str: code|model|design|doc), artifact_id(str), round(int)
     """
     pusher = kwargs.get("pusher", "unknown")
+    handled_by = kwargs.get("handled_by", "REPO_ADMIN")
+    if _is_missing_actor(handled_by):
+        handled_by = "REPO_ADMIN"
     push_type = kwargs.get("push_type", "code")
     artifact_id = kwargs.get("artifact_id", "unknown")
     current_round = kwargs.get("round", 0)
 
     pipeline_id = f"ci_{len(ci_pipelines)+1}_{int(time.time()%100000)}"
-    ci_pipelines.append({"pipeline_id": pipeline_id, "type": push_type, "triggered_by": pusher, "status": "running", "round": current_round})
+    ci_pipelines.append({
+        "pipeline_id": pipeline_id,
+        "type": push_type,
+        "triggered_by": pusher,
+        "handled_by": handled_by,
+        "status": "running",
+        "round": current_round,
+    })
 
-    _emit_traffic(current_round, "INTERNAL", "REPO_ADMIN", "CI_RUNNER", "trigger_build", 4096)
-    _emit_event("PUSH_HANDLED", current_round, "REPO_ADMIN", pusher, push_type, f"{artifact_id}->{pipeline_id}")
+    _emit_traffic(current_round, "INTERNAL", handled_by, "CI_RUNNER", "trigger_build", 4096)
+    _emit_event("PUSH_HANDLED", current_round, handled_by, pusher, push_type, f"{artifact_id}->{pipeline_id}")
 
     build_result = random.choice(["success", "success", "success", "failed"])
     ci_pipelines[-1]["status"] = build_result
@@ -291,7 +318,7 @@ def handle_push(**kwargs):
 
     return {
         "status": "success", "result": build_result,
-        "data": {"pipeline_id": pipeline_id, "push_type": push_type, "build_result": build_result, "round": current_round}
+        "data": {"pipeline_id": pipeline_id, "push_type": push_type, "build_result": build_result, "handled_by": handled_by, "round": current_round}
     }
 SkillRegistry.register("handle_push", handle_push)
 
@@ -335,7 +362,9 @@ def trigger_ci_cd(**kwargs):
     手动触发CI/CD流水线。
     参数: trigger_by(str), target_artifact(str), round(int)
     """
-    trigger_by = kwargs.get("trigger_by", "unknown")
+    trigger_by = kwargs.get("trigger_by", "DEV_OPS")
+    if _is_missing_actor(trigger_by):
+        trigger_by = "DEV_OPS"
     target_artifact = kwargs.get("target_artifact", "latest")
     current_round = kwargs.get("round", 0)
 
@@ -422,8 +451,20 @@ def get_panel_state():
     test_counts = Counter(t.get("tester", "").lower() for t in test_reports)
     # 审查: ARCHITECT → goal 5
     review_counts = Counter(r.get("reviewer", "").lower() for r in reviews)
-    # push/CI: REPO_ADMIN → goal 5, DEV_OPS → goal 3 (handle_push 技能)
-    push_counts = Counter(p.get("triggered_by", "").lower() for p in ci_pipelines)
+    # push/CI: REPO_ADMIN / DEV_OPS count actual operator fields.
+    push_counts = Counter()
+    for p in ci_pipelines:
+        for key in ("handled_by", "trigger_by", "operator"):
+            who = str(p.get(key, "")).lower()
+            if who:
+                push_counts[who] += 1
+                break
+        else:
+            who = str(p.get("triggered_by", "")).lower()
+            if who in ("repo_admin", "dev_ops"):
+                push_counts[who] += 1
+    code_review_counts = Counter(e.get("source", "").lower() for e in event_log if e.get("event_type") == "CODE_REVIEWED")
+    notify_counts = Counter(e.get("source", "").lower() for e in event_log if e.get("event_type") == "NOTIFY")
 
     goals = {"dev_fe": 3, "dev_be": 2, "dev_fw": 3, "dev_ai": 1, "dev_ic": 1,
              "architect": 5, "pm": 3, "doc_writer": 4, "qa": 3,
@@ -432,8 +473,9 @@ def get_panel_state():
         done = (commit_counts.get(aid, 0) + model_counts.get(aid, 0) +
                 design_counts.get(aid, 0) + doc_counts.get(aid, 0) +
                 test_counts.get(aid, 0) + review_counts.get(aid, 0) +
-                push_counts.get(aid, 0))
-        agent_progress[aid.upper()] = {"done": done, "goal": goal}
+                push_counts.get(aid, 0) + code_review_counts.get(aid, 0) +
+                notify_counts.get(aid, 0))
+        agent_progress[aid.upper()] = {"done": min(done, goal), "goal": goal}
 
     return {
         "agent_progress": agent_progress,
@@ -612,5 +654,3 @@ SkillRegistry.register("query_task_progress", query_task_progress)
 # ============================================================
 # panel.html 数据接口 — GET /api/scenes/{name}/state 调用
 # ============================================================
-
-
