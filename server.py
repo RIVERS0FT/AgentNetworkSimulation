@@ -1077,26 +1077,6 @@ async def scene_panel(scene_name: str):
         return HTMLResponse(content=panel_path.read_text(encoding='utf-8'))
     return HTMLResponse(content='<html><body style="background:#ECE8DF;color:#6A665F;display:flex;align-items:center;justify-content:center;height:100%;font-family:Inter,sans-serif;font-size:12px">无可视化面板</body></html>')
 
-
-@app.get("/api/scenes/{scene_name}/state")
-async def scene_state(scene_name: str):
-    """返回场景面板数据 — 调用 skills.py 的 get_panel_state"""
-    import importlib.util
-    folder = _SCENES_DIR / scene_name
-    skills_path = folder / "skills.py"
-    if not skills_path.exists():
-        raise HTTPException(status_code=404, detail=f"Scene '{scene_name}' has no skills.py")
-    try:
-        spec = importlib.util.spec_from_file_location(f"{scene_name}_skills", str(skills_path))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        if hasattr(mod, "SkillRegistry"):
-            result = mod.SkillRegistry.execute("get_panel_state")
-            return result
-        return {"error": "SkillRegistry not found in skills.py"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ═══════════════════════════════════════════════
 # API 配置管理
 # ═══════════════════════════════════════════════
