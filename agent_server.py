@@ -736,7 +736,6 @@ async def _handle_skill_action(action_target: str, action_content, la: dict) -> 
         )
         skill_ret = r.json() if r.ok else {"error": r.text[:500]}
         result["skill_result"] = skill_ret
-        # 写入收件箱
         ret_str = json.dumps(skill_ret, ensure_ascii=False)
         _append_inbox("系统", f"[技能 {skill_name} 执行结果]\n{ret_str}", "system")
         _log_agent("act", f"技能调用: {skill_name} | 返回: {ret_str}",

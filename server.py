@@ -127,6 +127,9 @@ _simulation_stop_requested = False  # 仿真停止标志
 _simulation_active = False          # 仅仿真运行期间接收 network_capture 包日志
 
 _current_relationships: List[Dict[str, Any]] = []  # 当前关系链
+_current_turn = 0               # 当前仿真轮次
+_current_scene_name = ""        # 当前场景名
+_current_max_rounds = 20        # 当前场景最大轮次
 _termination_config: Dict[str, int] = {"max_rounds": 10, "stalemate_rounds": 3}  # 终止条件默认值
 
 
@@ -743,6 +746,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
                 logger.system("simulation_stopped", "用户手动停止仿真", details={"round": round_num + 1})
                 break
             current_turn = round_num + 1
+            _current_turn = current_turn
 
             # 检查事件触发
             for trigger in event_triggers:
@@ -863,7 +867,7 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
     containers = instances.get("container_instances", {})
 
     # 加载场景 skills.py
-    global _active_skills_module
+    global _active_skills_module, _current_scene_name, _current_max_rounds
     skills_info = []
     skills_py = folder / "skills.py"
     if skills_py.exists():
@@ -877,6 +881,9 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
                 skills_info.append({"name": name, "desc": (func.__doc__ or "").strip()})
         except Exception:
             _active_skills_module = None
+
+    _current_scene_name = scene_name
+    _current_max_rounds = _termination_config.get("max_rounds", 20)
 
     agents: List[AgentDef] = []
     for role_id, role in roles.items():
@@ -954,7 +961,7 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
 @app.post("/api/simulations/run")
 async def run_simulation(req: SimulationRunRequest):
     """运行仿真场景 — setup + launch 一体化"""
-    global service_state, _current_relationships
+    global service_state, _current_relationships, _current_turn
 
     # ── Step 1: Build scene (folder format only) ──
     if not req.scene or not (_SCENES_DIR / req.scene).is_dir():
@@ -1050,6 +1057,26 @@ async def scene_panel(scene_name: str):
     if panel_path.exists():
         return HTMLResponse(content=panel_path.read_text(encoding='utf-8'))
     return HTMLResponse(content='<html><body style="background:#ECE8DF;color:#6A665F;display:flex;align-items:center;justify-content:center;height:100%;font-family:Inter,sans-serif;font-size:12px">无可视化面板</body></html>')
+
+
+@app.get("/api/scenes/state")
+async def scene_state():
+    """统一的场景面板数据端点"""
+    agents = [a.get_status() for a in AgentRegistry.list_all()]
+    custom = None
+    if _active_skills_module and hasattr(_active_skills_module, 'get_panel_state'):
+        try:
+            custom = _active_skills_module.get_panel_state()
+        except Exception:
+            custom = None
+    return {
+        "scene": _current_scene_name,
+        "running": _simulation_active,
+        "round": _current_turn,
+        "max_rounds": _current_max_rounds,
+        "agents": agents,
+        "custom": custom,
+    }
 
 
 # ═══════════════════════════════════════════════
