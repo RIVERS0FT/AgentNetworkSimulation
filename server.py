@@ -1032,6 +1032,25 @@ async def list_scenes():
     return {"scenes": scenes}
 
 
+@app.get("/api/scenes/state")
+async def scene_state():
+    """统一的场景面板数据端点"""
+    agents = [a.get_status() for a in AgentRegistry.list_all()]
+    custom = None
+    if _active_skills_module and hasattr(_active_skills_module, 'get_panel_state'):
+        try:
+            custom = _active_skills_module.get_panel_state()
+        except Exception:
+            custom = None
+    return {
+        "scene": _current_scene_name,
+        "running": _simulation_active,
+        "round": _current_turn,
+        "max_rounds": _current_max_rounds,
+        "agents": agents,
+        "custom": custom,
+    }
+
 @app.get("/api/scenes/{scene_name}")
 async def read_scene(scene_name: str):
     """读取场景内容（文件夹格式）"""
@@ -1058,25 +1077,6 @@ async def scene_panel(scene_name: str):
         return HTMLResponse(content=panel_path.read_text(encoding='utf-8'))
     return HTMLResponse(content='<html><body style="background:#ECE8DF;color:#6A665F;display:flex;align-items:center;justify-content:center;height:100%;font-family:Inter,sans-serif;font-size:12px">无可视化面板</body></html>')
 
-
-@app.get("/api/scenes/state")
-async def scene_state():
-    """统一的场景面板数据端点"""
-    agents = [a.get_status() for a in AgentRegistry.list_all()]
-    custom = None
-    if _active_skills_module and hasattr(_active_skills_module, 'get_panel_state'):
-        try:
-            custom = _active_skills_module.get_panel_state()
-        except Exception:
-            custom = None
-    return {
-        "scene": _current_scene_name,
-        "running": _simulation_active,
-        "round": _current_turn,
-        "max_rounds": _current_max_rounds,
-        "agents": agents,
-        "custom": custom,
-    }
 
 
 # ═══════════════════════════════════════════════
