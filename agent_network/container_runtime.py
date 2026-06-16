@@ -117,6 +117,69 @@ class ContainerRuntime:
                 pass
         return sorted(containers)
 
+    def _is_running_inside_container(self) -> bool:
+        return os.path.exists("/.dockerenv")
+
+    def _self_mount_sources(self) -> Dict[str, str]:
+        """Return Docker daemon-visible sources mounted into this runtime container."""
+        if not self._docker_client:
+            return {}
+        candidates = [
+            os.environ.get("HOSTNAME"),
+            os.environ.get("CONTAINER_NAME"),
+            os.environ.get("AGENT_RUNTIME_CONTAINER"),
+            "srv",
+        ]
+        for name in [c for c in candidates if c]:
+            try:
+                container = self._docker_client.containers.get(name)
+                mounts = container.attrs.get("Mounts", [])
+                sources = {}
+                for mount in mounts:
+                    dest = mount.get("Destination")
+                    source = mount.get("Source")
+                    if dest and source:
+                        sources[dest.rstrip("/")] = source
+                if sources:
+                    return sources
+            except Exception:
+                continue
+        return {}
+
+    def _dynamic_code_volumes(self) -> Dict[str, Dict[str, str]]:
+        """Match compose dev mounts for dynamically created agent containers."""
+        enabled = os.environ.get("AGENT_DYNAMIC_CODE_MOUNTS", "1").lower()
+        if enabled in {"0", "false", "no", "off"}:
+            return {}
+
+        root = os.environ.get("AGENT_HOST_PROJECT_ROOT") or os.environ.get("HOST_PROJECT_ROOT")
+        sources = {
+            "/app/agent_server.py": os.environ.get("AGENT_SERVER_HOST_PATH"),
+            "/app/agent_network": os.environ.get("AGENT_NETWORK_HOST_PATH"),
+        }
+        if root:
+            sources["/app/agent_server.py"] = sources["/app/agent_server.py"] or os.path.join(root, "agent_server.py")
+            sources["/app/agent_network"] = sources["/app/agent_network"] or os.path.join(root, "agent_network")
+
+        mount_sources = self._self_mount_sources()
+        for dest in list(sources.keys()):
+            sources[dest] = sources[dest] or mount_sources.get(dest)
+
+        if not self._is_running_inside_container():
+            cwd = os.getcwd()
+            sources["/app/agent_server.py"] = sources["/app/agent_server.py"] or os.path.join(cwd, "agent_server.py")
+            sources["/app/agent_network"] = sources["/app/agent_network"] or os.path.join(cwd, "agent_network")
+
+        volumes = {}
+        for dest, source in sources.items():
+            if source:
+                volumes[source] = {"bind": dest, "mode": "rw"}
+
+        if len(volumes) != len(sources):
+            missing = [dest for dest, source in sources.items() if not source]
+            print(f"[Runtime] Dynamic code mounts unavailable for: {', '.join(missing)}")
+        return volumes
+
     def _get_or_create_container(self, backend: str) -> str:
         """获取空闲容器名，无则动态创建"""
         cfg = self.BACKEND_CONFIG.get(backend, self.BACKEND_CONFIG[self.DEFAULT_BACKEND])
@@ -160,17 +223,25 @@ class ContainerRuntime:
                     "LOG_TRAFFIC": os.environ.get("LOG_TRAFFIC", "0"),
                 }
                 for key in ("LLM_API_KEY", "LLM_MODEL", "LLM_API_BASE", "LLM_PROVIDER",
-                            "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_BASE"):
+                            "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_BASE",
+                            "OPENAI_API_KEY", "AGENT_MESSAGE_HISTORY_TURNS"):
                     if os.environ.get(key):
                         env[key] = os.environ[key]
 
-                c = self._docker_client.containers.run(
-                    img, name=auto_name, detach=True, command=cmd,
-                    environment=env, network=self.NETWORK_NAME,
-                    cap_add=["NET_RAW", "NET_ADMIN"],
-                )
+                volumes = self._dynamic_code_volumes()
+                run_kwargs = {
+                    "name": auto_name,
+                    "detach": True,
+                    "command": cmd,
+                    "environment": env,
+                    "network": self.NETWORK_NAME,
+                    "cap_add": ["NET_RAW", "NET_ADMIN"],
+                }
+                if volumes:
+                    run_kwargs["volumes"] = volumes
+                c = self._docker_client.containers.run(img, **run_kwargs)
                 self._used_containers.add(auto_name)
-                print(f"[Runtime] Created {auto_name} ({backend}) container={c.id[:12]}")
+                print(f"[Runtime] Created {auto_name} ({backend}) container={c.id[:12]} code_mounts={len(volumes)}")
                 return auto_name
             except Exception as e:
                 print(f"[Runtime] Dynamic create failed for {backend}: {e}")
