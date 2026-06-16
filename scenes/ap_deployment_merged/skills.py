@@ -1,12 +1,11 @@
 import random
 import math
-import json
 
 # ============================================================
 # 园区地图 & 干扰源（固定）
 # ============================================================
-CAMPUS_W = 1000  # 园区宽度 (m)
-CAMPUS_H = 400   # 园区高度 (m)
+CAMPUS_W = 1000
+CAMPUS_H = 400
 
 INTERFERENCE = [
     {"id": "INT_01", "x": 150, "y": 80,  "radius": 80,  "desc": "变电站电磁干扰"},
@@ -16,30 +15,52 @@ INTERFERENCE = [
     {"id": "INT_05", "x": 300, "y": 350, "radius": 150, "desc": "工业焊接车间"},
 ]
 
+BUDGET = 50000
+AP_UNIT_COST = 3500
+AP_COVERAGE_RADIUS = 60
+TARGET_COVERAGE = 95
+MIN_AP_SPACING = 25
+
 # ============================================================
 # 模块级状态
 # ============================================================
-ap_placements = []        # [{id, x, y, radius, cost, status}]
-coverage_reports = []     # [{round, coverage_pct, blind_spots, ap_count, total_cost}]
-cost_estimates = []       # [{round, ap_count, unit_cost, total_cost, budget_remaining}]
-ai_call_log = []          # [{round, caller, request_type, latency_ms, tokens}]
-feasibility_checks = []   # [{round, ap_id, feasible, issue}]
+ap_placements = []         # 已确认的AP [{id, x, y, radius, status:"confirmed"}]
+proposed_aps = []           # 待评估的AP [{id, x, y, radius, status:"proposed"|"evaluating"}]
+relocating_aps = []         # 正在迁移的AP [{id, from_x, from_y, to_x, to_y, status:"relocating"}]
+pending_action = None       # 当前决策 {type, agent, ap_id, detail, visual_effect, round}
+decision_log = []           # 决策历史 [{round, agent, action, ap_id, detail, visual_effect}]
 
-BUDGET = 50000  # 总预算
-AP_UNIT_COST = 3500  # 单AP成本（含安装）
-AP_COVERAGE_RADIUS = 60  # AP覆盖半径 (m)
-TARGET_COVERAGE = 95  # 目标覆盖率(%)
-
+coverage_reports = []
+cost_estimates = []
+ai_call_log = []
+feasibility_checks = []
 event_log = []
 traffic_log = []
+
+_ap_counter = 0
+_current_round = 0
+
+
+def _next_ap_id():
+    global _ap_counter; _ap_counter += 1; return f"AP_{_ap_counter}"
 
 
 def _emit_event(etype, round_num, source, target, action, detail=""):
     event_log.append({"event_type": etype, "round": round_num, "source": source, "target": target, "action": action, "detail": detail})
 
-
 def _emit_traffic(round_num, ttype, source, target, action, kbytes):
     traffic_log.append({"round": round_num, "type": ttype, "source": source, "target": target, "action": action, "bytes": kbytes * 1024})
+
+def _log_decision(agent, action, ap_id, detail, visual_effect=""):
+    decision_log.append({"round": _current_round, "agent": agent, "action": action, "ap_id": ap_id, "detail": detail, "visual_effect": visual_effect})
+
+def _min_interference_dist(px, py):
+    return min((math.sqrt((px-s["x"])**2+(py-s["y"])**2)-s["radius"] for s in INTERFERENCE), default=999)
+
+def _is_in_interference(px, py):
+    for src in INTERFERENCE:
+        if math.sqrt((px-src["x"])**2+(py-src["y"])**2)<src["radius"]: return True, src
+    return False, None
 
 
 # ============================================================
@@ -47,480 +68,434 @@ def _emit_traffic(round_num, ttype, source, target, action, kbytes):
 # ============================================================
 class SkillRegistry:
     _skills = {}
-
     @classmethod
-    def register(cls, name, fn):
-        cls._skills[name] = fn
-
+    def register(cls, name, fn): cls._skills[name] = fn
     @classmethod
     def execute(cls, name, **kwargs):
-        if name not in cls._skills:
-            return {"status": "error", "result": None, "data": {"error": f"Skill '{name}' not found"}}
+        if name not in cls._skills: return {"status":"error","result":None,"data":{"error":f"'{name}' not found"}}
         return cls._skills[name](**kwargs)
-
     @classmethod
-    def list_skills(cls):
-        return list(cls._skills.keys())
+    def list_skills(cls): return list(cls._skills.keys())
 
 
 # ============================================================
-# PLANNER: call_ai_optimizer
+# PLANNER: 逐点部署流程
 # ============================================================
-def call_ai_optimizer(**kwargs):
+
+def plan_next_ap(**kwargs):
     """
-    调用AI优化助手获取最优AP位置。产生南北向流量（外部LLM调用）。
+    PLANNER调用AI获取下一个AP的候选位置（每次只返回1个最优位置）。
+    visual_effect: "proposed" → 前端显示虚线闪烁新AP
     """
-    round_num = kwargs.get("round", 0)
-    num_aps = kwargs.get("num_aps", 8)
+    global _current_round, pending_action
+    round_num = kwargs.get("round", _current_round)
+    _current_round = round_num
 
-    # 模拟AI推理
-    latency = random.randint(200, 800)
-    tokens = random.randint(500, 2000)
+    # 排除已有AP太近的位置
+    existing = ap_placements + proposed_aps
+    cols, rows = 5, 3
+    candidates = []
+    for r in range(1, rows+1):
+        for c in range(1, cols+1):
+            bx = CAMPUS_W*c/(cols+1); by = CAMPUS_H*r/(rows+1)
+            best_x, best_y, best_dist = bx, by, _min_interference_dist(bx, by)
+            for dx in [-CAMPUS_W*0.06, 0, CAMPUS_W*0.06]:
+                for dy in [-CAMPUS_H*0.06, 0, CAMPUS_H*0.06]:
+                    tx = max(10, min(CAMPUS_W-10, bx+dx)); ty = max(10, min(CAMPUS_H-10, by+dy))
+                    d = _min_interference_dist(tx, ty)
+                    if d > best_dist: best_x, best_y, best_dist = tx, ty, d
+            # 检查与已有AP的间距
+            too_close = any(math.sqrt((best_x-ap["x"])**2+(best_y-ap["y"])**2)<MIN_AP_SPACING for ap in existing)
+            candidates.append({"x": round(best_x,1), "y": round(best_y,1), "safe_dist": round(best_dist,1), "too_close": too_close})
 
-    # 优化算法：网格化 + 避开干扰源
-    positions = []
-    cols = max(2, int(math.sqrt(num_aps * CAMPUS_W / CAMPUS_H)))
-    rows = max(2, int(math.ceil(num_aps / cols)))
-    step_x = CAMPUS_W / (cols + 1)
-    step_y = CAMPUS_H / (rows + 1)
-    idx = 0
-    for r in range(1, rows + 1):
-        for c in range(1, cols + 1):
-            if idx >= num_aps:
-                break
-            bx, by = step_x * c, step_y * r
-            # 微调避开干扰
-            best_x, best_y, best_dist = bx, by, 0
-            for _ in range(20):
-                tx = bx + random.uniform(-step_x * 0.3, step_x * 0.3)
-                ty = by + random.uniform(-step_y * 0.3, step_y * 0.3)
-                tx = max(10, min(CAMPUS_W - 10, tx))
-                ty = max(10, min(CAMPUS_H - 10, ty))
-                min_dist = min((math.sqrt((tx - s["x"]) ** 2 + (ty - s["y"]) ** 2) for s in INTERFERENCE), default=999)
-                if min_dist > best_dist:
-                    best_x, best_y, best_dist = tx, ty, min_dist
-            positions.append({"x": round(best_x, 1), "y": round(best_y, 1), "safe_dist": round(best_dist, 1)})
-            idx += 1
+    # 选最优候选
+    candidates.sort(key=lambda c: (-c["safe_dist"], c["too_close"]))
+    best = candidates[0]
+    ap_id = _next_ap_id()
+    best["id"] = ap_id
+    best["radius"] = AP_COVERAGE_RADIUS
 
-    ai_call_log.append({"round": round_num, "caller": "PLANNER", "request_type": "optimize_ap_positions", "latency_ms": latency, "tokens": tokens})
-    _emit_traffic(round_num, "NORTH_SOUTH", "PLANNER", "AI_ASSISTANT", "optimize_ap", tokens * 4)
-    _emit_event("AI_CALL", round_num, "PLANNER", "AI_ASSISTANT", "optimize_ap_positions",
-                f"{num_aps} APs, {latency}ms, {tokens} tokens")
+    if best["too_close"]:
+        # 自动微调
+        for _ in range(50):
+            tx = best["x"] + (random.random()-0.5)*80; ty = best["y"] + (random.random()-0.5)*80
+            tx = max(10, min(CAMPUS_W-10, tx)); ty = max(10, min(CAMPUS_H-10, ty))
+            tc = any(math.sqrt((tx-ap["x"])**2+(ty-ap["y"])**2)<MIN_AP_SPACING for ap in existing)
+            if not tc:
+                best["x"]=round(tx,1); best["y"]=round(ty,1); best["too_close"]=False; break
 
-    return {
-        "status": "success", "result": "ai_optimized",
-        "data": {"positions": positions, "num_aps": num_aps, "latency_ms": latency, "tokens": tokens, "round": round_num}
-    }
-SkillRegistry.register("call_ai_optimizer", call_ai_optimizer)
+    best["status"] = "proposed"
+    proposed_aps.append(best)
+
+    pending_action = {"type":"propose","agent":"PLANNER","ap_id":ap_id,
+                       "x":best["x"],"y":best["y"],"round":round_num,"status":"proposed"}
+    _log_decision("PLANNER", "propose", ap_id,
+                  f"建议在({best['x']},{best['y']})部署 (安全距离{best['safe_dist']}m)",
+                  "APPEAR_DASHED")
+
+    latency = 200 + (len(ap_placements)+1)*50
+    tokens = 500 + (len(ap_placements)+1)*100
+    ai_call_log.append({"round":round_num,"caller":"PLANNER","ap_id":ap_id,"latency_ms":latency,"tokens":tokens})
+    _emit_traffic(round_num, "NORTH_SOUTH", "PLANNER", "AI_ASSISTANT", "single_ap_optimize", tokens*4)
+    _emit_event("AP_PROPOSED", round_num, "PLANNER", "AI_ASSISTANT", "propose",
+                f"{ap_id} at ({best['x']},{best['y']})")
+
+    return {"status":"success","result":"ap_proposed",
+            "data":best}
+SkillRegistry.register("plan_next_ap", plan_next_ap)
+
+
+def confirm_ap(**kwargs):
+    """
+    PLANNER确认AP位置。visual_effect: "SOLIDIFY" → 前端虚线变实线
+    """
+    global pending_action
+    round_num = kwargs.get("round", _current_round)
+    ap_id = kwargs.get("ap_id","")
+
+    ap = next((a for a in proposed_aps if a["id"]==ap_id), None)
+    if not ap: return {"status":"error","result":"not_found","data":{}}
+
+    proposed_aps.remove(ap)
+    ap["status"] = "confirmed"
+    ap_placements.append(ap)
+
+    pending_action = {"type":"confirm","agent":"PLANNER","ap_id":ap_id,"round":round_num,"status":"confirmed"}
+    _log_decision("PLANNER", "confirm", ap_id,
+                  f"AP_{ap_id} 部署确认 位置({ap['x']},{ap['y']})",
+                  "SOLIDIFY")
+    _emit_event("AP_CONFIRMED", round_num, "PLANNER", "DEPLOYER", "confirm", ap_id)
+
+    return {"status":"success","result":"confirmed",
+            "data":{"ap_id":ap_id,"position":{"x":ap["x"],"y":ap["y"]},"round":round_num}}
+SkillRegistry.register("confirm_ap", confirm_ap)
+
+
+def reject_ap(**kwargs):
+    """
+    PLANNER否决提案。visual_effect: "FADE_OUT" → 前端虚线消失
+    """
+    global pending_action
+    round_num = kwargs.get("round", _current_round)
+    ap_id = kwargs.get("ap_id","")
+    reason = kwargs.get("reason","不可行")
+
+    ap = next((a for a in proposed_aps if a["id"]==ap_id), None)
+    if ap: proposed_aps.remove(ap)
+
+    pending_action = {"type":"reject","agent":"PLANNER","ap_id":ap_id,"round":round_num,"status":"rejected"}
+    _log_decision("PLANNER", "reject", ap_id, reason, "FADE_OUT")
+    _emit_event("AP_REJECTED", round_num, "PLANNER", "", "reject", f"{ap_id}: {reason}")
+
+    return {"status":"success","result":"rejected",
+            "data":{"ap_id":ap_id,"reason":reason,"round":round_num}}
+SkillRegistry.register("reject_ap", reject_ap)
+
+
+def relocate_ap(**kwargs):
+    """
+    迁移已有AP到新位置。visual_effect: "FLASH_THEN_DASHED"
+    旧位置→闪烁，新位置→虚线，确认后→实线
+    """
+    global pending_action
+    round_num = kwargs.get("round", _current_round)
+    ap_id = kwargs.get("ap_id","")
+    new_x = kwargs.get("new_x",0)
+    new_y = kwargs.get("new_y",0)
+
+    # 找已有AP
+    old_ap = next((a for a in ap_placements if a["id"]==ap_id), None)
+    if not old_ap: return {"status":"error","result":"not_found","data":{}}
+
+    from_x, from_y = old_ap["x"], old_ap["y"]
+    # 旧位置标记闪烁
+    relocating_aps.append({"id":ap_id, "from_x":from_x, "from_y":from_y,
+                            "to_x":new_x, "to_y":new_y, "status":"relocating"})
+    old_ap["x"], old_ap["y"] = new_x, new_y
+
+    pending_action = {"type":"relocate","agent":"PLANNER","ap_id":ap_id,
+                       "from_x":from_x,"from_y":from_y,"to_x":new_x,"to_y":new_y,
+                       "round":round_num,"status":"relocating"}
+    _log_decision("PLANNER", "relocate", ap_id,
+                  f"迁移 ({from_x},{from_y})→({new_x},{new_y})",
+                  "FLASH_THEN_DASHED")
+    _emit_event("AP_RELOCATING", round_num, "PLANNER", "", "relocate",
+                f"{ap_id}: ({from_x},{from_y})→({new_x},{new_y})")
+
+    return {"status":"success","result":"relocating",
+            "data":{"ap_id":ap_id,"from":{"x":from_x,"y":from_y},"to":{"x":new_x,"y":new_y},"round":round_num}}
+SkillRegistry.register("relocate_ap", relocate_ap)
+
+
+def confirm_relocation(**kwargs):
+    """确认迁移完成。visual_effect: "SOLIDIFY" — 新位置虚线消失变实线"""
+    round_num = kwargs.get("round", _current_round)
+    ap_id = kwargs.get("ap_id","")
+    idx = next((i for i,a in enumerate(relocating_aps) if a["id"]==ap_id), None)
+    if idx is not None:
+        del relocating_aps[idx]
+    _log_decision("PLANNER", "confirm_relocate", ap_id, "迁移完成", "SOLIDIFY")
+    _emit_event("AP_RELOCATED", round_num, "PLANNER", "", "confirm_relocate", ap_id)
+    return {"status":"success","result":"relocation_confirmed","data":{"ap_id":ap_id,"round":round_num}}
+SkillRegistry.register("confirm_relocation", confirm_relocation)
 
 
 # ============================================================
-# RF_ENGINEER: simulate_coverage, analyze_interference
+# 评估技能（逐AP评估）
 # ============================================================
-def simulate_coverage(**kwargs):
-    """
-    仿真信号覆盖。计算覆盖率、盲区列表。
-    """
-    round_num = kwargs.get("round", 0)
-    aps = kwargs.get("ap_placements", ap_placements)
-    if not aps:
-        aps = [{"x": random.uniform(50, CAMPUS_W - 50), "y": random.uniform(50, CAMPUS_H - 50),
-                "radius": AP_COVERAGE_RADIUS, "id": f"AP_{i + 1}"} for i in range(8)]
 
-    # 蒙特卡洛采样
-    samples = 2000
-    covered = 0
-    blind_spots = []
+def evaluate_single_ap(**kwargs):
+    """RF_ENGINEER: 评估单个AP的覆盖贡献"""
+    round_num = kwargs.get("round", _current_round)
+    ap_id = kwargs.get("ap_id","")
+
+    ap = next((a for a in proposed_aps+ap_placements if a["id"]==ap_id), None)
+    if not ap: return {"status":"error","result":"not_found","data":{}}
+
+    # 蒙特卡洛采样该AP的覆盖贡献
+    samples, covered = 1000, 0
     for _ in range(samples):
-        sx, sy = random.uniform(0, CAMPUS_W), random.uniform(0, CAMPUS_H)
-        in_range = any(math.sqrt((sx - ap["x"]) ** 2 + (sy - ap["y"]) ** 2) < ap.get("radius", AP_COVERAGE_RADIUS)
-                       for ap in aps)
-        in_interference = any(math.sqrt((sx - s["x"]) ** 2 + (sy - s["y"]) ** 2) < s["radius"] for s in INTERFERENCE)
-        if in_range and not in_interference:
-            covered += 1
-        elif not in_range:
-            blind_spots.append({"x": round(sx, 1), "y": round(sy, 1)})
+        angle = random.random()*2*math.pi; dist = random.random()*AP_COVERAGE_RADIUS
+        sx = ap["x"] + math.cos(angle)*dist; sy = ap["y"] + math.sin(angle)*dist
+        if 0<=sx<=CAMPUS_W and 0<=sy<=CAMPUS_H:
+            in_int, _ = _is_in_interference(sx, sy)
+            if not in_int: covered += 1
+    coverage_contrib = round(covered/samples*100, 1)
 
-    coverage_pct = round(covered / samples * 100, 1)
-    report = {
-        "round": round_num, "coverage_pct": coverage_pct, "blind_spot_count": len(blind_spots),
-        "ap_count": len(aps), "blind_spots_sample": blind_spots[:10]
-    }
-    coverage_reports.append(report)
+    _emit_traffic(round_num, "EAST_WEST", "RF_ENGINEER", "PLANNER", "single_ap_eval", 8)
+    _emit_event("AP_EVALUATED", round_num, "RF_ENGINEER", "PLANNER", "evaluate",
+                f"{ap_id}: coverage_contrib={coverage_contrib}%")
+    _log_decision("RF_ENGINEER", "evaluate", ap_id,
+                  f"覆盖贡献{coverage_contrib}%", "EVALUATING")
 
-    _emit_traffic(round_num, "EAST_WEST", "RF_ENGINEER", "PLANNER", "coverage_report", 16)
-    _emit_event("COVERAGE_SIM", round_num, "RF_ENGINEER", "PLANNER", "simulate_coverage",
-                f"{coverage_pct}% ({covered}/{samples}), {len(blind_spots)} blind spots")
+    return {"status":"success","result":"evaluated",
+            "data":{"ap_id":ap_id,"coverage_contrib":coverage_contrib,"round":round_num}}
+SkillRegistry.register("evaluate_single_ap", evaluate_single_ap)
 
-    return {
-        "status": "success", "result": "coverage_simulated",
-        "data": report
-    }
+
+# ============================================================
+# 全局评估（保留兼容）
+# ============================================================
+
+def simulate_coverage(**kwargs):
+    round_num = kwargs.get("round", _current_round)
+    aps = ap_placements + proposed_aps
+    if not aps: return {"status":"error","result":"no_aps","data":{}}
+    samples, covered, blind = 2000, 0, []
+    for _ in range(samples):
+        sx, sy = random.uniform(0,CAMPUS_W), random.uniform(0,CAMPUS_H)
+        in_range = any(math.sqrt((sx-a["x"])**2+(sy-a["y"])**2)<a.get("radius",AP_COVERAGE_RADIUS) for a in aps)
+        in_int, _ = _is_in_interference(sx, sy)
+        if in_range and not in_int: covered+=1
+        elif not in_range: blind.append({"x":round(sx,1),"y":round(sy,1)})
+    pct = round(covered/samples*100,1)
+    rpt = {"round":round_num,"coverage_pct":pct,"blind_spot_count":len(blind),"ap_count":len(ap_placements),"blind_spots_sample":blind[:15]}
+    coverage_reports.append(rpt)
+    _emit_traffic(round_num,"EAST_WEST","RF_ENGINEER","PLANNER","coverage_report",16)
+    _emit_event("COVERAGE_SIM",round_num,"RF_ENGINEER","PLANNER","simulate_coverage",f"{pct}%")
+    return {"status":"success","result":"coverage_simulated","data":rpt}
 SkillRegistry.register("simulate_coverage", simulate_coverage)
 
 
 def analyze_interference(**kwargs):
-    """分析干扰源影响范围"""
-    round_num = kwargs.get("round", 0)
+    round_num = kwargs.get("round", _current_round)
     analysis = []
     for src in INTERFERENCE:
-        affected_aps = []
-        for ap in ap_placements:
-            dist = math.sqrt((ap["x"] - src["x"]) ** 2 + (ap["y"] - src["y"]) ** 2)
-            if dist < src["radius"]:
-                affected_aps.append(ap["id"])
-        analysis.append({
-            "source_id": src["id"], "desc": src["desc"], "radius": src["radius"],
-            "affected_ap_count": len(affected_aps), "affected_aps": affected_aps
-        })
-    _emit_event("INTERFERENCE_ANALYSIS", round_num, "RF_ENGINEER", "PLANNER", "analyze_interference",
-                f"{len(INTERFERENCE)} sources, {sum(a['affected_ap_count'] for a in analysis)} APs affected")
-    return {"status": "success", "result": "analysis_complete", "data": {"sources": analysis, "round": round_num}}
+        aff = [ap["id"] for ap in ap_placements if math.sqrt((ap["x"]-src["x"])**2+(ap["y"]-src["y"])**2)<src["radius"]]
+        analysis.append({"source_id":src["id"],"desc":src["desc"],"radius":src["radius"],"affected_aps":aff,"affected_count":len(aff)})
+    _emit_event("INTERFERENCE_ANALYSIS",round_num,"RF_ENGINEER","PLANNER","analyze",f"{len(INTERFERENCE)} sources")
+    return {"status":"success","result":"analysis_complete","data":{"sources":analysis,"round":round_num}}
 SkillRegistry.register("analyze_interference", analyze_interference)
 
 
-# ============================================================
-# COST_ANALYST
-# ============================================================
-def evaluate_cost(**kwargs):
-    """评估方案成本"""
-    round_num = kwargs.get("round", 0)
-    ap_count = kwargs.get("ap_count", len(ap_placements))
-    unit_cost = kwargs.get("unit_cost", AP_UNIT_COST)
-    extra_cost = random.randint(2000, 8000)  # 安装/线缆/交换机等
-    total = ap_count * unit_cost + extra_cost
-    remaining = BUDGET - total
-    estimate = {"round": round_num, "ap_count": ap_count, "unit_cost": unit_cost, "extra_cost": extra_cost,
-                "total_cost": total, "budget_remaining": remaining, "within_budget": remaining >= 0}
-    cost_estimates.append(estimate)
-    _emit_event("COST_EVAL", round_num, "COST_ANALYST", "PLANNER", "evaluate_cost",
-                f"{ap_count} APs × {unit_cost} + {extra_cost} = {total} (budget:{BUDGET})")
-    _emit_traffic(round_num, "EAST_WEST", "COST_ANALYST", "PLANNER", "cost_report", 8)
-    return {"status": "success", "result": "cost_evaluated", "data": estimate}
-SkillRegistry.register("evaluate_cost", evaluate_cost)
-
-
-# ============================================================
-# SURVEYOR
-# ============================================================
-def check_feasibility(**kwargs):
-    """现场勘测物理可行性"""
-    round_num = kwargs.get("round", 0)
-    aps = kwargs.get("ap_placements", ap_placements)
-    checks = []
-    for ap in aps:
-        feasible = random.random() > 0.15
-        issue = None if feasible else random.choice(["电源不可达", "承重不足", "信号遮挡", "无安装支架"])
-        checks.append({"ap_id": ap.get("id", "?"), "feasible": feasible, "issue": issue})
-        feasibility_checks.append({"round": round_num, "ap_id": ap.get("id", "?"), "feasible": feasible, "issue": issue})
-    feasible_count = sum(1 for c in checks if c["feasible"])
-    _emit_event("FEASIBILITY_CHECK", round_num, "SURVEYOR", "PLANNER", "check_feasibility",
-                f"{feasible_count}/{len(checks)} feasible")
-    return {"status": "success", "result": "feasibility_checked",
-            "data": {"checks": checks, "feasible_count": feasible_count, "total": len(checks), "round": round_num}}
-SkillRegistry.register("check_feasibility", check_feasibility)
-
-
-# ============================================================
-# AI_ASSISTANT: optimize_ap_positions, simulate_signal
-# ============================================================
-def optimize_ap_positions(**kwargs):
-    """AI优化AP位置（外部工具调用）"""
-    round_num = kwargs.get("round", 0)
-    num_aps = kwargs.get("num_aps", 8)
-    latency = random.randint(300, 1000)
-    tokens = random.randint(1000, 3000)
-    # K-means启发式 + 避开干扰
-    positions = []
-    for i in range(num_aps):
-        bx = CAMPUS_W * (i + 1) / (num_aps + 1)
-        by = CAMPUS_H / 2 + random.uniform(-CAMPUS_H * 0.3, CAMPUS_H * 0.3)
-        best_x, best_y, best_score = bx, by, -1
-        for _ in range(30):
-            tx = max(10, min(CAMPUS_W - 10, bx + random.uniform(-100, 100)))
-            ty = max(10, min(CAMPUS_H - 10, by + random.uniform(-80, 80)))
-            min_safe = min((math.sqrt((tx - s["x"]) ** 2 + (ty - s["y"]) ** 2) - s["radius"] for s in INTERFERENCE), default=0)
-            score = min_safe - abs(tx - bx) * 0.01
-            if score > best_score:
-                best_x, best_y, best_score = tx, ty, score
-        positions.append({"x": round(best_x, 1), "y": round(best_y, 1), "score": round(best_score, 1)})
-
-    ai_call_log.append({"round": round_num, "caller": "AI_ASSISTANT", "request_type": "optimize_ap", "latency_ms": latency, "tokens": tokens})
-    _emit_traffic(round_num, "NORTH_SOUTH", "AI_ASSISTANT", "EXTERNAL:LLM", "llm_inference", tokens * 4)
-    _emit_event("AI_OPTIMIZE", round_num, "AI_ASSISTANT", "EXTERNAL:LLM", "optimize_ap_positions",
-                f"{num_aps} APs optimized, {tokens} tokens, {latency}ms")
-    return {"status": "success", "result": "optimized", "data": {"positions": positions, "latency_ms": latency, "tokens": tokens, "round": round_num}}
-SkillRegistry.register("optimize_ap_positions", optimize_ap_positions)
-
-
-def simulate_signal(**kwargs):
-    """AI仿真信号强度（外部LLM辅助计算）"""
-    round_num = kwargs.get("round", 0)
-    aps = kwargs.get("ap_placements", ap_placements)
-    if not aps:
-        aps = [{"x": random.uniform(20, CAMPUS_W - 20), "y": random.uniform(20, CAMPUS_H - 20), "radius": AP_COVERAGE_RADIUS, "id": f"AP_{i + 1}"} for i in range(8)]
-    samples, covered = 1500, 0
-    heatmap = []
-    for _ in range(samples):
-        sx, sy = random.uniform(0, CAMPUS_W), random.uniform(0, CAMPUS_H)
-        best_signal = max((-50 - random.randint(0, 30) for ap in aps
-                           if math.sqrt((sx - ap["x"]) ** 2 + (sy - ap["y"]) ** 2) < ap.get("radius", AP_COVERAGE_RADIUS)), default=-90)
-        in_interference = any(math.sqrt((sx - s["x"]) ** 2 + (sy - s["y"]) ** 2) < s["radius"] for s in INTERFERENCE)
-        if best_signal > -75 and not in_interference:
-            covered += 1
-        if len(heatmap) < 50:
-            heatmap.append({"x": round(sx, 1), "y": round(sy, 1), "signal_dbm": best_signal})
-    coverage = round(covered / samples * 100, 1)
-
-    ai_call_log.append({"round": round_num, "caller": "AI_ASSISTANT", "request_type": "simulate_signal", "latency_ms": random.randint(100, 500), "tokens": random.randint(300, 800)})
-    _emit_traffic(round_num, "NORTH_SOUTH", "AI_ASSISTANT", "EXTERNAL:LLM", "llm_inference", 2048)
-    _emit_event("AI_SIGNAL_SIM", round_num, "AI_ASSISTANT", "VERIFIER", "simulate_signal", f"coverage:{coverage}%")
-    return {"status": "success", "result": "signal_simulated", "data": {"coverage_pct": coverage, "heatmap_sample": heatmap, "round": round_num}}
-SkillRegistry.register("simulate_signal", simulate_signal)
-
-
-# ============================================================
-# VERIFIER / QA / DEPLOYER
-# ============================================================
-def verify_coverage(**kwargs):
-    """验证覆盖达标"""
-    round_num = kwargs.get("round", 0)
-    aps = kwargs.get("ap_placements", ap_placements)
-    if not aps:
-        return {"status": "error", "result": "no_aps", "data": {}}
-    coverage = simulate_coverage(ap_placements=aps, round=round_num)["data"]["coverage_pct"]
-    passed = coverage >= TARGET_COVERAGE
-    _emit_event("VERIFY_COVERAGE", round_num, "VERIFIER", "PLANNER", "verify_coverage",
-                f"{coverage}% {'PASS' if passed else 'FAIL'} (target:{TARGET_COVERAGE}%)")
-    return {"status": "success", "result": "pass" if passed else "fail",
-            "data": {"coverage_pct": coverage, "target": TARGET_COVERAGE, "passed": passed, "round": round_num}}
-SkillRegistry.register("verify_coverage", verify_coverage)
-
-
-def final_inspection(**kwargs):
-    """最终验收"""
-    round_num = kwargs.get("round", 0)
-    checks = {
-        "coverage": random.random() > 0.1,
-        "cost_within_budget": sum(e["total_cost"] for e in cost_estimates[-1:]) <= BUDGET if cost_estimates else True,
-        "interference_avoided": True,
-        "feasibility_ok": random.random() > 0.05,
-    }
-    all_pass = all(checks.values())
-    _emit_event("FINAL_INSPECTION", round_num, "QA_ENGINEER", "PLANNER", "final_inspection",
-                "ALL PASS" if all_pass else f"FAIL: {[k for k, v in checks.items() if not v]}")
-    return {"status": "success", "result": "pass" if all_pass else "fail", "data": {"checks": checks, "all_pass": all_pass, "round": round_num}}
-SkillRegistry.register("final_inspection", final_inspection)
-
-
-def plan_deployment(**kwargs):
-    """制定部署计划"""
-    round_num = kwargs.get("round", 0)
-    aps = kwargs.get("ap_placements", ap_placements)
-    phases = [{"phase": i + 1, "ap_ids": [ap["id"] for ap in aps[i * 3:(i + 1) * 3]], "duration_h": random.randint(4, 12)}
-              for i in range((len(aps) + 2) // 3)]
-    _emit_event("DEPLOY_PLAN", round_num, "DEPLOYER", "PLANNER", "plan_deployment", f"{len(phases)} phases")
-    return {"status": "success", "result": "plan_created", "data": {"phases": phases, "round": round_num}}
-SkillRegistry.register("plan_deployment", plan_deployment)
-
-
-def record_decision(**kwargs):
-    """记录决策"""
-    round_num = kwargs.get("round", 0)
-    detail = kwargs.get("detail", "decision recorded")
-    _emit_event("DECISION_RECORDED", round_num, "DOCUMENTER", "PLANNER", "record", detail)
-    return {"status": "success", "result": "recorded", "data": {"detail": detail, "round": round_num}}
-SkillRegistry.register("record_decision", record_decision)
-
-
-# ============================================================
-# 补充技能
-# ============================================================
-
 def generate_heatmap(**kwargs):
-    """RF_ENGINEER: 生成覆盖热力图数据"""
-    round_num = kwargs.get("round", 0)
-    aps = kwargs.get("ap_placements", ap_placements)
-    grid = []
-    for gx in range(0, CAMPUS_W + 1, 50):
-        for gy in range(0, CAMPUS_H + 1, 50):
-            best_signal = -90
+    round_num = kwargs.get("round", _current_round)
+    aps = ap_placements + proposed_aps; grid = []
+    for gx in range(0,CAMPUS_W+1,25):
+        for gy in range(0,CAMPUS_H+1,25):
+            best=-90
             for ap in aps:
-                dist = math.sqrt((gx - ap["x"]) ** 2 + (gy - ap["y"]) ** 2)
-                if dist < ap.get("radius", AP_COVERAGE_RADIUS):
-                    best_signal = max(best_signal, -30 - int(dist / 2))
-            in_int = any(math.sqrt((gx - s["x"]) ** 2 + (gy - s["y"]) ** 2) < s["radius"] for s in INTERFERENCE)
-            grid.append({"x": gx, "y": gy, "signal_dbm": best_signal if not in_int else min(best_signal, -85)})
-    _emit_event("HEATMAP", round_num, "RF_ENGINEER", "PLANNER", "generate_heatmap", f"{len(grid)} grid points")
-    return {"status": "success", "result": "heatmap_generated", "data": {"grid": grid, "round": round_num}}
+                d=math.sqrt((gx-ap["x"])**2+(gy-ap["y"])**2)
+                if d<ap.get("radius",AP_COVERAGE_RADIUS): best=max(best,-30-int(d/2))
+            in_int,_=_is_in_interference(gx,gy)
+            if in_int: best=min(best,-85)
+            grid.append({"x":gx,"y":gy,"signal_dbm":best})
+    _emit_event("HEATMAP",round_num,"RF_ENGINEER","PLANNER","generate_heatmap",f"{len(grid)} points")
+    return {"status":"success","result":"heatmap_generated","data":{"grid":grid,"round":round_num}}
 SkillRegistry.register("generate_heatmap", generate_heatmap)
 
 
+def evaluate_cost(**kwargs):
+    round_num = kwargs.get("round", _current_round)
+    ap_count = len(ap_placements)
+    extra = random.randint(2000,8000)
+    total = ap_count*AP_UNIT_COST + extra
+    remaining = BUDGET-total
+    est = {"round":round_num,"ap_count":ap_count,"unit_cost":AP_UNIT_COST,"extra_cost":extra,"total_cost":total,"budget_remaining":remaining,"within_budget":remaining>=0}
+    cost_estimates.append(est)
+    _emit_event("COST_EVAL",round_num,"COST_ANALYST","PLANNER","evaluate_cost",f"{ap_count}APs ¥{total}")
+    _emit_traffic(round_num,"EAST_WEST","COST_ANALYST","PLANNER","cost_report",8)
+    return {"status":"success","result":"cost_evaluated","data":est}
+SkillRegistry.register("evaluate_cost", evaluate_cost)
+
+
+def check_feasibility(**kwargs):
+    round_num = kwargs.get("round", _current_round)
+    aps = kwargs.get("ap_placements", ap_placements)
+    checks = []
+    for ap in aps:
+        feasible = random.random()>0.15
+        issue = None if feasible else random.choice(["电源不可达","承重不足","信号遮挡","无安装支架"])
+        checks.append({"ap_id":ap.get("id","?"),"feasible":feasible,"issue":issue})
+        feasibility_checks.append({"round":round_num,"ap_id":ap.get("id","?"),"feasible":feasible,"issue":issue})
+    fc=sum(1 for c in checks if c["feasible"])
+    _emit_event("FEASIBILITY",round_num,"SURVEYOR","PLANNER","check_feasibility",f"{fc}/{len(checks)}")
+    return {"status":"success","result":"feasibility_checked","data":{"checks":checks,"feasible_count":fc,"total":len(checks),"round":round_num}}
+SkillRegistry.register("check_feasibility", check_feasibility)
+
+
 def report_obstacles(**kwargs):
-    """SURVEYOR: 报告部署障碍"""
-    round_num = kwargs.get("round", 0)
+    round_num = kwargs.get("round", _current_round)
     obstacles = []
     for ap in ap_placements:
-        if not random.random() > 0.85:
-            continue
-        obstacles.append({"ap_id": ap.get("id", "?"), "issue": random.choice(["电源不可达", "承重不足", "信号遮挡", "无安装支架"]),
-                          "x": ap["x"], "y": ap["y"]})
-    _emit_event("OBSTACLE_REPORT", round_num, "SURVEYOR", "PLANNER", "report_obstacles", f"{len(obstacles)} obstacles")
-    return {"status": "success", "result": "obstacles_reported", "data": {"obstacles": obstacles, "round": round_num}}
+        if random.random()>0.85: continue
+        obstacles.append({"ap_id":ap.get("id","?"),"issue":random.choice(["电源不可达","承重不足","信号遮挡","无安装支架"]),"x":ap["x"],"y":ap["y"]})
+    _emit_event("OBSTACLE",round_num,"SURVEYOR","PLANNER","report_obstacles",f"{len(obstacles)}")
+    return {"status":"success","result":"obstacles_reported","data":{"obstacles":obstacles,"round":round_num}}
 SkillRegistry.register("report_obstacles", report_obstacles)
 
 
 def validate_topology(**kwargs):
-    """ARCHITECT: 验证AP网络拓扑"""
-    round_num = kwargs.get("round", 0)
-    aps = kwargs.get("ap_placements", ap_placements)
+    round_num = kwargs.get("round", _current_round)
     issues = []
-    for i, ap1 in enumerate(aps):
-        for ap2 in aps[i + 1:]:
-            dist = math.sqrt((ap1["x"] - ap2["x"]) ** 2 + (ap1["y"] - ap2["y"]) ** 2)
-            if dist < 20:
-                issues.append(f"AP {ap1.get('id', '?')} 与 {ap2.get('id', '?')} 距离过近({dist:.0f}m)")
-    valid = len(issues) == 0
-    _emit_event("TOPOLOGY_CHECK", round_num, "ARCHITECT", "PLANNER", "validate_topology",
-                "PASS" if valid else f"{len(issues)} issues")
-    return {"status": "success", "result": "valid" if valid else "issues_found",
-            "data": {"valid": valid, "issues": issues, "round": round_num}}
+    for i,ap1 in enumerate(ap_placements):
+        for ap2 in ap_placements[i+1:]:
+            d=math.sqrt((ap1["x"]-ap2["x"])**2+(ap1["y"]-ap2["y"])**2)
+            if d<MIN_AP_SPACING: issues.append(f"{ap1.get('id','?')}与{ap2.get('id','?')}间距{d:.0f}m")
+    valid=len(issues)==0
+    _emit_event("TOPOLOGY",round_num,"ARCHITECT","PLANNER","validate_topology","PASS" if valid else f"{len(issues)} issues")
+    return {"status":"success","result":"valid" if valid else "issues_found","data":{"valid":valid,"issues":issues,"round":round_num}}
 SkillRegistry.register("validate_topology", validate_topology)
 
 
+def optimize_ap_positions(**kwargs):
+    return plan_next_ap(**kwargs)
+SkillRegistry.register("optimize_ap_positions", optimize_ap_positions)
+
+
+def simulate_signal(**kwargs):
+    round_num=kwargs.get("round",_current_round)
+    aps=ap_placements+proposed_aps
+    if not aps:return{"status":"error","result":"no_aps","data":{}}
+    samples,covered,heat=1500,0,[]
+    for _ in range(samples):
+        sx,sy=random.uniform(0,CAMPUS_W),random.uniform(0,CAMPUS_H)
+        best=max((-50-random.randint(0,30) for ap in aps if math.sqrt((sx-ap["x"])**2+(sy-ap["y"])**2)<ap.get("radius",AP_COVERAGE_RADIUS)),default=-90)
+        in_int,_=_is_in_interference(sx,sy)
+        if in_int:best=min(best,-85)
+        if best>-75 and not in_int:covered+=1
+        if len(heat)<50:heat.append({"x":round(sx,1),"y":round(sy,1),"signal_dbm":best})
+    pct=round(covered/samples*100,1)
+    ai_call_log.append({"round":round_num,"caller":"AI_ASSISTANT","latency_ms":random.randint(100,500),"tokens":random.randint(300,800)})
+    _emit_traffic(round_num,"NORTH_SOUTH","AI_ASSISTANT","EXTERNAL:LLM","signal_sim",2048)
+    _emit_event("AI_SIGNAL",round_num,"AI_ASSISTANT","VERIFIER","simulate_signal",f"{pct}%")
+    return {"status":"success","result":"signal_simulated","data":{"coverage_pct":pct,"heatmap_sample":heat,"round":round_num}}
+SkillRegistry.register("simulate_signal", simulate_signal)
+
+
 def suggest_improvements(**kwargs):
-    """AI_ASSISTANT: 基于当前方案建议改进点"""
-    round_num = kwargs.get("round", 0)
-    current_cov = kwargs.get("current_coverage", 0)
-    suggestions = []
-    if current_cov < TARGET_COVERAGE:
-        suggestions.append({"type": "add_ap", "desc": f"覆盖仅{current_cov}%，建议在盲区边缘增加1-2个AP"})
+    round_num=kwargs.get("round",_current_round)
+    cov=kwargs.get("current_coverage",0)
+    suggestions=[]
+    if cov<TARGET_COVERAGE:
+        gap=TARGET_COVERAGE-cov;extra=max(1,int(gap/5))
+        suggestions.append({"type":"add_ap","desc":f"覆盖{cov}%距目标{TARGET_COVERAGE}%差{gap}%，建议增加{extra}个AP"})
     for src in INTERFERENCE:
-        affected = [ap for ap in ap_placements if math.sqrt((ap["x"] - src["x"]) ** 2 + (ap["y"] - src["y"]) ** 2) < src["radius"]]
-        if affected:
-            suggestions.append({"type": "relocate", "desc": f"{src['id']}干扰区内有{len(affected)}个AP,建议外移{src['radius'] * 0.3:.0f}m"})
-    _emit_event("AI_SUGGEST", round_num, "AI_ASSISTANT", "PLANNER", "suggest_improvements", f"{len(suggestions)} suggestions")
-    return {"status": "success", "result": "suggestions_ready", "data": {"suggestions": suggestions, "round": round_num}}
+        aff=[ap for ap in ap_placements if math.sqrt((ap["x"]-src["x"])**2+(ap["y"]-src["y"])**2)<src["radius"]]
+        if aff: suggestions.append({"type":"relocate","desc":f"{src['desc']}干扰区内有{len(aff)}个AP,建议外移"})
+    _emit_event("AI_SUGGEST",round_num,"AI_ASSISTANT","PLANNER","suggest",f"{len(suggestions)}")
+    return {"status":"success","result":"suggestions_ready","data":{"suggestions":suggestions,"round":round_num}}
 SkillRegistry.register("suggest_improvements", suggest_improvements)
 
 
-def schedule_tasks(**kwargs):
-    """DEPLOYER: 制定部署时间表"""
-    round_num = kwargs.get("round", 0)
-    aps = kwargs.get("ap_placements", ap_placements)
-    schedule = [{"ap_id": ap.get("id", f"AP_{i + 1}"), "start_h": i * 2, "duration_h": random.randint(2, 6),
-                 "crew": f"team_{random.choice(['A', 'B', 'C'])}"} for i, ap in enumerate(aps)]
-    _emit_event("SCHEDULE", round_num, "DEPLOYER", "PLANNER", "schedule_tasks", f"{len(schedule)} tasks")
-    return {"status": "success", "result": "schedule_created", "data": {"schedule": schedule, "round": round_num}}
-SkillRegistry.register("schedule_tasks", schedule_tasks)
+def verify_coverage(**kwargs):
+    round_num=kwargs.get("round",_current_round)
+    if not coverage_reports:return{"status":"error","result":"no_data","data":{}}
+    cov=coverage_reports[-1]["coverage_pct"]
+    passed=cov>=TARGET_COVERAGE
+    _emit_event("VERIFY",round_num,"VERIFIER","PLANNER","verify_coverage",f"{cov}%")
+    return {"status":"success","result":"pass" if passed else "fail","data":{"coverage_pct":cov,"target":TARGET_COVERAGE,"passed":passed,"round":round_num}}
+SkillRegistry.register("verify_coverage", verify_coverage)
+
+
+def final_inspection(**kwargs):
+    round_num=kwargs.get("round",_current_round)
+    cov_ok=coverage_reports[-1]["coverage_pct"]>=TARGET_COVERAGE if coverage_reports else False
+    budget_ok=cost_estimates[-1]["within_budget"] if cost_estimates else False
+    checks={"coverage":cov_ok,"budget":budget_ok}
+    all_pass=all(checks.values())
+    _emit_event("INSPECTION",round_num,"QA_ENGINEER","PLANNER","final_inspection","ALL PASS" if all_pass else "FAIL")
+    return {"status":"success","result":"pass" if all_pass else "fail","data":{"checks":checks,"all_pass":all_pass,"round":round_num}}
+SkillRegistry.register("final_inspection", final_inspection)
 
 
 def acceptance_test(**kwargs):
-    """QA_ENGINEER: 验收测试"""
-    round_num = kwargs.get("round", 0)
-    tests = {
-        "signal_strength": random.random() > 0.05,
-        "coverage_completeness": random.random() > 0.08,
-        "interference_resilience": random.random() > 0.12,
-        "throughput_benchmark": random.random() > 0.10,
-    }
-    all_pass = all(tests.values())
-    _emit_event("ACCEPTANCE", round_num, "QA_ENGINEER", "PLANNER", "acceptance_test",
-                "ALL PASS" if all_pass else f"FAIL: {[k for k, v in tests.items() if not v]}")
-    return {"status": "success", "result": "pass" if all_pass else "fail", "data": {"tests": tests, "all_pass": all_pass, "round": round_num}}
+    return final_inspection(**kwargs)
 SkillRegistry.register("acceptance_test", acceptance_test)
 
 
+def plan_deployment(**kwargs):
+    round_num=kwargs.get("round",_current_round)
+    phases=[{"phase":i+1,"ap_ids":[ap["id"] for ap in ap_placements[i*3:(i+1)*3]],"duration_h":random.randint(4,12)} for i in range((len(ap_placements)+2)//3)]
+    _emit_event("DEPLOY_PLAN",round_num,"DEPLOYER","PLANNER","plan_deployment",f"{len(phases)} phases")
+    return {"status":"success","result":"plan_created","data":{"phases":phases,"round":round_num}}
+SkillRegistry.register("plan_deployment", plan_deployment)
+
+
+def schedule_tasks(**kwargs):
+    round_num=kwargs.get("round",_current_round)
+    sched=[{"ap_id":ap.get("id",f"AP_{i+1}"),"start_h":i*2,"duration_h":random.randint(2,6),"crew":f"team_{random.choice(['A','B','C'])}"} for i,ap in enumerate(ap_placements)]
+    _emit_event("SCHEDULE",round_num,"DEPLOYER","PLANNER","schedule_tasks",f"{len(sched)} tasks")
+    return {"status":"success","result":"schedule_created","data":{"schedule":sched,"round":round_num}}
+SkillRegistry.register("schedule_tasks", schedule_tasks)
+
+
+def record_decision(**kwargs):
+    round_num=kwargs.get("round",_current_round)
+    detail=kwargs.get("detail","decision recorded")
+    _emit_event("RECORD",round_num,"DOCUMENTER","PLANNER","record",detail)
+    return {"status":"success","result":"recorded","data":{"detail":detail,"round":round_num}}
+SkillRegistry.register("record_decision", record_decision)
+
+
 def archive_solution(**kwargs):
-    """DOCUMENTER: 归档最终方案"""
-    round_num = kwargs.get("round", 0)
-    archive = {
-        "ap_count": len(ap_placements),
-        "total_cost": sum(e["total_cost"] for e in cost_estimates[-1:]) if cost_estimates else 0,
-        "coverage_pct": coverage_reports[-1]["coverage_pct"] if coverage_reports else 0,
-        "interference_sources": len(INTERFERENCE),
-        "rounds_taken": round_num,
-    }
-    _emit_event("ARCHIVE", round_num, "DOCUMENTER", "PLANNER", "archive_solution",
-                f"{archive['ap_count']} APs, {archive['coverage_pct']}%, ¥{archive['total_cost']}")
-    return {"status": "success", "result": "archived", "data": {"archive": archive, "round": round_num}}
+    round_num=kwargs.get("round",_current_round)
+    a={"ap_count":len(ap_placements),"total_cost":cost_estimates[-1]["total_cost"] if cost_estimates else 0,"coverage_pct":coverage_reports[-1]["coverage_pct"] if coverage_reports else 0,"rounds_taken":round_num}
+    _emit_event("ARCHIVE",round_num,"DOCUMENTER","PLANNER","archive",f"{a['ap_count']}APs {a['coverage_pct']}%")
+    return {"status":"success","result":"archived","data":{"archive":a,"round":round_num}}
 SkillRegistry.register("archive_solution", archive_solution)
 
 
 # ============================================================
-# get_panel_state — 供 GET /api/scenes/state 调用
+# get_panel_state
 # ============================================================
 def get_panel_state(**kwargs):
-    """符合 PANEL_API.md custom 对象结构"""
-    # agent_progress: 每个AP角色的完成统计
-    agent_progress = {
-        "PLANNER":     {"done": len([e for e in event_log if e["source"] == "PLANNER"]),     "goal": 10},
-        "RF_ENGINEER": {"done": len([e for e in event_log if e["source"] == "RF_ENGINEER"]), "goal": 10},
-        "COST_ANALYST":{"done": len(cost_estimates),                                          "goal": 5},
-        "SURVEYOR":    {"done": len(feasibility_checks),                                      "goal": 8},
-        "ARCHITECT":   {"done": len([e for e in event_log if e["source"] == "ARCHITECT"]),    "goal": 5},
-        "AI_ASSISTANT":{"done": len(ai_call_log),                                             "goal": 10},
-        "VERIFIER":    {"done": len([e for e in event_log if e["source"] == "VERIFIER"]),     "goal": 3},
-        "DEPLOYER":    {"done": len([e for e in event_log if e["source"] == "DEPLOYER"]),     "goal": 3},
-        "QA_ENGINEER": {"done": len([e for e in event_log if e["source"] == "QA_ENGINEER"]), "goal": 2},
-        "DOCUMENTER":  {"done": len([e for e in event_log if e["source"] == "DOCUMENTER"]),   "goal": 2},
-    }
-
-    # traffic: 三类流量统计
-    ew = [t for t in traffic_log if t["type"] == "EAST_WEST"]
-    ns = [t for t in traffic_log if t["type"] == "NORTH_SOUTH"]
-    it = [t for t in traffic_log if t["type"] == "INTERNAL"]
-    traffic = {
-        "EAST_WEST":   {"count": len(ew), "total_kb": sum(t["bytes"] for t in ew) // 1024},
-        "NORTH_SOUTH": {"count": len(ns), "total_kb": sum(t["bytes"] for t in ns) // 1024},
-        "INTERNAL":    {"count": len(it), "total_kb": sum(t["bytes"] for t in it) // 1024},
-    }
-
-    # task_stats
-    task_stats = {
-        "ai_calls": len(ai_call_log),
-        "coverage_reports": len(coverage_reports),
-        "cost_estimates": len(cost_estimates),
-        "feasibility_checks": len(feasibility_checks),
-    }
-
-    # ci_status (此处表示部署状态)
-    ci_status = {
-        "total": len(ap_placements),
-        "running": 0,
-        "success": len([ap for ap in ap_placements if any(
-            f["ap_id"] == ap.get("id", "") and f["feasible"] for f in feasibility_checks)]),
-        "failed": len([ap for ap in ap_placements if not any(
-            f["ap_id"] == ap.get("id", "") and f["feasible"] for f in feasibility_checks)]),
-    }
-
-    # recent_events
-    recent_events = []
-    for e in event_log[-30:]:
-        recent_events.append({
-            "round": e["round"], "type": e["event_type"],
-            "source": e["source"], "target": e["target"],
-            "action": e["action"], "detail": e["detail"],
-        })
-
-    # ap_deployment 特有数据
-    ap_data = {
+    return {
+        "ap_placements": ap_placements,
+        "proposed_aps": proposed_aps,
+        "relocating_aps": relocating_aps,
+        "pending_action": pending_action,
+        "decision_log": decision_log[-30:],
         "campus": {"width": CAMPUS_W, "height": CAMPUS_H},
         "interference": INTERFERENCE,
-        "ap_placements": ap_placements,
-        "budget": {"total": BUDGET, "unit_ap_cost": AP_UNIT_COST, "target_coverage_pct": TARGET_COVERAGE},
+        "coverage_reports": coverage_reports,
+        "cost_estimates": cost_estimates,
+        "ai_call_log": ai_call_log,
+        "feasibility_checks": feasibility_checks,
         "latest_coverage": coverage_reports[-1] if coverage_reports else None,
         "latest_cost": cost_estimates[-1] if cost_estimates else None,
-        "ai_call_log": ai_call_log[-10:],
-        "feasibility_checks": feasibility_checks[-20:],
-    }
-
-    return {
-        "agent_progress": agent_progress,
-        "traffic": traffic,
-        "task_stats": task_stats,
-        "ci_status": ci_status,
-        "recent_events": recent_events,
-        "ap_data": ap_data,
+        "budget": {"total": BUDGET, "unit_ap_cost": AP_UNIT_COST, "target_coverage_pct": TARGET_COVERAGE},
+        "event_log": event_log[-20:],
+        "traffic_log": traffic_log[-20:],
     }
 SkillRegistry.register("get_panel_state", get_panel_state)

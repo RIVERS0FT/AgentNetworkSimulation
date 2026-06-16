@@ -1,30 +1,32 @@
 <!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>AP Deployment — 园区部署态势</title>
+<title>AP Deployment</title>
 <style>
 :root{--bg:#0c1119;--panel-bg:rgba(14,20,32,0.88);--muted:#8892a4;--text:#d0d7e4;--white:#f0f4fa;--cyan:#5b9bd5;--green:#6bae85;--red:#c47b8b;--yellow:#d4a853}
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);font:13px 'Inter',system-ui,sans-serif;color:var(--text)}
 canvas{display:block;cursor:crosshair}
-#tooltip{position:absolute;pointer-events:none;background:rgba(12,17,25,0.96);border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:7px 11px;font:10px 'JetBrains Mono',monospace;color:var(--white);white-space:nowrap;display:none;z-index:10;box-shadow:0 2px 14px rgba(0,0,0,0.5);line-height:1.5}
-#tooltip b{color:var(--white)}
-#tooltip .sub{color:var(--muted);font-size:9px}
+#tooltip{position:absolute;pointer-events:none;background:rgba(12,17,25,0.96);border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:7px 11px;font:10px 'JetBrains Mono',monospace;color:var(--white);white-space:nowrap;display:none;z-index:10;box-shadow:0 2px 14px rgba(0,0,0,0.5)}
 #hud{position:absolute;top:8px;left:0;right:0;display:flex;justify-content:space-between;padding:0 14px;font:11px 'JetBrains Mono',monospace;color:var(--muted);pointer-events:none;z-index:5}
 #hud .t{color:var(--white);font-weight:600}
 #stats{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);pointer-events:none;z-index:5}
 #stats .box{background:var(--panel-bg);border:1px solid rgba(255,255,255,0.08);border-radius:5px;padding:5px 12px;font:9px 'JetBrains Mono',monospace;color:var(--muted);display:flex;gap:14px;align-items:center}
 #stats .v{color:var(--white);font-weight:600}
-.g{color:var(--green)}.y{color:var(--yellow)}.r{color:var(--red)}
+.g{color:var(--green)}.y{color:var(--yellow)}
+#actionBar{position:absolute;top:34px;left:50%;transform:translateX(-50%);pointer-events:none;z-index:5;background:rgba(12,17,25,0.82);border:1px solid var(--yellow);border-radius:5px;padding:4px 14px;font:10px 'JetBrains Mono',monospace;color:var(--yellow);white-space:nowrap;display:none}
+#decisionLog{position:absolute;top:60px;right:10px;pointer-events:none;z-index:5;max-height:200px;overflow-y:hidden}
+.dlog{font:9px 'JetBrains Mono',monospace;color:var(--muted);padding:2px 6px;margin:1px 0;background:rgba(12,17,25,0.7);border-radius:3px;white-space:nowrap}
 </style></head>
 <body>
-<div id="hud"><span class="t">AP DEPLOYMENT</span><span id="roundLabel">R0/-</span></div>
+<div id="hud"><span class="t">AP DEPLOYMENT · 逐点规划</span><span id="roundLabel">R0/-</span></div>
+<div id="actionBar" id="actBar">⏳ PLANNER 正在评估...</div>
+<div id="decisionLog"></div>
 <div id="stats">
   <div class="box">
     <span>覆盖 <span class="v" id="sCov">--</span></span>
-    <span>AP <span class="v" id="sAP">0</span></span>
+    <span>已部署 <span class="v" id="sAP">0</span></span>
+    <span>待评估 <span class="v" id="sPend">0</span></span>
     <span>成本 <span class="v" id="sCost">0</span></span>
-    <span>AI <span class="v" id="sAI">0</span></span>
-    <span>可行性 <span class="v" id="sFeas">--</span></span>
     <span>状态 <span class="v" id="sStatus">--</span></span>
   </div>
 </div>
@@ -34,209 +36,169 @@ canvas{display:block;cursor:crosshair}
 <script>
 const CAMPUS={w:1000,h:400};
 const INTERFERENCE=[
-  {id:'INT_01',x:150,y:80,radius:80,desc:'变电站电磁干扰'},
-  {id:'INT_02',x:420,y:280,radius:120,desc:'大型电机设备'},
-  {id:'INT_03',x:680,y:120,radius:60,desc:'微波通信塔'},
-  {id:'INT_04',x:850,y:320,radius:100,desc:'高压输电线'},
-  {id:'INT_05',x:300,y:350,radius:150,desc:'工业焊接车间'},
+  {id:'INT_01',x:150,y:80,radius:80,desc:'变电站'},{id:'INT_02',x:420,y:280,radius:120,desc:'电机设备'},
+  {id:'INT_03',x:680,y:120,radius:60,desc:'微波塔'},{id:'INT_04',x:850,y:320,radius:100,desc:'高压线'},
+  {id:'INT_05',x:300,y:350,radius:150,desc:'焊接车间'},
 ];
 const AP_R=60;
-
-const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
-const tip=document.getElementById('tooltip');
-let data=null,bgImg=null,bgRatio=1;
 const API_URL='/api/scenes/state';
 
-// 标记所有可交互实体
-let hitTargets=[]; // [{type:'ap'|'int', x, y, radius, data}]
-let hovered=null;
-let mx=0,my=0;
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+const tip=document.getElementById('tooltip'),actBar=document.getElementById('actionBar');
+let data=null,bgImg=null,bgRatio=1,mapRect={x:0,y:0,w:0,h:0,scale:1};
+let hitTargets=[],hovered=null;
 
 const bg=new Image();
-bg.onload=function(){
-  bgImg=bg;bgRatio=bg.naturalWidth/bg.naturalHeight;
-  layout();draw();
-};
+bg.onload=function(){bgImg=bg;bgRatio=bg.naturalWidth/bg.naturalHeight;layout();draw();};
 bg.src='background.png';
-
-// 布局：地图区域保持背景原比例
-let mapRect={x:0,y:0,w:0,h:0,scale:1};
 
 function layout(){
   canvas.width=window.innerWidth*devicePixelRatio;canvas.height=window.innerHeight*devicePixelRatio;
   ctx.setTransform(1,0,0,1,0,0);ctx.scale(devicePixelRatio,devicePixelRatio);
   const pad={t:28,b:46,l:20,r:20},W=window.innerWidth,H=window.innerHeight;
-  const availW=W-pad.l-pad.r,availH=H-pad.t-pad.b;
-  // 用背景原比例决定地图尺寸
   const imgRatio=bgImg?bgRatio:(CAMPUS.w/CAMPUS.h);
-  let mw, mh;
-  if(availW/availH>imgRatio){mh=availH;mw=mh*imgRatio;}
-  else{mw=availW;mh=mw/imgRatio;}
-  mapRect={x:pad.l+(availW-mw)/2,y:pad.t+(availH-mh)/2,w:mw,h:mh,scale:mw/CAMPUS.w};
+  let mw,mh;if(W/pad.t>imgRatio){mh=H-pad.t-pad.b;mw=mh*imgRatio;}else{mw=W-pad.l-pad.r;mh=mw/imgRatio;}
+  mapRect={x:pad.l+(W-pad.l-pad.r-mw)/2,y:pad.t+(H-pad.t-pad.b-mh)/2,w:mw,h:mh,scale:mw/CAMPUS.w};
 }
+function toScreen(cx,cy){return{x:mapRect.x+cx*mapRect.scale,y:mapRect.y+cy*mapRect.scale};}
 
-function toScreen(cx,cy){
-  return {x:mapRect.x+cx*mapRect.scale,y:mapRect.y+cy*mapRect.scale};
-}
-
-function toWorld(sx,sy){
-  return {x:(sx-mapRect.x)/mapRect.scale,y:(sy-mapRect.y)/mapRect.scale};
-}
+function apData(){return data?.ap_placements||[];}
+function propData(){return data?.proposed_aps||[];}
+function relocData(){return data?.relocating_aps||[];}
+function pending(){return data?.pending_action||null;}
+function decisions(){return data?.decision_log||[];}
 
 function draw(){
   const w=window.innerWidth,h=window.innerHeight;
   ctx.clearRect(0,0,w,h);
   const ox=mapRect.x,oy=mapRect.y,mw=mapRect.w,mh=mapRect.h,sc=mapRect.scale;
 
-  // Background 70%
-  if(bgImg){ctx.globalAlpha=1;ctx.drawImage(bgImg,ox,oy,mw,mh);ctx.globalAlpha=1;}
+  // Background
+  if(bgImg){ctx.globalAlpha=0.7;ctx.drawImage(bgImg,ox,oy,mw,mh);ctx.globalAlpha=1;}
+  ctx.strokeStyle='rgba(255,255,255,0.28)';ctx.lineWidth=1.2;ctx.strokeRect(ox,oy,mw,mh);
 
-  // Campus border
-  ctx.strokeStyle='rgba(255,255,255,0.28)';ctx.lineWidth=1.2;
-  ctx.strokeRect(ox,oy,mw,mh);
-
-  // Build hit targets
   hitTargets=[];
-  const aps=getAps()||[];
 
-  // Interference zones
+  // Interference
   INTERFERENCE.forEach(src=>{
-    const p=toScreen(src.x,src.y),r=src.radius*sc;
-    const isHov=hovered&&hovered.type==='int'&&hovered.id===src.id;
+    const p=toScreen(src.x,src.y),r=src.radius*sc,isHov=hovered&&hovered.type==='int'&&hovered.id===src.id;
     ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);
-    ctx.fillStyle=isHov?'rgba(220,100,120,0.8)':'rgba(196,123,139,0.5)';ctx.fill();
-    ctx.setLineDash([8,5]);ctx.lineDashOffset=isHov?0:-Date.now()/300;
-    ctx.strokeStyle=isHov?'rgba(220,100,120,0.75)':'rgba(196,123,139,0.40)';ctx.lineWidth=isHov?2:1;ctx.stroke();ctx.setLineDash([]);
-    // Glow ring when hovered
-    if(isHov){ctx.beginPath();ctx.arc(p.x,p.y,r+6,0,Math.PI*2);ctx.strokeStyle='rgba(220,100,120,0.18)';ctx.lineWidth=3;ctx.stroke();}
+    ctx.fillStyle=isHov?'rgba(220,100,120,0.28)':'rgba(196,123,139,0.10)';ctx.fill();
+    ctx.setLineDash([8,5]);ctx.strokeStyle=isHov?'rgba(220,100,120,0.75)':'rgba(196,123,139,0.35)';ctx.lineWidth=isHov?2:1;ctx.stroke();ctx.setLineDash([]);
+    if(isHov){ctx.beginPath();ctx.arc(p.x,p.y,r+6,0,Math.PI*2);ctx.strokeStyle='rgba(220,100,120,0.15)';ctx.lineWidth=3;ctx.stroke();}
     ctx.fillStyle='#d07785';ctx.font='9px monospace';ctx.textAlign='center';ctx.fillText(src.id,p.x,p.y-8);
-    ctx.fillStyle='rgba(255,255,255,0.45)';ctx.font='7px monospace';ctx.fillText(src.desc,p.x,p.y+r+10);
     hitTargets.push({type:'int',id:src.id,x:p.x,y:p.y,radius:r,data:src});
   });
 
-  // AP coverage circles
-  aps.forEach((ap,i)=>{
-    const p=toScreen(ap.x,ap.y),cr=(ap.radius||AP_R)*sc;
-    const apId=ap.id||('AP_'+(i+1));
-    const isHov=hovered&&hovered.type==='ap'&&hovered.id===apId;
-    ctx.beginPath();ctx.arc(p.x,p.y,cr,0,Math.PI*2);
-    ctx.fillStyle=isHov?'rgba(91,155,213,0.18)':'rgba(91,155,213,0.05)';ctx.fill();
-    // Pulse ring
-    const pulseR=cr+Math.sin(Date.now()/800)*3;
-    ctx.beginPath();ctx.arc(p.x,p.y,pulseR,0,Math.PI*2);
-    ctx.strokeStyle=isHov?'rgba(91,155,213,0.55)':'rgba(91,155,213,0.18)';ctx.lineWidth=isHov?2:0.8;ctx.stroke();
-    if(isHov){ctx.beginPath();ctx.arc(p.x,p.y,cr+8,0,Math.PI*2);ctx.strokeStyle='rgba(91,155,213,0.15)';ctx.lineWidth=3;ctx.stroke();}
+  // Confirmed APs — solid blue circles
+  apData().forEach(ap=>{
+    const p=toScreen(ap.x,ap.y),cr=(ap.radius||AP_R)*sc,isHov=hovered&&hovered.type==='ap'&&hovered.id===ap.id;
+    ctx.beginPath();ctx.arc(p.x,p.y,cr,0,Math.PI*2);ctx.fillStyle='rgba(91,155,213,0.06)';ctx.fill();
+    ctx.beginPath();ctx.arc(p.x,p.y,cr+Math.sin(Date.now()/800)*2,0,Math.PI*2);
+    ctx.strokeStyle=isHov?'rgba(91,155,213,0.5)':'rgba(91,155,213,0.18)';ctx.lineWidth=isHov?1.5:0.7;ctx.stroke();
+    ctx.beginPath();ctx.arc(p.x,p.y,isHov?7:5,0,Math.PI*2);ctx.fillStyle='#5b9bd5';ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.55)';ctx.lineWidth=1;ctx.stroke();
+    ctx.fillStyle='#a0d0f0';ctx.font='8px monospace';ctx.textAlign='center';ctx.fillText(ap.id,p.x,p.y-10);
+    hitTargets.push({type:'ap',id:ap.id,x:p.x,y:p.y,radius:6,data:ap});
   });
 
-  // AP dots (on top)
-  aps.forEach((ap,i)=>{
-    const p=toScreen(ap.x,ap.y),apId=ap.id||('AP_'+(i+1));
-    const isHov=hovered&&hovered.type==='ap'&&hovered.id===apId;
-    const dotR=isHov?7:5;
-    ctx.beginPath();ctx.arc(p.x,p.y,dotR,0,Math.PI*2);
-    ctx.fillStyle=isHov?'#8cc8ff':'#5b9bd5';ctx.fill();
-    ctx.strokeStyle='rgba(255,255,255,0.6)';ctx.lineWidth=isHov?1.5:1;ctx.stroke();
-    ctx.fillStyle=isHov?'#fff':'#a0d0f0';ctx.font=isHov?'bold 9px monospace':'8px monospace';ctx.textAlign='center';
-    ctx.fillText(apId,p.x,p.y-dotR-7);
-    hitTargets.push({type:'ap',id:apId,x:p.x,y:p.y,radius:isHov?dotR+6:dotR+3,data:ap,index:i});
+  // Relocating APs — FLASH old position + DASHED new position
+  relocData().forEach(rel=>{
+    // Old position: red flash
+    const op=toScreen(rel.from_x,rel.from_y);
+    const flashAlpha=0.4+Math.abs(Math.sin(Date.now()/200))*0.5;
+    ctx.beginPath();ctx.arc(op.x,op.y,7,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,80,80,${flashAlpha})`;ctx.fill();
+    ctx.fillStyle='#ff5050';ctx.font='8px monospace';ctx.textAlign='center';ctx.fillText(rel.id,op.x,op.y-10);
+
+    // New position: dashed blue
+    const np=toScreen(rel.to_x,rel.to_y);
+    ctx.setLineDash([4,4]);ctx.beginPath();ctx.arc(np.x,np.y,6,0,Math.PI*2);
+    ctx.strokeStyle='rgba(91,155,213,0.65)';ctx.lineWidth=1.5;ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='rgba(91,155,213,0.5)';ctx.font='8px monospace';ctx.textAlign='center';ctx.fillText(rel.id,np.x,np.y-10);
+  });
+
+  // Proposed APs — dashed blue circles (under evaluation)
+  propData().forEach(ap=>{
+    const p=toScreen(ap.x,ap.y),cr=(ap.radius||AP_R)*sc;
+    ctx.setLineDash([4,4]);ctx.lineDashOffset=ap.status==='evaluating'?-Date.now()/200:0;
+    ctx.beginPath();ctx.arc(p.x,p.y,cr,0,Math.PI*2);ctx.strokeStyle='rgba(91,155,213,0.4)';ctx.lineWidth=1.2;ctx.stroke();ctx.setLineDash([]);
+    ctx.beginPath();ctx.arc(p.x,p.y,5,0,Math.PI*2);ctx.fillStyle='rgba(91,155,213,0.35)';ctx.fill();
+    ctx.fillStyle='rgba(160,208,240,0.6)';ctx.font='8px monospace';ctx.textAlign='center';ctx.fillText(ap.id,p.x,p.y-10);
+    hitTargets.push({type:'ap',id:ap.id,x:p.x,y:p.y,radius:6,data:ap});
   });
 
   // Blind spots
-  const spots=getCoverage()?.blind_spots_sample||[];
-  spots.forEach(s=>{const p=toScreen(s.x,s.y);ctx.beginPath();ctx.arc(p.x,p.y,2,0,Math.PI*2);ctx.fillStyle='rgba(220,100,120,0.55)';ctx.fill();});
+  const spots=data?.latest_coverage?.blind_spots_sample||[];
+  spots.forEach(s=>{const p=toScreen(s.x,s.y);ctx.beginPath();ctx.arc(p.x,p.y,2,0,Math.PI*2);ctx.fillStyle='rgba(220,100,120,0.5)';ctx.fill();});
 
   // Coverage badge
-  const cov=getCoverage()?.coverage_pct;
-  if(cov!=null){
-    const bx=ox+5,by=oy+4,bw=cov>=95?150:130;
-    ctx.fillStyle='rgba(12,17,25,0.82)';ctx.beginPath();ctx.roundRect(bx,by,bw,21,4);ctx.fill();
-    ctx.fillStyle=cov>=95?'#6bae85':'#d4a853';ctx.font='bold 10px monospace';ctx.textAlign='left';
-    ctx.fillText((cov>=95?'✓':'⚠')+' 覆盖 '+cov+'%',bx+6,by+14);
-  }
+  const cov=data?.latest_coverage?.coverage_pct;
+  if(cov!=null){const bx=ox+5,by=oy+4;ctx.fillStyle='rgba(12,17,25,0.82)';ctx.beginPath();ctx.roundRect(bx,by,140,21,4);ctx.fill();ctx.fillStyle=cov>=95?'#6bae85':'#d4a853';ctx.font='bold 10px monospace';ctx.textAlign='left';ctx.fillText((cov>=95?'✓':'⚠')+' 覆盖 '+cov+'%',bx+6,by+14);}
 
   // Scale bar
   const sbW=100*sc,sbY=oy+mh+18,sbX=ox;
-  ctx.strokeStyle='rgba(255,255,255,0.35)';ctx.lineWidth=2.5;ctx.lineCap='round';
-  ctx.beginPath();ctx.moveTo(sbX,sbY);ctx.lineTo(sbX+sbW,sbY);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(sbX,sbY-5);ctx.lineTo(sbX,sbY+3);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(sbX+sbW,sbY-5);ctx.lineTo(sbX+sbW,sbY+3);ctx.stroke();
-  ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font='7px monospace';ctx.textAlign='center';ctx.fillText('100m',sbX+sbW/2,sbY-5);
+  ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(sbX,sbY);ctx.lineTo(sbX+sbW,sbY);ctx.stroke();
+  ctx.fillStyle='rgba(255,255,255,0.4)';ctx.font='7px monospace';ctx.textAlign='center';ctx.fillText('100m',sbX+sbW/2,sbY-4);
 
-  // Events top-right
-  const events=(getEvents()||[]).slice(-5);
-  events.forEach((e,i)=>{const ey=36+i*15,ex=w-235;ctx.fillStyle='rgba(12,17,25,0.72)';ctx.fillRect(ex,ey-9,230,14);ctx.fillStyle='#8892a4';ctx.font='9px monospace';ctx.fillText('R'+e.round+' '+e.action+' '+e.detail.slice(0,35),ex+4,ey);});
+  // Decision log (last 4 entries)
+  const decs=decisions().slice(-4);
+  document.getElementById('decisionLog').innerHTML=decs.map(d=>{
+    const icon=d.visual_effect==='APPEAR_DASHED'?'📍':d.visual_effect==='SOLIDIFY'?'✅':d.visual_effect==='FLASH_THEN_DASHED'?'🔄':d.visual_effect==='FADE_OUT'?'❌':'📋';
+    return `<div class=dlog><b>${d.agent}</b> ${icon} ${d.ap_id}: ${d.detail}</div>`;
+  }).join('');
+
+  // Action bar
+  const pa=pending();
+  if(pa){actBar.style.display='block';actBar.textContent=`⏳ ${pa.agent}: ${pa.type} ${pa.ap_id||''} [${pa.status||''}]`;}
+  else actBar.style.display='none';
 }
 
 function updateStats(){
-  if(!data&&window.location.protocol!=='file:')return;
-  const custom=data?.custom||{};
-  const cov=getCoverage();
-  const el=document.getElementById('sCov');el.textContent=cov?cov.coverage_pct+'%':'--';el.className='v '+(cov&&cov.coverage_pct>=95?'g':'y');
-  document.getElementById('sAP').textContent=(getAps()||[]).length;
-  const cost=getCost();document.getElementById('sCost').textContent=cost?'¥'+(cost.total_cost/1000).toFixed(1)+'K':'0';
-  document.getElementById('sAI').textContent=(getAICalls()||[]).length;
-  const feas=getFeasibility()||[];document.getElementById('sFeas').textContent=feas.length?Math.round(feas.filter(function(f){return f.feasible}).length/feas.length*100)+'%':'--';
-  document.getElementById('sStatus').textContent=cov&&cov.coverage_pct>=95?'✓达标':'↻迭代';
-  document.getElementById('roundLabel').textContent=data.round!=null?'R'+data.round+'/'+data.max_rounds:'R0';
+  if(!data)return;
+  const cov=data.latest_coverage;const el=document.getElementById('sCov');
+  el.textContent=cov?cov.coverage_pct+'%':'--';el.className='v '+(cov&&cov.coverage_pct>=95?'g':'y');
+  document.getElementById('sAP').textContent=apData().length;
+  document.getElementById('sPend').textContent=propData().length+relocData().length;
+  const cost=data.latest_cost;document.getElementById('sCost').textContent=cost?'¥'+(cost.total_cost/1000).toFixed(1)+'K':'0';
+  document.getElementById('sStatus').textContent=cov&&cov.coverage_pct>=95?'✓达标':'↻规划中';
+  document.getElementById('roundLabel').textContent=data.round!=null?'R'+data.round+'/'+(data.max_rounds||10):'R0';
 }
 
-// Hover detection
-canvas.addEventListener('mousemove',function(e){
-  mx=e.clientX;my=e.clientY;hovered=null;
-  let best=-1;
-  for(const t of hitTargets){
-    const dx=mx-t.x,dy=my-t.y,dist=Math.sqrt(dx*dx+dy*dy);
-    if(dist<t.radius+8){if(best<0||dist<best){best=dist;hovered=t;}}
-  }
+canvas.onmousemove=function(e){
+  hovered=null;let best=999;
+  for(const t of hitTargets){const d=Math.sqrt((e.clientX-t.x)**2+(e.clientY-t.y)**2);if(d<t.radius+8&&d<best){best=d;hovered=t;}}
   if(hovered){
-    if(hovered.type==='ap'){
-      const ap=hovered.data;tip.innerHTML='<b>'+hovered.id+'</b> <span class=sub>('+ap.x+','+ap.y+') r='+(ap.radius||AP_R)+'m</span><br><span class=sub>覆盖半径'+(ap.radius||AP_R)+'m</span>';
-      tip.style.borderColor='#5b9bd5';
-    }else if(hovered.type==='int'){
-      const src=hovered.data;tip.innerHTML='<b>'+src.id+'</b> <span class=sub>'+src.desc+'</span><br><span class=sub>干扰半径'+src.radius+'m 中心('+src.x+','+src.y+')</span>';
-      tip.style.borderColor='#c47b8b';
-    }
-    tip.style.display='block';tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-42)+'px';
-  }else{tip.style.display='none';}
-});
-canvas.addEventListener('mouseleave',function(){hovered=null;tip.style.display='none';});
-
-// 数据解析：适配 /api/scenes/state 返回的 {agents[], custom} 结构
-function getCampus(){return getApData()?.campus||{width:1000,height:400};}
-function getApData(){
-  if(window.location.protocol==='file:') return data;
-  return data?.custom?.ap_data||null;
-}
-function getAps(){return getApData()?.ap_placements||[];}
-function getCoverage(){return getApData()?.latest_coverage||null;}
-function getCost(){return getApData()?.latest_cost||null;}
-function getAICalls(){return getApData()?.ai_call_log||[];}
-function getFeasibility(){return getApData()?.feasibility_checks||[];}
-function getEvents(){return data?.custom?.recent_events||data?.event_log||[];}
+    if(hovered.type==='ap'){const ap=hovered.data;tip.innerHTML='<b>'+ap.id+'</b> ('+ap.x+','+ap.y+') r='+(ap.radius||AP_R)+'m<br><span class=sub>状态:'+(ap.status||'confirmed')+'</span>';tip.style.borderColor='#5b9bd5';}
+    else if(hovered.type==='int'){const s=hovered.data;tip.innerHTML='<b>'+s.id+'</b> '+s.desc+'<br><span class=sub>半径'+s.radius+'m</span>';tip.style.borderColor='#c47b8b';}
+    tip.style.display='block';tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-38)+'px';
+  }else tip.style.display='none';
+};
+canvas.onmouseleave=function(){hovered=null;tip.style.display='none';};
 
 async function poll(){
-  try{const r=await fetch(API_URL);if(!r.ok)throw new Error('HTTP '+r.status);data=await r.json();}
+  try{const r=await fetch(API_URL);if(!r.ok)throw new Error('HTTP '+r.status);data=await r.json();data=data.custom||data;}
   catch(e){if(!data)return;}
   layout();draw();updateStats();
 }
 
-// File:// mock
+// Mock for file://
 if(window.location.protocol==='file:'){
   data={
-    ap_placements:[{id:'AP_1',x:130,y:70,radius:60},{id:'AP_2',x:300,y:130,radius:60},{id:'AP_3',x:500,y:80,radius:60},{id:'AP_4',x:700,y:150,radius:60},{id:'AP_5',x:850,y:80,radius:60},{id:'AP_6',x:200,y:260,radius:60},{id:'AP_7',x:550,y:300,radius:60},{id:'AP_8',x:800,y:340,radius:60}],
-    latest_coverage:{coverage_pct:94.2,ap_count:8,blind_spot_count:12,blind_spots_sample:[{x:680,y:120},{x:690,y:125},{x:420,y:280},{x:425,y:285},{x:300,y:350},{x:310,y:355},{x:150,y:80}]},
-    latest_cost:{ap_count:8,unit_cost:3500,extra_cost:5000,total_cost:33000,budget_remaining:17000,within_budget:true},
-    ai_call_log:[{round:1,caller:'PLANNER',latency_ms:450,tokens:1200}],
-    feasibility_checks:[{ap_id:'AP_1',feasible:true},{ap_id:'AP_2',feasible:true},{ap_id:'AP_3',feasible:false},{ap_id:'AP_4',feasible:true},{ap_id:'AP_5',feasible:true},{ap_id:'AP_6',feasible:true},{ap_id:'AP_7',feasible:true},{ap_id:'AP_8',feasible:true}],
-    event_log:[{round:1,action:'optimize_ap',detail:'8 APs 450ms 1200t'},{round:1,action:'sim_coverage',detail:'87.3%'},{round:2,action:'evaluate_cost',detail:'8AP ¥33K'},{round:3,action:'verify',detail:'94.2% FAIL'}],
+    ap_placements:[{id:'AP_1',x:130,y:70,radius:60,status:'confirmed'},{id:'AP_2',x:300,y:130,radius:60,status:'confirmed'},{id:'AP_3',x:550,y:300,radius:60,status:'confirmed'}],
+    proposed_aps:[{id:'AP_4',x:700,y:150,radius:60,status:'evaluating'}],
+    relocating_aps:[{id:'AP_3',from_x:550,from_y:300,to_x:580,to_y:280,status:'relocating'}],
+    pending_action:{type:'evaluate','agent':'RF_ENGINEER','ap_id':'AP_4','round':3,'status':'evaluating'},
+    decision_log:[{round:1,agent:'PLANNER',action:'propose',ap_id:'AP_1',detail:'建议在(130,70)部署',visual_effect:'APPEAR_DASHED'},{round:1,agent:'RF_ENGINEER',action:'evaluate',ap_id:'AP_1',detail:'覆盖贡献85%',visual_effect:'EVALUATING'},{round:1,agent:'PLANNER',action:'confirm',ap_id:'AP_1',detail:'部署确认',visual_effect:'SOLIDIFY'},{round:2,agent:'PLANNER',action:'propose',ap_id:'AP_2',detail:'建议在(300,130)部署',visual_effect:'APPEAR_DASHED'},{round:2,agent:'PLANNER',action:'confirm',ap_id:'AP_2',detail:'部署确认',visual_effect:'SOLIDIFY'},{round:3,agent:'PLANNER',action:'relocate',ap_id:'AP_3',detail:'迁移(550,300)→(580,280)',visual_effect:'FLASH_THEN_DASHED'}],
+    latest_coverage:{coverage_pct:78.5,ap_count:4,blind_spots_sample:[{x:680,y:120},{x:850,y:320}]},
+    latest_cost:{ap_count:4,total_cost:19000,budget_remaining:31000,within_budget:true},
+    round:3,max_rounds:10,
   };
 }
 
 layout();draw();updateStats();
-setInterval(poll,2000);
-// Animation loop for pulse effects
-function anim(){draw();requestAnimationFrame(anim);}
-anim();
-window.addEventListener('resize',()=>{layout();if(!bgImg&&bg.complete)bgImg=bg;});
+setInterval(poll,1500);
+function anim(){draw();requestAnimationFrame(anim);}anim();
+window.addEventListener('resize',()=>{layout();draw();});
 </script>
 </body></html>
