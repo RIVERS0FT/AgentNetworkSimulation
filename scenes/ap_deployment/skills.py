@@ -245,6 +245,14 @@ def optimize_ap_positions(**kwargs):
                 best_x, best_y, best_score = tx, ty, score
         positions.append({"x": round(best_x, 1), "y": round(best_y, 1), "score": round(best_score, 1)})
 
+    # 写入模块级 ap_placements
+    ap_placements.clear()
+    for i, pos in enumerate(positions):
+        ap_placements.append({
+            "id": f"AP_{i+1}", "x": pos["x"], "y": pos["y"],
+            "radius": AP_COVERAGE_RADIUS, "cost": AP_UNIT_COST, "status": "proposed"
+        })
+
     ai_call_log.append({"round": round_num, "caller": "AI_ASSISTANT", "request_type": "optimize_ap", "latency_ms": latency, "tokens": tokens})
     _emit_traffic(round_num, "NORTH_SOUTH", "AI_ASSISTANT", "EXTERNAL:LLM", "llm_inference", tokens * 4)
     _emit_event("AI_OPTIMIZE", round_num, "AI_ASSISTANT", "EXTERNAL:LLM", "optimize_ap_positions",

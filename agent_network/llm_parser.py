@@ -322,7 +322,19 @@ def _parse_with_anthropic(script: str, api_key: str, model: str = "") -> SceneDe
             messages=[{"role": "user", "content": script}],
         )
         resp_chars = len(message.content[0].text) if message.content else 0
-        tracker.ok(response_chars=resp_chars)
+        usage = {}
+        try:
+            u = getattr(message, 'usage', None)
+            if u:
+                usage = {
+                    "input_tokens": getattr(u, 'input_tokens', 0),
+                    "output_tokens": getattr(u, 'output_tokens', 0),
+                    "prompt_cache_hit_tokens": getattr(u, 'cache_read_input_tokens', None) or 0,
+                    "prompt_cache_miss_tokens": getattr(u, 'cache_creation_input_tokens', None) or 0,
+                }
+        except Exception:
+            pass
+        tracker.ok(response_chars=resp_chars, usage=usage)
 
     response_text = message.content[0].text
     return _extract_json(response_text)
@@ -363,7 +375,8 @@ def _parse_with_openai(script: str, api_key: str, model: str = "", api_base: str
         resp.raise_for_status()
         data = resp.json()
         resp_chars = len(json.dumps(data, ensure_ascii=False))
-        tracker.ok(response_chars=resp_chars, status=str(resp.status_code))
+        tracker.ok(response_chars=resp_chars, status=str(resp.status_code),
+                   usage=data.get("usage", {}))
 
     response_text = data["choices"][0]["message"]["content"]
     return _extract_json(response_text)

@@ -266,7 +266,19 @@ class Brain:
                 messages=chat_messages,
             )
             text = message.content[0].text if message.content else ""
-            tracker.ok(response_chars=len(text))
+            usage = {}
+            try:
+                u = getattr(message, 'usage', None)
+                if u:
+                    usage = {
+                        "input_tokens": getattr(u, 'input_tokens', 0),
+                        "output_tokens": getattr(u, 'output_tokens', 0),
+                        "prompt_cache_hit_tokens": getattr(u, 'cache_read_input_tokens', None) or 0,
+                        "prompt_cache_miss_tokens": getattr(u, 'cache_creation_input_tokens', None) or 0,
+                    }
+            except Exception:
+                pass
+            tracker.ok(response_chars=len(text), usage=usage)
         return text
 
     def _call_openai_compat(
