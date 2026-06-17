@@ -62,6 +62,26 @@ def _actor(actor_id: str = "", actor_name: str = "") -> dict:
     return actor
 
 
+def _usage_number(usage: Dict[str, Any], key: str):
+    value = usage.get(key)
+    return value if isinstance(value, (int, float)) else None
+
+
+def _usage_nested_number(usage: Dict[str, Any], parent: str, key: str):
+    nested = usage.get(parent)
+    if isinstance(nested, dict):
+        value = nested.get(key)
+        return value if isinstance(value, (int, float)) else None
+    return None
+
+
+def _first_number(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 def log_llm_call(*,
                  provider: str = "",
                  model: str = "",
@@ -84,8 +104,12 @@ def log_llm_call(*,
         return
 
     usage = usage or {}
-    prompt_cache_hit = usage.get("prompt_cache_hit_tokens")
-    prompt_cache_miss = usage.get("prompt_cache_miss_tokens")
+    prompt_cache_hit = _first_number(
+        _usage_number(usage, "prompt_cache_hit_tokens"),
+        _usage_nested_number(usage, "prompt_tokens_details", "cached_tokens"),
+        _usage_number(usage, "cache_read_input_tokens"),
+    )
+    prompt_cache_miss = _usage_number(usage, "prompt_cache_miss_tokens")
     cache_hit_ratio = None
     if isinstance(prompt_cache_hit, (int, float)) and isinstance(prompt_cache_miss, (int, float)):
         cache_total = prompt_cache_hit + prompt_cache_miss
@@ -102,8 +126,13 @@ def log_llm_call(*,
         "estimated": True,
     }
     for key in ("prompt_tokens", "completion_tokens", "input_tokens", "output_tokens",
-                "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+                "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+                "cache_read_input_tokens", "cache_creation_input_tokens"):
         if usage.get(key) is not None:
+            payload[key] = usage[key]
+            payload["estimated"] = False
+    for key in ("prompt_tokens_details", "completion_tokens_details"):
+        if isinstance(usage.get(key), dict):
             payload[key] = usage[key]
             payload["estimated"] = False
     if cache_hit_ratio is not None:

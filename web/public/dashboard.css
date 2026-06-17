@@ -411,6 +411,8 @@ body::after{
   text-shadow:var(--shadow-blue);
 }
 .token-stat.miss strong{color:var(--amber);text-shadow:var(--shadow-amber)}
+.token-stat.output strong{color:#9ad8ff;text-shadow:var(--shadow-blue)}
+.token-stat.total strong{color:var(--cyan);text-shadow:var(--shadow-blue)}
 .token-stat.wide{grid-column:1 / -1}
 .token-stat.wide strong{font-size:0.72rem;color:var(--text)}
 .token-chart-canvas-wrap{

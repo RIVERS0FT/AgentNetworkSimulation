@@ -93,9 +93,11 @@ def _new_token_usage_state(session_id: str = "") -> Dict[str, Any]:
             "prompt": 0,
             "completion": 0,
             "total": 0,
+            "provider_total": 0,
             "estimated_events": 0,
             "exact_events": 0,
             "events": 0,
+            "mismatch_events": 0,
         },
         "last_event": None,
     }
@@ -125,6 +127,13 @@ def _token_first(payload: Dict[str, Any], *keys: str) -> Optional[int]:
     return None
 
 
+def _token_nested(payload: Dict[str, Any], parent: str, key: str) -> Optional[int]:
+    nested = payload.get(parent)
+    if not isinstance(nested, dict):
+        return None
+    return _token_int(nested.get(key))
+
+
 def _reset_token_usage_state(session_id: str = ""):
     global _token_usage_state
     with _token_usage_lock:
@@ -145,31 +154,66 @@ def _extract_token_usage_delta(record: Dict[str, Any]) -> Optional[Dict[str, Any
     if record.get("event") not in {"llm_api_call", "llm_cli_call"}:
         return None
     payload = record.get("payload") or {}
-    has_cache_split = (
-        payload.get("prompt_cache_hit_tokens") is not None
-        or payload.get("prompt_cache_miss_tokens") is not None
-    )
-    hit = _token_first(payload, "prompt_cache_hit_tokens") or 0
-    miss = _token_first(payload, "prompt_cache_miss_tokens") or 0
-    prompt = _token_first(payload, "prompt_tokens", "input_tokens")
+    target = record.get("target") or {}
+    provider = str(target.get("provider") or payload.get("provider") or "").lower()
     completion = _token_first(payload, "completion_tokens", "output_tokens") or 0
-    estimated = bool(payload.get("estimated"))
+    provider_total = _token_first(payload, "total_tokens")
+    estimated = False
 
-    if has_cache_split:
-        prompt = prompt if prompt is not None else hit + miss
-    elif prompt is not None:
-        hit = 0
-        miss = prompt
-        estimated = True
-    elif completion <= 0:
-        return None
+    prompt = _token_first(payload, "prompt_tokens", "input_tokens")
+    hit = 0
+    miss = 0
+
+    anthropic_cache_hit = _token_first(payload, "cache_read_input_tokens")
+    anthropic_cache_create = _token_first(payload, "cache_creation_input_tokens")
+    if provider == "anthropic" or anthropic_cache_hit is not None or anthropic_cache_create is not None:
+        hit = anthropic_cache_hit
+        if hit is None:
+            hit = _token_first(payload, "prompt_cache_hit_tokens") or 0
+        cache_create = anthropic_cache_create
+        if cache_create is None:
+            cache_create = _token_first(payload, "prompt_cache_miss_tokens") or 0
+        input_tokens = _token_first(payload, "input_tokens") or 0
+        miss = cache_create + input_tokens
+        prompt = hit + miss
+        estimated = bool(payload.get("estimated"))
     else:
-        prompt = 0
-        estimated = True
+        openai_cached = _token_nested(payload, "prompt_tokens_details", "cached_tokens")
+        if openai_cached is not None:
+            hit = openai_cached
+            prompt = prompt if prompt is not None else hit
+            miss = max(0, prompt - hit)
+            estimated = bool(payload.get("estimated"))
+        elif (
+            payload.get("prompt_cache_hit_tokens") is not None
+            or payload.get("prompt_cache_miss_tokens") is not None
+        ):
+            hit = _token_first(payload, "prompt_cache_hit_tokens") or 0
+            miss = _token_first(payload, "prompt_cache_miss_tokens") or 0
+            prompt = prompt if prompt is not None else hit + miss
+            estimated = bool(payload.get("estimated"))
+        elif prompt is not None:
+            hit = 0
+            miss = prompt
+            estimated = True
+        elif completion <= 0:
+            return None
+        else:
+            prompt = 0
+            estimated = True
 
-    total = _token_first(payload, "total_tokens")
-    if total is None:
-        total = prompt + completion
+    if prompt is None:
+        prompt = hit + miss
+    total = hit + miss + completion
+    if total <= 0 and (provider_total is None or provider_total <= 0):
+        return None
+    if total <= 0:
+        hit = 0
+        miss = provider_total or 0
+        prompt = miss
+        total = miss + completion
+        estimated = True
+    total_mismatch = provider_total is not None and provider_total != total
 
     return {
         "hit": hit,
@@ -177,6 +221,8 @@ def _extract_token_usage_delta(record: Dict[str, Any]) -> Optional[Dict[str, Any
         "prompt": prompt,
         "completion": completion,
         "total": total,
+        "provider_total": provider_total,
+        "total_mismatch": total_mismatch,
         "estimated": estimated,
     }
 
@@ -214,7 +260,11 @@ def _append_token_usage_record(record: Dict[str, Any]) -> bool:
         totals["prompt"] += delta["prompt"]
         totals["completion"] += delta["completion"]
         totals["total"] += delta["total"]
+        if delta.get("provider_total") is not None:
+            totals["provider_total"] += delta["provider_total"]
         totals["events"] += 1
+        if delta.get("total_mismatch"):
+            totals["mismatch_events"] += 1
         if delta["estimated"]:
             totals["estimated_events"] += 1
         else:
@@ -237,6 +287,9 @@ def _append_token_usage_record(record: Dict[str, Any]) -> bool:
             "delta_prompt": delta["prompt"],
             "delta_completion": delta["completion"],
             "delta_total": delta["total"],
+            "provider_total": totals["provider_total"],
+            "delta_provider_total": delta.get("provider_total"),
+            "total_mismatch": delta.get("total_mismatch", False),
             "estimated": delta["estimated"],
             "actor": actor,
             "provider": target.get("provider", ""),

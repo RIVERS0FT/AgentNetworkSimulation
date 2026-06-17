@@ -414,8 +414,8 @@ class Brain:
                     usage = {
                         "input_tokens": getattr(u, 'input_tokens', 0),
                         "output_tokens": getattr(u, 'output_tokens', 0),
-                        "prompt_cache_hit_tokens": getattr(u, 'cache_read_input_tokens', None) or 0,
-                        "prompt_cache_miss_tokens": getattr(u, 'cache_creation_input_tokens', None) or 0,
+                        "cache_read_input_tokens": getattr(u, 'cache_read_input_tokens', None) or 0,
+                        "cache_creation_input_tokens": getattr(u, 'cache_creation_input_tokens', None) or 0,
                     }
             except Exception:
                 pass

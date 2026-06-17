@@ -241,6 +241,8 @@ let _tokenMissTotal = 0;
 let _tokenCompletionTotal = 0;
 let _tokenGrandTotal = 0;
 let _tokenLastLabel = '--';
+let _tokenAuthoritative = false;
+let _tokenSnapshotSignature = '';
 
 function numberOrNull(value) {
   const n = Number(value);
@@ -284,16 +286,29 @@ function tokenRecordKey(record) {
 function extractTokenUsage(record) {
   if (!record || (record.event !== 'llm_api_call' && record.event !== 'llm_cli_call')) return null;
   const payload = record.payload || {};
+  const target = record.target || {};
+  const provider = String(target.provider || payload.provider || '').toLowerCase();
   const hasCacheSplit = payload.prompt_cache_hit_tokens !== undefined || payload.prompt_cache_miss_tokens !== undefined;
+  const openaiCached = numberOrNull(payload.prompt_tokens_details?.cached_tokens);
+  const anthropicHit = numberOrNull(payload.cache_read_input_tokens);
+  const anthropicCreate = numberOrNull(payload.cache_creation_input_tokens);
   let hit = numberOrNull(payload.prompt_cache_hit_tokens);
   let miss = numberOrNull(payload.prompt_cache_miss_tokens);
+  const completion = Math.max(0, numberOrNull(payload.completion_tokens ?? payload.output_tokens) ?? 0);
   let estimated = !!payload.estimated;
 
-  if (!hasCacheSplit) {
+  if (provider === 'anthropic' || anthropicHit !== null || anthropicCreate !== null) {
+    hit = anthropicHit ?? hit ?? 0;
+    miss = (anthropicCreate ?? miss ?? 0) + (numberOrNull(payload.input_tokens) ?? 0);
+  } else if (openaiCached !== null) {
+    const promptTokens = numberOrNull(payload.prompt_tokens ?? payload.input_tokens) ?? openaiCached;
+    hit = openaiCached;
+    miss = Math.max(0, promptTokens - openaiCached);
+  } else if (!hasCacheSplit) {
     const promptTokens = numberOrNull(payload.prompt_tokens ?? payload.input_tokens);
-    if (promptTokens === null) return null;
+    if (promptTokens === null && completion <= 0) return null;
     hit = 0;
-    miss = promptTokens;
+    miss = promptTokens ?? 0;
     estimated = true;
   } else {
     hit = hit ?? 0;
@@ -302,16 +317,17 @@ function extractTokenUsage(record) {
 
   hit = Math.max(0, hit);
   miss = Math.max(0, miss);
-  if (hit + miss <= 0) return null;
+  if (hit + miss + completion <= 0) return null;
 
   const actor = (record.actor || {}).id || record.agent_id || 'agent';
-  const target = record.target || {};
   const model = [target.provider, target.model].filter(Boolean).join('/');
   return {
     key: tokenRecordKey(record),
     ts: record.timestamp || new Date().toISOString(),
     hit,
     miss,
+    completion,
+    total: hit + miss + completion,
     estimated,
     label: actor + (model ? ' ' + model : ''),
   };
@@ -322,28 +338,46 @@ function updateTokenStats() {
   const ratio = total > 0 ? Math.round((_tokenHitTotal / total) * 100) : 0;
   const hitEl = document.getElementById('token-hit-total');
   const missEl = document.getElementById('token-miss-total');
+  const outputEl = document.getElementById('token-output-total');
+  const totalEl = document.getElementById('token-grand-total');
   const ratioEl = document.getElementById('token-hit-ratio');
   const lastEl = document.getElementById('token-last-call');
   if (hitEl) hitEl.textContent = formatTokenCount(_tokenHitTotal);
   if (missEl) missEl.textContent = formatTokenCount(_tokenMissTotal);
+  if (outputEl) outputEl.textContent = formatTokenCount(_tokenCompletionTotal);
+  if (totalEl) totalEl.textContent = formatTokenCount(_tokenGrandTotal);
   if (ratioEl) ratioEl.textContent = ratio + '%';
   if (lastEl) lastEl.textContent = _tokenLastLabel;
 }
 
 function applyTokenUsageSnapshot(snapshot) {
   if (!snapshot) return;
+  _tokenAuthoritative = true;
+  const totals = snapshot.totals || {};
+  const points = snapshot.points || [];
+  const last = snapshot.last_event;
+  const signature = [
+    snapshot.session_id || '',
+    points.length,
+    last?.key || '',
+    totals.hit || 0,
+    totals.miss || 0,
+    totals.completion || 0,
+    totals.total || 0,
+  ].join('|');
+  if (signature === _tokenSnapshotSignature) return;
+  _tokenSnapshotSignature = signature;
   const nextSessionId = snapshot.session_id || '';
   if (nextSessionId !== _tokenSessionId) {
     _seenTokenKeys.clear();
     _tokenSessionId = nextSessionId;
   }
-  const totals = snapshot.totals || {};
   _tokenHitTotal = Number(totals.hit || 0);
   _tokenMissTotal = Number(totals.miss || 0);
   _tokenCompletionTotal = Number(totals.completion || 0);
   _tokenGrandTotal = Number(totals.total || (_tokenHitTotal + _tokenMissTotal + _tokenCompletionTotal));
   _tokenSeries.length = 0;
-  (snapshot.points || []).forEach(p => {
+  points.forEach(p => {
     if (p.key) _seenTokenKeys.add(p.key);
     _tokenSeries.push({
       key: p.key || '',
@@ -354,12 +388,13 @@ function applyTokenUsageSnapshot(snapshot) {
       total: Number(p.total || 0),
       deltaHit: Number(p.delta_hit || 0),
       deltaMiss: Number(p.delta_miss || 0),
+      deltaCompletion: Number(p.delta_completion || 0),
+      deltaTotal: Number(p.delta_total || 0),
       estimated: !!p.estimated,
       label: [p.actor, [p.provider, p.model].filter(Boolean).join('/')].filter(Boolean).join(' '),
     });
   });
 
-  const last = snapshot.last_event;
   if (last) {
     const label = [last.actor, [last.provider, last.model].filter(Boolean).join('/')].filter(Boolean).join(' ') || 'LLM';
     _tokenLastLabel = label
@@ -375,6 +410,7 @@ function applyTokenUsageSnapshot(snapshot) {
 }
 
 function ingestTokenUsageRecord(record) {
+  if (_tokenAuthoritative) return false;
   const usage = extractTokenUsage(record);
   if (!usage || _seenTokenKeys.has(usage.key)) return false;
   _seenTokenKeys.add(usage.key);
@@ -385,15 +421,25 @@ function ingestTokenUsageRecord(record) {
 
   _tokenHitTotal += usage.hit;
   _tokenMissTotal += usage.miss;
+  _tokenCompletionTotal += usage.completion || 0;
+  _tokenGrandTotal = _tokenHitTotal + _tokenMissTotal + _tokenCompletionTotal;
   _tokenSeries.push({
     ...usage,
     hit: _tokenHitTotal,
     miss: _tokenMissTotal,
+    completion: _tokenCompletionTotal,
+    total: _tokenGrandTotal,
     deltaHit: usage.hit,
     deltaMiss: usage.miss,
+    deltaCompletion: usage.completion || 0,
+    deltaTotal: usage.total || usage.hit + usage.miss + (usage.completion || 0),
   });
   if (_tokenSeries.length > TOKEN_CHART_MAX_POINTS) _tokenSeries.splice(0, _tokenSeries.length - TOKEN_CHART_MAX_POINTS);
-  _tokenLastLabel = usage.label + ' H:' + formatTokenCount(usage.hit) + ' M:' + formatTokenCount(usage.miss) + (usage.estimated ? ' est' : '');
+  _tokenLastLabel = usage.label
+    + ' H:' + formatTokenCount(usage.hit)
+    + ' M:' + formatTokenCount(usage.miss)
+    + ' C:' + formatTokenCount(usage.completion || 0)
+    + (usage.estimated ? ' est' : '');
   updateTokenStats();
   renderTokenChart();
   return true;
@@ -408,6 +454,8 @@ function resetTokenChart() {
   _tokenCompletionTotal = 0;
   _tokenGrandTotal = 0;
   _tokenLastLabel = '--';
+  _tokenAuthoritative = false;
+  _tokenSnapshotSignature = '';
   updateTokenStats();
   renderTokenChart();
 }
@@ -506,11 +554,12 @@ function renderTokenChart() {
     return;
   }
 
-  const maxTotal = Math.max(1, ..._tokenSeries.map(p => p.hit + p.miss));
+  const maxTotal = Math.max(1, ..._tokenSeries.map(p => p.total || p.hit + p.miss + (p.completion || 0)));
   const scaleY = value => baseY - (value / maxTotal) * plotH;
   const xAt = idx => padL + (_tokenSeries.length === 1 ? plotW : (plotW * idx) / (_tokenSeries.length - 1));
   const missPoints = _tokenSeries.map((p, idx) => ({ x: xAt(idx), y: scaleY(p.miss) }));
-  const totalPoints = _tokenSeries.map((p, idx) => ({ x: xAt(idx), y: scaleY(p.hit + p.miss) }));
+  const inputPoints = _tokenSeries.map((p, idx) => ({ x: xAt(idx), y: scaleY(p.hit + p.miss) }));
+  const totalPoints = _tokenSeries.map((p, idx) => ({ x: xAt(idx), y: scaleY(p.total || p.hit + p.miss + (p.completion || 0)) }));
 
   const missArea = chartCtx.createLinearGradient(0, padT, 0, baseY);
   missArea.addColorStop(0, 'rgba(255,191,90,0.28)');
@@ -528,6 +577,19 @@ function renderTokenChart() {
   hitArea.addColorStop(1, 'rgba(47,140,255,0.04)');
   chartCtx.beginPath();
   totalPoints.forEach((p, idx) => {
+    if (idx === 0) chartCtx.moveTo(p.x, p.y);
+    else chartCtx.lineTo(p.x, p.y);
+  });
+  for (let i = inputPoints.length - 1; i >= 0; i--) chartCtx.lineTo(inputPoints[i].x, inputPoints[i].y);
+  chartCtx.closePath();
+  const outputArea = chartCtx.createLinearGradient(0, padT, 0, baseY);
+  outputArea.addColorStop(0, 'rgba(154,216,255,0.24)');
+  outputArea.addColorStop(1, 'rgba(154,216,255,0.04)');
+  chartCtx.fillStyle = outputArea;
+  chartCtx.fill();
+
+  chartCtx.beginPath();
+  inputPoints.forEach((p, idx) => {
     if (idx === 0) chartCtx.moveTo(p.x, p.y);
     else chartCtx.lineTo(p.x, p.y);
   });
@@ -554,7 +616,8 @@ function renderTokenChart() {
   }
 
   strokeSeries(missPoints, 'rgba(255,191,90,0.92)', 1.6, 8);
-  strokeSeries(totalPoints, 'rgba(56,213,255,0.96)', 1.8, 10);
+  strokeSeries(inputPoints, 'rgba(56,213,255,0.86)', 1.6, 8);
+  strokeSeries(totalPoints, 'rgba(191,234,255,0.98)', 2.0, 11);
 
   chartCtx.fillStyle = 'rgba(127,155,181,0.82)';
   chartCtx.font = '10px JetBrains Mono, IBM Plex Mono, monospace';
@@ -579,7 +642,11 @@ function renderTokenChart() {
 
   chartCtx.textAlign = 'right';
   chartCtx.fillStyle = 'rgba(191,234,255,0.82)';
-  chartCtx.fillText('HIT', w - 48, 14);
+  chartCtx.fillText('TOTAL', w - 120, 14);
+  chartCtx.fillStyle = 'rgba(154,216,255,0.88)';
+  chartCtx.fillText('OUT', w - 76, 14);
+  chartCtx.fillStyle = 'rgba(56,213,255,0.88)';
+  chartCtx.fillText('HIT', w - 44, 14);
   chartCtx.fillStyle = 'rgba(255,191,90,0.88)';
   chartCtx.fillText('MISS', w - 10, 14);
   chartCtx.restore();
