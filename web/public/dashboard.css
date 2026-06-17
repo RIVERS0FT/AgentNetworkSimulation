@@ -23,6 +23,7 @@
   --shadow-blue:0 0 8px rgba(56,213,255,0.24),0 0 18px rgba(47,140,255,0.10);
   --shadow-amber:0 0 8px rgba(255,191,90,0.22),0 0 18px rgba(255,143,63,0.08);
   --grid:rgba(95,187,255,0.08);
+  --token-chart-height:164px;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%}
@@ -57,14 +58,10 @@ body::after{
   animation:pageScan 8s linear infinite;
   opacity:0.42;
 }
-.app{
-  display:grid;
-  grid-template-rows:minmax(0,1fr) 164px;
-  height:100vh;
-  isolation:isolate;
-}
+.app{display:block;height:100vh;isolation:isolate;padding-bottom:var(--token-chart-height)}
 .main-workspace{
   display:flex;
+  height:calc(100vh - var(--token-chart-height));
   min-width:0;
   min-height:0;
   overflow:hidden;
@@ -330,8 +327,12 @@ body::after{
 .log-dropdown.open .log-dropdown-menu{display:flex!important}
 .log-dropdown-menu .chk{font-size:0.7rem;font-family:inherit;color:var(--text);padding:2px 0}
 .token-chart-panel{
-  position:relative;
+  position:fixed;
+  left:0;
+  right:0;
+  bottom:0;
   z-index:1;
+  height:var(--token-chart-height);
   min-height:0;
   display:grid;
   grid-template-columns:300px minmax(0,1fr);
@@ -436,7 +437,7 @@ body::after{
 @keyframes panelSweep{0%,60%{transform:translateX(-120%)}100%{transform:translateX(120%)}}
 @keyframes logIn{from{opacity:0;transform:translateX(8px)}to{opacity:1;transform:translateX(0)}}
 @media(max-width:900px){
-  .app{grid-template-rows:minmax(0,1fr) 150px}
+  :root{--token-chart-height:150px}
   .main-workspace{flex-direction:column}
   .canvas-panel{flex:2;min-height:58vh}
   .canvas-stage,.scene-panel{min-height:0}
@@ -453,7 +454,7 @@ body::after{
   .control-bar{flex-wrap:wrap}
   .scene-select{width:100%;flex:1 1 100%}
   .tooltip{min-width:240px;max-width:calc(100vw - 20px)}
-  .app{grid-template-rows:minmax(0,1fr) 132px}
+  :root{--token-chart-height:132px}
   .token-chart-panel{grid-template-columns:1fr}
   .token-chart-header{display:grid;grid-template-columns:minmax(0,0.8fr) minmax(0,1.2fr);gap:6px}
   .token-chart-kicker{font-size:0.5rem}

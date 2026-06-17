@@ -1897,6 +1897,8 @@ async def log_ingest(req: Request):
     if not record["message"] and record["payload"].get("content"):
         record["message"] = str(record["payload"]["content"])[:120]
     logger.ingest(record)
+    if record.get("event") in {"llm_api_call", "llm_cli_call"}:
+        await _ws_broadcast({"type": "log_entries", "data": [record]})
     return {"status": "ok"}
 
 

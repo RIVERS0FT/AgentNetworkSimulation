@@ -232,6 +232,7 @@ function clearLogs() { logBuffer = []; renderLogs(); }
 // ============== Token Cache Chart ==============
 const TOKEN_CHART_MAX_POINTS = 120;
 const TOKEN_CHART_HISTORY_LIMIT = 500;
+const TOKEN_CHART_POLL_MS = 1000;
 const _tokenSeries = [];
 const _seenTokenKeys = new Set();
 let _tokenHitTotal = 0;
@@ -325,10 +326,16 @@ function ingestTokenUsageRecord(record) {
     for (let i = 0; i < 500; i++) _seenTokenKeys.delete(iter.next().value);
   }
 
-  _tokenSeries.push(usage);
-  if (_tokenSeries.length > TOKEN_CHART_MAX_POINTS) _tokenSeries.splice(0, _tokenSeries.length - TOKEN_CHART_MAX_POINTS);
   _tokenHitTotal += usage.hit;
   _tokenMissTotal += usage.miss;
+  _tokenSeries.push({
+    ...usage,
+    hit: _tokenHitTotal,
+    miss: _tokenMissTotal,
+    deltaHit: usage.hit,
+    deltaMiss: usage.miss,
+  });
+  if (_tokenSeries.length > TOKEN_CHART_MAX_POINTS) _tokenSeries.splice(0, _tokenSeries.length - TOKEN_CHART_MAX_POINTS);
   _tokenLastLabel = usage.label + ' H:' + formatTokenCount(usage.hit) + ' M:' + formatTokenCount(usage.miss) + (usage.estimated ? ' est' : '');
   updateTokenStats();
   renderTokenChart();
@@ -354,6 +361,10 @@ async function loadTokenHistory() {
   } catch (e) {
     console.warn('loadTokenHistory', e);
   }
+}
+
+function startTokenHistoryPolling() {
+  setInterval(loadTokenHistory, TOKEN_CHART_POLL_MS);
 }
 
 function resizeTokenChart() {
@@ -1416,6 +1427,17 @@ if (msg.type === 'agent_log' && msg.data) {
     return;
     }
 // ── Agent 状态实时更新 ──
+if ((msg.type === 'log_entries' || msg.type === 'logs') && msg.data) {
+    const entries = Array.isArray(msg.data) ? msg.data : (msg.data.entries || []);
+    entries.forEach(e => {
+        ingestTokenUsageRecord(e);
+        const norm = normalizeLogRecord(e, 'ws_log_entries');
+        if (norm) { logBuffer.push(norm); if (logBuffer.length > 500) logBuffer.shift(); }
+    });
+    if (entries.length > 0 && _logFlushTimer) clearTimeout(_logFlushTimer);
+    if (entries.length > 0) _logFlushTimer = setTimeout(renderLogs, 16);
+    return;
+}
 if (msg.type === 'agent_status' && msg.data) {
     msg.data.forEach(s => {
         const existing = agents.find(a => a.agent_id === s.agent_id);
@@ -1598,6 +1620,7 @@ function togglePanel(id) { document.getElementById(id).classList.toggle('minimiz
 logEntry('system', '控制台就绪');
 loadSceneList();
 loadTokenHistory();
+startTokenHistoryPolling();
 // 恢复上次加载的场景面板
 const lastScene = sessionStorage.getItem('lastScenePanel');
 if (lastScene) loadScenePanel(lastScene);
