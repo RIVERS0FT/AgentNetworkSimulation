@@ -46,6 +46,7 @@ import uvicorn
 import asyncio
 import uuid
 import time
+import threading
 
 # 导入平台核心模块
 from agent_network.agent import Agent, AgentRegistry, Message
@@ -79,6 +80,171 @@ _server_loop: Optional[asyncio.AbstractEventLoop] = None
 
 # ── 统一 Agent 日志缓冲区 ──
 _agent_logs: List[Dict[str, Any]] = []  # 内存/容器模式共用日志
+
+
+def _new_token_usage_state(session_id: str = "") -> Dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "points": [],
+        "seen_keys": set(),
+        "totals": {
+            "hit": 0,
+            "miss": 0,
+            "prompt": 0,
+            "completion": 0,
+            "total": 0,
+            "estimated_events": 0,
+            "exact_events": 0,
+            "events": 0,
+        },
+        "last_event": None,
+    }
+
+
+_token_usage_lock = threading.Lock()
+_token_usage_state: Dict[str, Any] = _new_token_usage_state()
+
+
+def _token_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        n = float(value)
+        if not math.isfinite(n):
+            return None
+        return max(0, int(round(n)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _token_first(payload: Dict[str, Any], *keys: str) -> Optional[int]:
+    for key in keys:
+        value = _token_int(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _reset_token_usage_state(session_id: str = ""):
+    global _token_usage_state
+    with _token_usage_lock:
+        _token_usage_state = _new_token_usage_state(session_id)
+
+
+def _token_usage_snapshot() -> Dict[str, Any]:
+    with _token_usage_lock:
+        return {
+            "session_id": _token_usage_state.get("session_id", ""),
+            "points": [dict(p) for p in _token_usage_state.get("points", [])],
+            "totals": dict(_token_usage_state.get("totals", {})),
+            "last_event": dict(_token_usage_state["last_event"]) if _token_usage_state.get("last_event") else None,
+        }
+
+
+def _extract_token_usage_delta(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if record.get("event") not in {"llm_api_call", "llm_cli_call"}:
+        return None
+    payload = record.get("payload") or {}
+    has_cache_split = (
+        payload.get("prompt_cache_hit_tokens") is not None
+        or payload.get("prompt_cache_miss_tokens") is not None
+    )
+    hit = _token_first(payload, "prompt_cache_hit_tokens") or 0
+    miss = _token_first(payload, "prompt_cache_miss_tokens") or 0
+    prompt = _token_first(payload, "prompt_tokens", "input_tokens")
+    completion = _token_first(payload, "completion_tokens", "output_tokens") or 0
+    estimated = bool(payload.get("estimated"))
+
+    if has_cache_split:
+        prompt = prompt if prompt is not None else hit + miss
+    elif prompt is not None:
+        hit = 0
+        miss = prompt
+        estimated = True
+    elif completion <= 0:
+        return None
+    else:
+        prompt = 0
+        estimated = True
+
+    total = _token_first(payload, "total_tokens")
+    if total is None:
+        total = prompt + completion
+
+    return {
+        "hit": hit,
+        "miss": miss,
+        "prompt": prompt,
+        "completion": completion,
+        "total": total,
+        "estimated": estimated,
+    }
+
+
+def _append_token_usage_record(record: Dict[str, Any]) -> bool:
+    delta = _extract_token_usage_delta(record)
+    if not delta:
+        return False
+
+    session_id = record.get("session_id") or ""
+    seq = record.get("seq")
+    if session_id and seq is not None:
+        key = f"{session_id}|{seq}"
+    else:
+        actor = (record.get("actor") or {}).get("id", "")
+        target = record.get("target") or {}
+        key = "|".join([
+            record.get("timestamp") or "",
+            record.get("event") or "",
+            actor,
+            str(target.get("provider") or ""),
+            str(target.get("model") or ""),
+            str(record.get("message") or "")[:80],
+        ])
+
+    with _token_usage_lock:
+        if key in _token_usage_state["seen_keys"]:
+            return False
+        if session_id and _token_usage_state.get("session_id") != session_id:
+            _token_usage_state["session_id"] = session_id
+        _token_usage_state["seen_keys"].add(key)
+        totals = _token_usage_state["totals"]
+        totals["hit"] += delta["hit"]
+        totals["miss"] += delta["miss"]
+        totals["prompt"] += delta["prompt"]
+        totals["completion"] += delta["completion"]
+        totals["total"] += delta["total"]
+        totals["events"] += 1
+        if delta["estimated"]:
+            totals["estimated_events"] += 1
+        else:
+            totals["exact_events"] += 1
+
+        actor = (record.get("actor") or {}).get("id", "")
+        target = record.get("target") or {}
+        point = {
+            "key": key,
+            "session_id": session_id,
+            "seq": seq,
+            "timestamp": record.get("timestamp") or datetime.now().isoformat(timespec="milliseconds"),
+            "hit": totals["hit"],
+            "miss": totals["miss"],
+            "prompt": totals["prompt"],
+            "completion": totals["completion"],
+            "total": totals["total"],
+            "delta_hit": delta["hit"],
+            "delta_miss": delta["miss"],
+            "delta_prompt": delta["prompt"],
+            "delta_completion": delta["completion"],
+            "delta_total": delta["total"],
+            "estimated": delta["estimated"],
+            "actor": actor,
+            "provider": target.get("provider", ""),
+            "model": target.get("model", ""),
+        }
+        _token_usage_state["points"].append(point)
+        _token_usage_state["last_event"] = point
+        return True
 
 # ═══════════════════════════════════════════════
 # Lifespan — 替代已弃用的 on_event
@@ -705,6 +871,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
 
     # ── 初始化 session 日志文件夹（server + message_bus 同步）──
     logger.start_session(scene_def.scene_name)
+    _reset_token_usage_state(getattr(logger, "_session_id", ""))
     try:
         _req.post(f"{_MESSAGE_BUS_URL}/session/start",
                   params={"session_dir": logger._session_dir}, timeout=3)
@@ -1193,6 +1360,12 @@ async def network_logs(limit: int = Query(default=100, le=1000)):
         "total": len(entries),
         "entries": entries[-limit:],
     }
+
+
+@app.get("/api/logs/token-usage")
+async def token_usage_logs():
+    """鑾峰彇褰撳墠浠跨湡 session 鐨?LLM token 绱鐢ㄩ噺銆?"""
+    return _token_usage_snapshot()
 
 
 @app.get("/api/logs/export")
@@ -1898,7 +2071,10 @@ async def log_ingest(req: Request):
         record["message"] = str(record["payload"]["content"])[:120]
     logger.ingest(record)
     if record.get("event") in {"llm_api_call", "llm_cli_call"}:
+        token_updated = _append_token_usage_record(record)
         await _ws_broadcast({"type": "log_entries", "data": [record]})
+        if token_updated:
+            await _ws_broadcast({"type": "token_usage", "data": _token_usage_snapshot()})
     return {"status": "ok"}
 
 

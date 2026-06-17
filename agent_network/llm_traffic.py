@@ -101,8 +101,8 @@ def log_llm_call(*,
         "body_logged": False,
         "estimated": True,
     }
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens",
-                "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+    for key in ("prompt_tokens", "completion_tokens", "input_tokens", "output_tokens",
+                "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
         if usage.get(key) is not None:
             payload[key] = usage[key]
             payload["estimated"] = False

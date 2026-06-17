@@ -235,8 +235,11 @@ const TOKEN_CHART_HISTORY_LIMIT = 500;
 const TOKEN_CHART_POLL_MS = 1000;
 const _tokenSeries = [];
 const _seenTokenKeys = new Set();
+let _tokenSessionId = '';
 let _tokenHitTotal = 0;
 let _tokenMissTotal = 0;
+let _tokenCompletionTotal = 0;
+let _tokenGrandTotal = 0;
 let _tokenLastLabel = '--';
 
 function numberOrNull(value) {
@@ -327,6 +330,50 @@ function updateTokenStats() {
   if (lastEl) lastEl.textContent = _tokenLastLabel;
 }
 
+function applyTokenUsageSnapshot(snapshot) {
+  if (!snapshot) return;
+  const nextSessionId = snapshot.session_id || '';
+  if (nextSessionId !== _tokenSessionId) {
+    _seenTokenKeys.clear();
+    _tokenSessionId = nextSessionId;
+  }
+  const totals = snapshot.totals || {};
+  _tokenHitTotal = Number(totals.hit || 0);
+  _tokenMissTotal = Number(totals.miss || 0);
+  _tokenCompletionTotal = Number(totals.completion || 0);
+  _tokenGrandTotal = Number(totals.total || (_tokenHitTotal + _tokenMissTotal + _tokenCompletionTotal));
+  _tokenSeries.length = 0;
+  (snapshot.points || []).forEach(p => {
+    if (p.key) _seenTokenKeys.add(p.key);
+    _tokenSeries.push({
+      key: p.key || '',
+      ts: p.timestamp || '',
+      hit: Number(p.hit || 0),
+      miss: Number(p.miss || 0),
+      completion: Number(p.completion || 0),
+      total: Number(p.total || 0),
+      deltaHit: Number(p.delta_hit || 0),
+      deltaMiss: Number(p.delta_miss || 0),
+      estimated: !!p.estimated,
+      label: [p.actor, [p.provider, p.model].filter(Boolean).join('/')].filter(Boolean).join(' '),
+    });
+  });
+
+  const last = snapshot.last_event;
+  if (last) {
+    const label = [last.actor, [last.provider, last.model].filter(Boolean).join('/')].filter(Boolean).join(' ') || 'LLM';
+    _tokenLastLabel = label
+      + ' H:' + formatTokenCount(last.delta_hit || 0)
+      + ' M:' + formatTokenCount(last.delta_miss || 0)
+      + ' C:' + formatTokenCount(last.delta_completion || 0)
+      + (last.estimated ? ' est' : '');
+  } else {
+    _tokenLastLabel = '--';
+  }
+  updateTokenStats();
+  renderTokenChart();
+}
+
 function ingestTokenUsageRecord(record) {
   const usage = extractTokenUsage(record);
   if (!usage || _seenTokenKeys.has(usage.key)) return false;
@@ -355,11 +402,24 @@ function ingestTokenUsageRecord(record) {
 function resetTokenChart() {
   _tokenSeries.length = 0;
   _seenTokenKeys.clear();
+  _tokenSessionId = '';
   _tokenHitTotal = 0;
   _tokenMissTotal = 0;
+  _tokenCompletionTotal = 0;
+  _tokenGrandTotal = 0;
   _tokenLastLabel = '--';
   updateTokenStats();
   renderTokenChart();
+}
+
+async function loadTokenUsageSnapshot() {
+  try {
+    const r = await fetch(API + '/logs/token-usage');
+    if (!r.ok) return;
+    applyTokenUsageSnapshot(await r.json());
+  } catch (e) {
+    console.warn('loadTokenUsageSnapshot', e);
+  }
 }
 
 async function loadTokenHistory() {
@@ -374,7 +434,7 @@ async function loadTokenHistory() {
 }
 
 function startTokenHistoryPolling() {
-  setInterval(loadTokenHistory, TOKEN_CHART_POLL_MS);
+  setInterval(loadTokenUsageSnapshot, TOKEN_CHART_POLL_MS);
 }
 
 function resizeTokenChart() {
@@ -1464,6 +1524,10 @@ if ((msg.type === 'log_entries' || msg.type === 'logs') && msg.data) {
     if (entries.length > 0) _logFlushTimer = setTimeout(renderLogs, 16);
     return;
 }
+if (msg.type === 'token_usage' && msg.data) {
+    applyTokenUsageSnapshot(msg.data);
+    return;
+}
 if (msg.type === 'agent_status' && msg.data) {
     msg.data.forEach(s => {
         const existing = agents.find(a => a.agent_id === s.agent_id);
@@ -1645,7 +1709,7 @@ function togglePanel(id) { document.getElementById(id).classList.toggle('minimiz
 // ============== Start ==============
 logEntry('system', '控制台就绪');
 loadSceneList();
-loadTokenHistory();
+loadTokenUsageSnapshot();
 startTokenHistoryPolling();
 // 恢复上次加载的场景面板
 const lastScene = sessionStorage.getItem('lastScenePanel');

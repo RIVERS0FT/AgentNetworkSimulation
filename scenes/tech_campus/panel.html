@@ -92,11 +92,25 @@ const COMM_EDGES=[
 
 // 布局：5 个职能分组
 const GROUPS = {
-  dev:{ids:['DEV_FE','DEV_BE','DEV_FW'],cx:0.18,cy:0.36,spread:65},
-  ai_ic:{ids:['DEV_AI','DEV_IC'],cx:0.16,cy:0.64,spread:55},
-  mgmt:{ids:['ARCHITECT','PM'],cx:0.40,cy:0.30,spread:70},
-  content:{ids:['DOC_WRITER','QA'],cx:0.70,cy:0.34,spread:60},
-  infra:{ids:['REPO_ADMIN','DEV_OPS'],cx:0.68,cy:0.64,spread:55},
+  dev:{ids:['DEV_FE','DEV_BE','DEV_FW'],cx:0.18,cy:0.48,spread:78},
+  ai_ic:{ids:['DEV_AI','DEV_IC'],cx:0.36,cy:0.66,spread:70},
+  mgmt:{ids:['ARCHITECT','PM'],cx:0.42,cy:0.24,spread:70},
+  content:{ids:['DOC_WRITER','QA'],cx:0.66,cy:0.38,spread:76},
+  infra:{ids:['REPO_ADMIN','DEV_OPS'],cx:0.84,cy:0.56,spread:72},
+};
+
+const NODE_POS = {
+  PM:[0.30,0.18],
+  ARCHITECT:[0.48,0.18],
+  DEV_FE:[0.14,0.34],
+  DEV_BE:[0.20,0.52],
+  DEV_FW:[0.14,0.70],
+  DEV_AI:[0.36,0.44],
+  DEV_IC:[0.38,0.78],
+  DOC_WRITER:[0.66,0.24],
+  QA:[0.70,0.60],
+  REPO_ADMIN:[0.86,0.34],
+  DEV_OPS:[0.86,0.76],
 };
 
 let state = {running:false, round:0, max_rounds:0, agents:[], custom:null};
@@ -109,13 +123,15 @@ function layout(){
   canvas.width=window.innerWidth*devicePixelRatio;canvas.height=window.innerHeight*devicePixelRatio;
   ctx.setTransform(1,0,0,1,0,0);ctx.scale(devicePixelRatio,devicePixelRatio);
   const W=window.innerWidth,H=window.innerHeight;
+  const safe={left:Math.max(72,W*0.06),right:Math.max(120,W*0.08),top:Math.max(70,H*0.13),bottom:Math.max(106,H*0.22)};
+  const areaW=Math.max(1,W-safe.left-safe.right),areaH=Math.max(1,H-safe.top-safe.bottom);
+  const nodeR=Math.max(15,Math.min(22,Math.min(W,H)/32));
   nodes=[];
   for(const[gid,g]of Object.entries(GROUPS)){
-    const cx=g.cx*W,cy=g.cy*H;
-    g.ids.forEach((id,i)=>{
-      const a=(i/g.ids.length)*Math.PI*2-Math.PI/2,dx=Math.cos(a)*g.spread,dy=Math.sin(a)*g.spread;
+    g.ids.forEach((id)=>{
+      const pos=NODE_POS[id]||[g.cx,g.cy];
       const ag=AGENTS[id];
-      nodes.push({id,x:cx+dx,y:cy+dy,cat:ag.cat,color:CAT_COLORS[ag.cat],name:ag.name,dept:ag.dept,task:ag.task,goal:ag.goal,progress:progress[id],icon:ag.icon});
+      nodes.push({id,x:safe.left+pos[0]*areaW,y:safe.top+pos[1]*areaH,r:nodeR,cat:ag.cat,color:CAT_COLORS[ag.cat],name:ag.name,dept:ag.dept,task:ag.task,goal:ag.goal,progress:progress[id],icon:ag.icon});
     });
   }
 }
@@ -169,7 +185,7 @@ function draw(){
   // ── Agent 节点 + 任务进度环 ──
   nodes.forEach(n=>{
     const pct=n.goal>0?n.progress/n.goal:0;
-    const r=22; // Agent 节点半径
+    const r=n.r||22; // Agent 节点半径
     // 外发光
     ctx.beginPath();ctx.arc(n.x,n.y,r+4,0,Math.PI*2);ctx.fillStyle=n.color;ctx.globalAlpha=pct*0.08+0.02;ctx.fill();ctx.globalAlpha=1;
     // 进度环底色
@@ -179,13 +195,13 @@ function draw(){
       ctx.beginPath();ctx.arc(n.x,n.y,r,-Math.PI/2,-Math.PI/2+pct*Math.PI*2);ctx.strokeStyle=n.color;ctx.lineWidth=4;ctx.lineCap='round';ctx.stroke();ctx.lineCap='butt';
     }
     // 图标
-    ctx.font='22px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(n.icon,n.x,n.y-2);
+    ctx.font=Math.round(r)+'px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(n.icon,n.x,n.y-2);
     // 名称
-    ctx.fillStyle='#d0d7e4';ctx.font='9px monospace';ctx.textAlign='center';ctx.fillText(n.name,n.x,n.y+r+14);
+    ctx.fillStyle='#d0d7e4';ctx.font=(r<18?'8px':'9px')+' monospace';ctx.textAlign='center';ctx.fillText(n.name,n.x,n.y+r+13);
     // 进度分数
-    ctx.fillStyle=n.color;ctx.font='10px monospace';ctx.fillText(n.progress+'/'+n.goal,n.x,n.y+r+25);
+    ctx.fillStyle=n.color;ctx.font=(r<18?'9px':'10px')+' monospace';ctx.fillText(n.progress+'/'+n.goal,n.x,n.y+r+24);
     // 任务标签
-    ctx.fillStyle='#8892a4';ctx.font='8px monospace';ctx.fillText(n.task,n.x,n.y+r+36);
+    ctx.fillStyle='#8892a4';ctx.font='8px monospace';ctx.fillText(n.task,n.x,n.y+r+34);
   });
 
   // ── 右上角事件摘要 ──
@@ -210,7 +226,7 @@ function draw(){
 
 canvas.onmousemove=function(e){
   const mx=e.clientX,my=e.clientY;let found=null;
-  for(const n of nodes){const dx=mx-n.x,dy=my-n.y;if(dx*dx+dy*dy<676){found=n;break;}}
+  for(const n of nodes){const dx=mx-n.x,dy=my-n.y,hit=(n.r||22)+4;if(dx*dx+dy*dy<hit*hit){found=n;break;}}
   if(found){
     const pct=Math.round(found.progress/found.goal*100);
     tip.style.display='block';tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-42)+'px';
