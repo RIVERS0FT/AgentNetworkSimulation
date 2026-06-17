@@ -229,6 +229,268 @@ if (autoscroll && wasAtBottom) container.scrollTop = container.scrollHeight;
 }
 function clearLogs() { logBuffer = []; renderLogs(); }
 
+// ============== Token Cache Chart ==============
+const TOKEN_CHART_MAX_POINTS = 120;
+const TOKEN_CHART_HISTORY_LIMIT = 500;
+const _tokenSeries = [];
+const _seenTokenKeys = new Set();
+let _tokenHitTotal = 0;
+let _tokenMissTotal = 0;
+let _tokenLastLabel = '--';
+
+function numberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatTokenCount(value) {
+  const n = Math.max(0, Math.round(Number(value) || 0));
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 10000) return Math.round(n / 1000) + 'K';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function tokenRecordKey(record) {
+  if (record.session_id && record.seq !== undefined && record.seq !== null) {
+    return record.session_id + '|' + record.seq;
+  }
+  const actor = (record.actor || {}).id || record.agent_id || '';
+  const target = record.target || {};
+  return [
+    record.timestamp || '',
+    record.event || '',
+    actor,
+    target.provider || '',
+    target.model || '',
+    String(record.message || '').slice(0, 40),
+  ].join('|');
+}
+
+function extractTokenUsage(record) {
+  if (!record || (record.event !== 'llm_api_call' && record.event !== 'llm_cli_call')) return null;
+  const payload = record.payload || {};
+  const hasCacheSplit = payload.prompt_cache_hit_tokens !== undefined || payload.prompt_cache_miss_tokens !== undefined;
+  let hit = numberOrNull(payload.prompt_cache_hit_tokens);
+  let miss = numberOrNull(payload.prompt_cache_miss_tokens);
+  let estimated = !!payload.estimated;
+
+  if (!hasCacheSplit) {
+    const promptTokens = numberOrNull(payload.prompt_tokens ?? payload.input_tokens);
+    if (promptTokens === null) return null;
+    hit = 0;
+    miss = promptTokens;
+    estimated = true;
+  } else {
+    hit = hit ?? 0;
+    miss = miss ?? 0;
+  }
+
+  hit = Math.max(0, hit);
+  miss = Math.max(0, miss);
+  if (hit + miss <= 0) return null;
+
+  const actor = (record.actor || {}).id || record.agent_id || 'agent';
+  const target = record.target || {};
+  const model = [target.provider, target.model].filter(Boolean).join('/');
+  return {
+    key: tokenRecordKey(record),
+    ts: record.timestamp || new Date().toISOString(),
+    hit,
+    miss,
+    estimated,
+    label: actor + (model ? ' ' + model : ''),
+  };
+}
+
+function updateTokenStats() {
+  const total = _tokenHitTotal + _tokenMissTotal;
+  const ratio = total > 0 ? Math.round((_tokenHitTotal / total) * 100) : 0;
+  const hitEl = document.getElementById('token-hit-total');
+  const missEl = document.getElementById('token-miss-total');
+  const ratioEl = document.getElementById('token-hit-ratio');
+  const lastEl = document.getElementById('token-last-call');
+  if (hitEl) hitEl.textContent = formatTokenCount(_tokenHitTotal);
+  if (missEl) missEl.textContent = formatTokenCount(_tokenMissTotal);
+  if (ratioEl) ratioEl.textContent = ratio + '%';
+  if (lastEl) lastEl.textContent = _tokenLastLabel;
+}
+
+function ingestTokenUsageRecord(record) {
+  const usage = extractTokenUsage(record);
+  if (!usage || _seenTokenKeys.has(usage.key)) return false;
+  _seenTokenKeys.add(usage.key);
+  if (_seenTokenKeys.size > 2000) {
+    const iter = _seenTokenKeys.values();
+    for (let i = 0; i < 500; i++) _seenTokenKeys.delete(iter.next().value);
+  }
+
+  _tokenSeries.push(usage);
+  if (_tokenSeries.length > TOKEN_CHART_MAX_POINTS) _tokenSeries.splice(0, _tokenSeries.length - TOKEN_CHART_MAX_POINTS);
+  _tokenHitTotal += usage.hit;
+  _tokenMissTotal += usage.miss;
+  _tokenLastLabel = usage.label + ' H:' + formatTokenCount(usage.hit) + ' M:' + formatTokenCount(usage.miss) + (usage.estimated ? ' est' : '');
+  updateTokenStats();
+  renderTokenChart();
+  return true;
+}
+
+function resetTokenChart() {
+  _tokenSeries.length = 0;
+  _seenTokenKeys.clear();
+  _tokenHitTotal = 0;
+  _tokenMissTotal = 0;
+  _tokenLastLabel = '--';
+  updateTokenStats();
+  renderTokenChart();
+}
+
+async function loadTokenHistory() {
+  try {
+    const r = await fetch(API + '/logs?layer=agent_application&limit=' + TOKEN_CHART_HISTORY_LIMIT);
+    if (!r.ok) return;
+    const data = await r.json();
+    (data.entries || []).forEach(ingestTokenUsageRecord);
+  } catch (e) {
+    console.warn('loadTokenHistory', e);
+  }
+}
+
+function resizeTokenChart() {
+  const chart = document.getElementById('token-chart');
+  const wrap = chart?.parentElement;
+  if (!chart || !wrap) return;
+  const rect = wrap.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+  if (chart.width !== width || chart.height !== height) {
+    chart.width = width;
+    chart.height = height;
+    chart.style.width = rect.width + 'px';
+    chart.style.height = rect.height + 'px';
+  }
+  renderTokenChart();
+}
+
+function renderTokenChart() {
+  const chart = document.getElementById('token-chart');
+  if (!chart) return;
+  const chartCtx = chart.getContext('2d');
+  if (!chartCtx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = chart.width / dpr;
+  const h = chart.height / dpr;
+  if (w <= 1 || h <= 1) return;
+
+  chartCtx.save();
+  chartCtx.scale(dpr, dpr);
+  chartCtx.clearRect(0, 0, w, h);
+
+  const bg = chartCtx.createLinearGradient(0, 0, w, h);
+  bg.addColorStop(0, 'rgba(4,14,28,0.98)');
+  bg.addColorStop(1, 'rgba(2,7,16,0.98)');
+  chartCtx.fillStyle = bg;
+  chartCtx.fillRect(0, 0, w, h);
+
+  const padL = 36;
+  const padR = 14;
+  const padT = 12;
+  const padB = 22;
+  const plotW = Math.max(1, w - padL - padR);
+  const plotH = Math.max(1, h - padT - padB);
+  const baseY = padT + plotH;
+
+  chartCtx.strokeStyle = 'rgba(95,187,255,0.12)';
+  chartCtx.lineWidth = 1;
+  chartCtx.beginPath();
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + (plotH / 4) * i;
+    chartCtx.moveTo(padL, y);
+    chartCtx.lineTo(w - padR, y);
+  }
+  for (let i = 0; i <= 6; i++) {
+    const x = padL + (plotW / 6) * i;
+    chartCtx.moveTo(x, padT);
+    chartCtx.lineTo(x, baseY);
+  }
+  chartCtx.stroke();
+
+  if (!_tokenSeries.length) {
+    chartCtx.fillStyle = 'rgba(191,234,255,0.62)';
+    chartCtx.font = '11px JetBrains Mono, IBM Plex Mono, monospace';
+    chartCtx.textAlign = 'center';
+    chartCtx.fillText('WAITING FOR LLM TOKEN TELEMETRY', w / 2, h / 2);
+    chartCtx.restore();
+    return;
+  }
+
+  const maxTotal = Math.max(1, ..._tokenSeries.map(p => p.hit + p.miss));
+  const scaleY = value => baseY - (value / maxTotal) * plotH;
+  const xAt = idx => padL + (_tokenSeries.length === 1 ? plotW : (plotW * idx) / (_tokenSeries.length - 1));
+  const missPoints = _tokenSeries.map((p, idx) => ({ x: xAt(idx), y: scaleY(p.miss) }));
+  const totalPoints = _tokenSeries.map((p, idx) => ({ x: xAt(idx), y: scaleY(p.hit + p.miss) }));
+
+  const missArea = chartCtx.createLinearGradient(0, padT, 0, baseY);
+  missArea.addColorStop(0, 'rgba(255,191,90,0.28)');
+  missArea.addColorStop(1, 'rgba(255,191,90,0.04)');
+  chartCtx.beginPath();
+  chartCtx.moveTo(missPoints[0].x, baseY);
+  missPoints.forEach(p => chartCtx.lineTo(p.x, p.y));
+  chartCtx.lineTo(missPoints[missPoints.length - 1].x, baseY);
+  chartCtx.closePath();
+  chartCtx.fillStyle = missArea;
+  chartCtx.fill();
+
+  const hitArea = chartCtx.createLinearGradient(0, padT, 0, baseY);
+  hitArea.addColorStop(0, 'rgba(56,213,255,0.30)');
+  hitArea.addColorStop(1, 'rgba(47,140,255,0.04)');
+  chartCtx.beginPath();
+  totalPoints.forEach((p, idx) => {
+    if (idx === 0) chartCtx.moveTo(p.x, p.y);
+    else chartCtx.lineTo(p.x, p.y);
+  });
+  for (let i = missPoints.length - 1; i >= 0; i--) chartCtx.lineTo(missPoints[i].x, missPoints[i].y);
+  chartCtx.closePath();
+  chartCtx.fillStyle = hitArea;
+  chartCtx.fill();
+
+  function strokeSeries(points, color, widthPx, glow) {
+    chartCtx.save();
+    chartCtx.beginPath();
+    points.forEach((p, idx) => {
+      if (idx === 0) chartCtx.moveTo(p.x, p.y);
+      else chartCtx.lineTo(p.x, p.y);
+    });
+    chartCtx.strokeStyle = color;
+    chartCtx.lineWidth = widthPx;
+    chartCtx.lineJoin = 'round';
+    chartCtx.lineCap = 'round';
+    chartCtx.shadowColor = color;
+    chartCtx.shadowBlur = glow;
+    chartCtx.stroke();
+    chartCtx.restore();
+  }
+
+  strokeSeries(missPoints, 'rgba(255,191,90,0.92)', 1.6, 8);
+  strokeSeries(totalPoints, 'rgba(56,213,255,0.96)', 1.8, 10);
+
+  chartCtx.fillStyle = 'rgba(127,155,181,0.82)';
+  chartCtx.font = '10px JetBrains Mono, IBM Plex Mono, monospace';
+  chartCtx.textAlign = 'left';
+  chartCtx.fillText('0', 6, baseY);
+  chartCtx.fillText(formatTokenCount(maxTotal), 6, padT + 4);
+  chartCtx.textAlign = 'right';
+  chartCtx.fillStyle = 'rgba(191,234,255,0.82)';
+  chartCtx.fillText('HIT', w - 48, 14);
+  chartCtx.fillStyle = 'rgba(255,191,90,0.88)';
+  chartCtx.fillText('MISS', w - 10, 14);
+  chartCtx.restore();
+}
+
+window.addEventListener('resize', resizeTokenChart);
+requestAnimationFrame(() => requestAnimationFrame(resizeTokenChart));
+
 // ============== State ==============
 const API = '/api';
 function $id(id) { return document.getElementById(id); }
@@ -1100,6 +1362,7 @@ const msg = JSON.parse(e.data);
 // ── 实时推送的单条日志（兼容旧 agent_log 缓冲） ──
 if (msg.type === 'agent_log' && msg.data) {
     const l = msg.data;
+    ingestTokenUsageRecord(l);
     if (!_serverTimeOffset && l.timestamp) {
         _serverTimeOffset = new Date(l.timestamp).getTime() - Date.now();
     }
@@ -1194,6 +1457,7 @@ if (msg.type === 'status' || msg.type === 'all') {
     // ── 新 log_entries（v2 统一 schema，优先使用） ──
     const logEntries = msg.data.log_entries || [];
     logEntries.forEach(e => {
+        ingestTokenUsageRecord(e);
         const norm = normalizeLogRecord(e, 'ws_log_entries');
         if (norm) { logBuffer.push(norm); if (logBuffer.length > 500) logBuffer.shift(); }
     });
@@ -1278,6 +1542,7 @@ async function runSelectedScene() {
 
 	// 清空上轮仿真的前端日志和状态
 	clearLogs();
+  resetTokenChart();
 	_lastLogCount = 0;
   _simState = new Map();
   _trajectories.length = 0;
@@ -1332,6 +1597,7 @@ function togglePanel(id) { document.getElementById(id).classList.toggle('minimiz
 // ============== Start ==============
 logEntry('system', '控制台就绪');
 loadSceneList();
+loadTokenHistory();
 // 恢复上次加载的场景面板
 const lastScene = sessionStorage.getItem('lastScenePanel');
 if (lastScene) loadScenePanel(lastScene);

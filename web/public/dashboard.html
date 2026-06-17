@@ -8,6 +8,7 @@
 </head>
 <body>
 <div class="app cockpit-shell">
+<div class="main-workspace">
 <div class="canvas-panel" id="canvas-panel">
 <div class="scene-panel" id="scene-panel">
   <div class="scene-header">
@@ -59,6 +60,24 @@
 </div>
 </div>
 </div>
-<script src="/static/dashboard.js?v=6"></script>
+<div class="token-chart-panel">
+  <div class="token-chart-header">
+    <div>
+      <span class="token-chart-kicker">TOKEN CACHE MONITOR</span>
+      <span class="token-chart-title">HIT / MISS STACKED TREND</span>
+    </div>
+    <div class="token-stats">
+      <div class="token-stat"><span>HIT</span><strong id="token-hit-total">0</strong></div>
+      <div class="token-stat miss"><span>MISS</span><strong id="token-miss-total">0</strong></div>
+      <div class="token-stat"><span>RATIO</span><strong id="token-hit-ratio">0%</strong></div>
+      <div class="token-stat wide"><span>LAST</span><strong id="token-last-call">--</strong></div>
+    </div>
+  </div>
+  <div class="token-chart-canvas-wrap">
+    <canvas id="token-chart"></canvas>
+  </div>
+</div>
+</div>
+<script src="/static/dashboard.js?v=7"></script>
 </body>
 </html>
