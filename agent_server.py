@@ -327,10 +327,18 @@ def _format_known_agents(known: list) -> str:
 def _format_skills(skills_list: list) -> str:
     if not skills_list:
         return ""
-    return "\n## 可用技能（使用 execute_skill 动作调用）\n" + "\n".join(
-        f"  - execute_skill: {s.get('skill_name', s.get('name', '?'))} — {s.get('description', s.get('desc', ''))}"
-        for s in skills_list
-    ) + "\n"
+    lines = ["\n## 可用技能（使用 execute_skill 调用，填写 skill_name + params）"]
+    for s in skills_list:
+        name = s.get('skill_name', s.get('name', '?'))
+        desc = s.get('description', s.get('desc', ''))
+        req = s.get('params', [])
+        opt = s.get('optional_params', [])
+        parts = []
+        if req: parts.append(f"必填: {', '.join(req)}")
+        if opt: parts.append(f"可选: {', '.join(opt)}")
+        param_str = f" [{'; '.join(parts)}]" if parts else ""
+        lines.append(f"  - {name}{param_str}: {desc[:100]}")
+    return "\n".join(lines) + "\n"
 
 
 def _partition_inbox_messages(inbox_msgs: list):

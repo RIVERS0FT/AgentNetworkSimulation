@@ -1101,7 +1101,13 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
             spec.loader.exec_module(mod)
             _active_skills_module = mod
             for name, func in mod.SkillRegistry._skills.items():
-                skills_info.append({"name": name, "desc": (func.__doc__ or "").strip()})
+                schema = getattr(mod.SkillRegistry, '_params', {}).get(name, {})
+                skills_info.append({
+                    "name": name,
+                    "desc": (func.__doc__ or "").strip(),
+                    "params": schema.get("required", []),
+                    "optional_params": schema.get("optional", []),
+                })
         except Exception:
             _active_skills_module = None
 

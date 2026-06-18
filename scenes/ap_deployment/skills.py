@@ -141,14 +141,20 @@ def _is_in_interference(px, py):
 # ============================================================
 class SkillRegistry:
     _skills = {}
+    _params = {}  # {name: {required: [...], optional: [...]}}
     @classmethod
-    def register(cls, name, fn): cls._skills[name] = fn
+    def register(cls, name, fn, params=None):
+        cls._skills[name] = fn
+        if params: cls._params[name] = params
     @classmethod
     def execute(cls, name, **kwargs):
         if name not in cls._skills: return {"status":"error","result":None,"data":{"error":f"'{name}' not found"}}
         return cls._skills[name](**kwargs)
     @classmethod
     def list_skills(cls): return list(cls._skills.keys())
+    @classmethod
+    def get_param_schema(cls, name):
+        return cls._params.get(name, {})
 
 
 # ============================================================
@@ -157,7 +163,7 @@ class SkillRegistry:
 
 def plan_next_ap(**kwargs):
     """
-    PLANNER调用AI获取下一个AP的候选位置（每次只返回1个最优位置）。
+    PLANNER调用AI获取下一个AP的候选位置（每次只返回1个最优位置）。参数: round(int)
     两阶段策略：
       Stage A — 7×5 细网格 + 扩大微调半径，过滤干扰区内候选，safe_dist(35%) + gap_dist(65%)
       Stage B — 候选不足时全园区随机撒点，保证覆盖下半区
@@ -261,12 +267,13 @@ def plan_next_ap(**kwargs):
 
     return {"status":"success","result":"ap_proposed",
             "data":best}
-SkillRegistry.register("plan_next_ap", plan_next_ap)
+SkillRegistry.register("plan_next_ap", plan_next_ap, {"required": [], "optional": ["round"]})
 
 
 def confirm_ap(**kwargs):
     """
-    PLANNER确认AP位置。visual_effect: "SOLIDIFY" → 前端虚线变实线
+    PLANNER确认AP位置。参数: ap_id(str, 要确认的AP编号如AP_1), round(int)
+    visual_effect: "SOLIDIFY" → 前端虚线变实线
     """
     global pending_action
     round_num = kwargs.get("round", _current_round)
@@ -290,7 +297,7 @@ def confirm_ap(**kwargs):
 
     return {"status":"success","result":"confirmed",
             "data":{"ap_id":ap_id,"position":{"x":ap["x"],"y":ap["y"]},"round":round_num}}
-SkillRegistry.register("confirm_ap", confirm_ap)
+SkillRegistry.register("confirm_ap", confirm_ap, {"required": ["ap_id"], "optional": ["round"]})
 
 
 def reject_ap(**kwargs):
