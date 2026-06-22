@@ -6,10 +6,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 
 COPY agent_network/ /app/agent_network/
-COPY message_bus.py /app/
+COPY services/message_bus.py /app/services/
 
 ENV MESSAGE_BUS_PORT=9000
 
 EXPOSE 9000
 
-CMD ["python", "message_bus.py"]
+CMD ["python", "services/message_bus.py"]

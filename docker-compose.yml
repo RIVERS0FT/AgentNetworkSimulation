@@ -1,7 +1,7 @@
 # 启动: docker compose up -d --build
 
 x-brain: &brain
-  build: { context: ., dockerfile: Dockerfile }
+  build: { context: ., dockerfile: docker/Dockerfile }
   cap_add: [NET_RAW, NET_ADMIN]
   environment:
     TZ: Asia/Shanghai
@@ -22,12 +22,12 @@ x-brain: &brain
     AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
     AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
     AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
-  volumes: ["./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
+  volumes: ["./services/agent_server.py:/app/services/agent_server.py", "./agent_network:/app/agent_network"]
   restart: unless-stopped
   networks: [an]
 
 x-claude: &claude
-  build: { context: ., dockerfile: Dockerfile.claude }
+  build: { context: ., dockerfile: docker/Dockerfile.claude }
   cap_add: [NET_RAW, NET_ADMIN]
   environment:
     TZ: Asia/Shanghai
@@ -48,12 +48,12 @@ x-claude: &claude
     AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
     AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
     AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
-  volumes: ["./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
+  volumes: ["./services/agent_server.py:/app/services/agent_server.py", "./agent_network:/app/agent_network"]
   restart: unless-stopped
   networks: [an]
 
 x-openclaw: &openclaw
-  build: { context: ., dockerfile: Dockerfile.openclaw }
+  build: { context: ., dockerfile: docker/Dockerfile.openclaw }
   cap_add: [NET_RAW, NET_ADMIN]
   environment:
     TZ: Asia/Shanghai
@@ -74,13 +74,13 @@ x-openclaw: &openclaw
     AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
     AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
     AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
-  volumes: ["./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
+  volumes: ["./services/agent_server.py:/app/services/agent_server.py", "./agent_network:/app/agent_network"]
   restart: unless-stopped
   networks: [an]
 
 services:
   bus:
-    build: { context: ., dockerfile: Dockerfile.message-bus }
+    build: { context: ., dockerfile: docker/Dockerfile.message-bus }
     container_name: bus
     user: "1000:1000"
     ports: ["9000:9000"]
@@ -90,12 +90,12 @@ services:
     networks: [an]
 
   srv:
-    build: { context: ., dockerfile: Dockerfile.server }
+    build: { context: ., dockerfile: docker/Dockerfile.server }
     container_name: srv
     user: "1000:110"
     ports: ["8000:8000"]
-    command: ["python", "server.py", "--host", "0.0.0.0"]
-    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "./data/logs:/app/data/logs", "./web/public:/app/web/public", "./scenes:/app/scenes", "./server.py:/app/server.py", "./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
+    command: ["python", "services/server.py", "--host", "0.0.0.0"]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "./data/logs:/app/data/logs", "./web/public:/app/web/public", "./scenes:/app/scenes", "./services/server.py:/app/services/server.py", "./services/agent_server.py:/app/services/agent_server.py", "./agent_network:/app/agent_network"]
     environment:
       TZ: Asia/Shanghai
       SERVER_PORT: "8000"

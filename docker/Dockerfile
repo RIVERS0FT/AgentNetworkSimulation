@@ -7,8 +7,8 @@ RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r req
 RUN apt-get update && apt-get install -y --no-install-recommends tcpdump && rm -rf /var/lib/apt/lists/*
 
 COPY agent_network/ /app/agent_network/
-COPY agent_server.py /app/
-COPY message_bus.py /app/
+COPY services/agent_server.py /app/services/
+COPY services/message_bus.py /app/services/
 
 # 注意: 使用 docker-compose 部署时，通过 environment 覆盖为 service name:
 #   MESSAGE_BUS_URL=http://message-bus:9000
@@ -23,4 +23,4 @@ ENV SERVER_URL="http://localhost:8000"
 
 EXPOSE 8000
 
-CMD ["python", "agent_server.py"]
+CMD ["python", "services/agent_server.py"]

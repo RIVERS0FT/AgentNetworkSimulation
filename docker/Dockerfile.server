@@ -6,7 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 
 COPY agent_network/ /app/agent_network/
-COPY server.py /app/
+COPY services/server.py /app/services/
 COPY web/ /app/web/
 COPY scenes/ /app/scenes/
 
@@ -15,4 +15,4 @@ ENV MESSAGE_BUS_URL=http://localhost:9000
 
 EXPOSE 8000
 
-CMD ["python", "server.py", "--host", "0.0.0.0"]
+CMD ["python", "services/server.py", "--host", "0.0.0.0"]

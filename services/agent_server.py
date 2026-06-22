@@ -21,7 +21,7 @@ Agent 容器运行时 — 统一 HTTP 服务 (Brain / OpenCLAW / Claude Code)
 import os, sys, json, time, asyncio, re, subprocess
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
