@@ -190,7 +190,6 @@ class PacketRecorder:
 
     @classmethod
     def get_wireshark_view(cls, agent_id: str = None, limit: int = 100) -> List[str]:
-        records = cls()
         inst = cls()
         with cls._lock:
             all_records = list(inst._records)
@@ -213,18 +212,3 @@ class PacketRecorder:
         inst = cls()
         with cls._lock:
             inst._init()
-
-
-class EventBus:
-    def __init__(self, name="default"):
-        self.name = name
-        self._subscribers: Dict[str, List] = {}
-    def subscribe(self, event: str, callback):
-        self._subscribers.setdefault(event, []).append(callback)
-    def publish(self, event: str, data: Dict = None) -> int:
-        count = 0
-        for cb in self._subscribers.get(event, []):
-            try: cb(data); count += 1
-            except Exception: pass
-        return count
-    def reset(self): self._subscribers.clear()

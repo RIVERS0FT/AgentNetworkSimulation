@@ -54,11 +54,12 @@
 
 import json
 import os
+import sys
 import time
 import threading
 from enum import Enum
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, IO
 from collections import deque
 
 
@@ -225,6 +226,7 @@ class SimulationLogger:
         self._session_behavior_path = ""  # behavior.jsonl
         self._session_active = False
         self._file_lock = threading.Lock()
+        self._file_handles: Dict[str, IO] = {}  # 常驻文件句柄池
         self._init_file()
         self._initialized = True
 
@@ -238,11 +240,13 @@ class SimulationLogger:
         os.makedirs(self._log_dir, exist_ok=True)
 
     def _next_seq(self) -> int:
-        self._seq += 1
-        return self._seq
+        with self._lock:
+            self._seq += 1
+            return self._seq
 
     def start_session(self, scene_name: str):
         """开始新的仿真会话 — 创建 {场景名}_{时间戳}/ 文件夹"""
+        self._close_file_handles()  # 关闭上一轮句柄
         ts = datetime.now(_LOG_TZ).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = scene_name.replace("/", "_").replace("\\", "_").replace(" ", "_")
         self._session_id = f"{safe_name}_{ts}"
@@ -250,7 +254,8 @@ class SimulationLogger:
         os.makedirs(self._session_dir, exist_ok=True)
         self._set_session_paths()
         self._session_active = True
-        self._seq = 0
+        with self._lock:
+            self._seq = 0
         # 写入 session 元信息
         record = _base_record("INFO", "backend", "srv", "lifecycle", "session_start",
                               f"Session started: {scene_name}")
@@ -274,15 +279,34 @@ class SimulationLogger:
         self._session_network_path = os.path.join(self._session_dir, "network.jsonl")
         self._session_behavior_path = os.path.join(self._session_dir, "behavior.jsonl")
 
+    def _get_file_handle(self, filepath: str) -> IO:
+        """获取或创建常驻文件句柄"""
+        fh = self._file_handles.get(filepath)
+        if fh is None or fh.closed:
+            os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+            fh = open(filepath, "a", encoding="utf-8")
+            self._file_handles[filepath] = fh
+        return fh
+
+    def _close_file_handles(self):
+        """关闭所有常驻文件句柄"""
+        for fh in self._file_handles.values():
+            try:
+                fh.close()
+            except Exception:
+                pass
+        self._file_handles.clear()
+
     def _append_file(self, filepath: str, entry: Dict):
         if not filepath:
             return
         try:
             with self._file_lock:
-                with open(filepath, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
+                fh = self._get_file_handle(filepath)
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                fh.flush()
+        except Exception as e:
+            print(f"[Logger] write failed {filepath}: {e}", file=sys.stderr)
 
     def _write_file(self, record: Dict):
         """按 category 路由写入文件"""
@@ -565,13 +589,14 @@ class SimulationLogger:
         return sessions
 
     def reset(self):
+        self._close_file_handles()
         with self._lock:
             self._entries.clear()
             self._stats = {
                 "total": 0, "by_level": {}, "by_event": {}, "by_agent": {},
                 "start_time": current_log_timestamp(timespec="seconds"),
             }
-        self._seq = 0
+            self._seq = 0
         self._session_id = ""
         return self
 

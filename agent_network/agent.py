@@ -12,6 +12,7 @@ Agent SDK — 对应架构文档 第三节：Agent SDK & 第六节：Agent管理
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from dataclasses import dataclass
+import threading
 import uuid
 import json
 
@@ -367,6 +368,7 @@ class AgentRegistry:
     """
     _instance: Optional["AgentRegistry"] = None
     _agents: Dict[str, Agent] = {}
+    _lock = threading.Lock()
 
     def __new__(cls):
         if cls._instance is None:
@@ -376,17 +378,20 @@ class AgentRegistry:
     @classmethod
     def register(cls, agent: Agent):
         """注册 Agent"""
-        cls._agents[agent.agent_id] = agent
+        with cls._lock:
+            cls._agents[agent.agent_id] = agent
 
     @classmethod
     def unregister(cls, agent_id: str):
         """注销 Agent"""
-        cls._agents.pop(agent_id, None)
+        with cls._lock:
+            cls._agents.pop(agent_id, None)
 
     @classmethod
     def get(cls, agent_id: str) -> Optional[Agent]:
         """按 ID 获取 Agent"""
-        return cls._agents.get(agent_id)
+        with cls._lock:
+            return cls._agents.get(agent_id)
 
     @classmethod
     def find_agent(
@@ -403,8 +408,10 @@ class AgentRegistry:
         - find_agent(skill="planning")
         - find_agent(tag="blue_force")
         """
+        with cls._lock:
+            agents_snapshot = list(cls._agents.values())
         results = []
-        for agent in cls._agents.values():
+        for agent in agents_snapshot:
             if role and agent.role != role:
                 continue
             if skill and skill not in agent.skills:
@@ -422,11 +429,13 @@ class AgentRegistry:
         对应架构文档：find_best_agent(skill="analysis")
         返回指定 skill 评分最高的 Agent
         """
+        with cls._lock:
+            agents_snapshot = list(cls._agents.values())
         # 优先查找 skills 列表中包含该 skill 的 agent
-        candidates = [a for a in cls._agents.values() if skill in a.skills]
+        candidates = [a for a in agents_snapshot if skill in a.skills]
         if not candidates:
             # 回退：查找 capability_scores 中有该 skill 的
-            candidates = [a for a in cls._agents.values() if skill in a.capability_scores]
+            candidates = [a for a in agents_snapshot if skill in a.capability_scores]
         if not candidates:
             return None
         return max(candidates, key=lambda a: a.capability_scores.get(skill, 0))
@@ -434,7 +443,8 @@ class AgentRegistry:
     @classmethod
     def list_all(cls) -> List[Agent]:
         """列出所有 Agent"""
-        return list(cls._agents.values())
+        with cls._lock:
+            return list(cls._agents.values())
 
     @classmethod
     def get_stats(cls) -> Dict[str, Any]:
@@ -453,5 +463,6 @@ class AgentRegistry:
 
     @classmethod
     def reset(cls):
-        """重置注册中心（测试用）"""
-        cls._agents.clear()
+        """重置注册中心"""
+        with cls._lock:
+            cls._agents.clear()

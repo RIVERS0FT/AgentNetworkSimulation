@@ -198,6 +198,11 @@ def append_token_usage_record(record: Dict[str, Any]) -> bool:
         if session_id and token_usage_state.get("session_id") != session_id:
             token_usage_state["session_id"] = session_id
         token_usage_state["seen_keys"].add(key)
+        # 防止 seen_keys 无限增长（长时间仿真内存泄漏）
+        if len(token_usage_state["seen_keys"]) > 5000:
+            _iter = iter(token_usage_state["seen_keys"])
+            to_remove = [next(_iter) for _ in range(2500)]
+            token_usage_state["seen_keys"].difference_update(to_remove)
         totals = token_usage_state["totals"]
         totals["hit"] += delta["hit"]
         totals["miss"] += delta["miss"]
