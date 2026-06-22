@@ -121,14 +121,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 # 静态文件挂载
-if os.path.isdir("dashboard/static"):
-    app.mount("/static", StaticFiles(directory="dashboard/static"), name="static")
-if os.path.isdir("dashboard/components"):
-    app.mount("/components", StaticFiles(directory="dashboard/components"), name="components")
+if os.path.isdir("web/public"):
+    app.mount("/static", StaticFiles(directory="web/public"), name="static")
+if os.path.isdir("web/src"):
+    app.mount("/src", StaticFiles(directory="web/src"), name="src")
 
 @app.get("/", response_class=FileResponse)
 async def serve_dashboard():
-    return FileResponse("dashboard/index.html")
+    return FileResponse("web/public/dashboard.html")
 
 if __name__ == "__main__":
     import uvicorn
