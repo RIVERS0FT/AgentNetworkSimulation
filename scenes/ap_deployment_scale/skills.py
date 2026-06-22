@@ -448,6 +448,186 @@ SkillRegistry.register("archive_solution", archive_solution)
 
 
 # ============================================================
+# get_dynamic_behavior — 平台每轮调用，基于当前状态返回动态行为剖面
+# ============================================================
+def get_dynamic_behavior(round_num=0, agent_distribution=None):
+    """
+    平台每轮启动时调用此函数，基于当前仿真状态返回各分类的动态行为权重。
+    返回结构: { category_id: { actions_weight, traffic_mix, avg_payload_kb } }
+    平台将返回值与 scale_config.json 的静态 behavior_profile 合并（动态优先）。
+    """
+    # 采样当前状态
+    latest_cov = coverage_reports[-1]["coverage_pct"] if coverage_reports else 0
+    latest_cost = cost_estimates[-1] if cost_estimates else None
+    ap_count = len(ap_placements)
+    budget_remaining = latest_cost["budget_remaining"] if latest_cost else BUDGET
+    budget_exhausted = budget_remaining < AP_UNIT_COST
+
+    # 阶段判定（基于状态而非固定轮次）
+    if latest_cov >= TARGET_COVERAGE:
+        phase = "finalize"       # 达标 → 验收归档
+    elif ap_count == 0:
+        phase = "bootstrap"      # 冷启动 → 首次AI生成
+    elif budget_exhausted:
+        phase = "optimize_only"  # 没钱了 → 只能优化不能新增
+    elif latest_cov < 60:
+        phase = "aggressive"     # 覆盖严重不足 → 全力部署
+    else:
+        phase = "refine"         # 接近目标 → 精细调整
+
+    dynamic = {
+        "_meta": {
+            "phase": phase,
+            "coverage_pct": latest_cov,
+            "ap_count": ap_count,
+            "budget_remaining": budget_remaining,
+            "target": TARGET_COVERAGE,
+        },
+
+        "ap_planner": {
+            "actions_weight": {
+                "call_ai_optimizer": 0 if (phase == "finalize" or budget_exhausted)
+                                       else 0.6 if phase == "bootstrap"
+                                       else 0.5 if phase == "aggressive"
+                                       else 0.2,
+                "evaluate_cost":      0.1 if phase in ("bootstrap", "aggressive")
+                                       else 0.3 if phase == "refine"
+                                       else 0.1,
+                "plan_deployment":    0 if phase in ("bootstrap", "aggressive")
+                                       else 0.6 if phase == "finalize"
+                                       else 0.3,
+                "idle":               0.3 if phase == "bootstrap"
+                                       else 0.1,
+            },
+        },
+
+        "rf_engineer": {
+            "actions_weight": {
+                "simulate_coverage":    0.6 if phase == "bootstrap"
+                                         else 0.4 if phase == "aggressive"
+                                         else 0.5 if phase == "refine"
+                                         else 0.2,
+                "analyze_interference": 0.2 if phase in ("aggressive", "refine")
+                                         else 0.3,
+                "generate_heatmap":     0.2 if phase in ("refine", "finalize")
+                                         else 0.1,
+                "idle":                 0.1 if phase != "finalize" else 0.4,
+            },
+        },
+
+        "cost_analyst": {
+            "actions_weight": {
+                "evaluate_cost": 0.8 if budget_remaining < BUDGET * 0.3
+                                  else 0.6 if phase in ("refine", "aggressive")
+                                  else 0.3,
+                "idle":           0.2 if budget_remaining < BUDGET * 0.3
+                                  else 0.7,
+            },
+            "traffic_mix_override": {
+                "EAST_WEST": 0.50 if budget_remaining < BUDGET * 0.3 else 0.40,
+            },
+        },
+
+        "surveyor": {
+            "actions_weight": {
+                "check_feasibility": 0.5 if phase in ("aggressive", "refine") else 0.3,
+                "report_obstacles":  0.3 if phase == "refine" else 0.2,
+                "idle":               0.5 if phase == "finalize" else 0.2,
+            },
+        },
+
+        "architect": {
+            "actions_weight": {
+                "validate_topology": 0.6 if phase in ("aggressive", "refine")
+                                      else 0.3 if phase == "bootstrap"
+                                      else 0.1,
+                "idle":              0.4 if phase == "finalize" else 0.7,
+            },
+        },
+
+        "ai_assistant": {
+            "actions_weight": {
+                "optimize_ap_positions": 0   if phase == "finalize"
+                                          else 0.5 if phase in ("bootstrap", "aggressive")
+                                          else 0.3,
+                "simulate_signal":        0.3 if phase in ("aggressive", "refine")
+                                          else 0.5 if phase == "finalize"
+                                          else 0.2,
+                "suggest_improvements":   0.5 if phase == "refine"
+                                          else 0.3,
+                "idle":                   0.2,
+            },
+        },
+
+        "verifier": {
+            "actions_weight": {
+                "verify_coverage": 0.7 if phase in ("refine", "finalize") else 0.4,
+                "idle":            0.3 if phase in ("refine", "finalize") else 0.6,
+            },
+        },
+
+        "deployer": {
+            "actions_weight": {
+                "plan_deployment": 0 if phase in ("bootstrap", "aggressive")
+                                    else 0.7 if phase == "finalize"
+                                    else 0.4,
+                "schedule_tasks":  0 if phase in ("bootstrap", "aggressive")
+                                    else 0.3,
+                "idle":            1.0 if phase in ("bootstrap", "aggressive")
+                                    else 0.3,
+            },
+        },
+
+        "qa_engineer": {
+            "actions_weight": {
+                "final_inspection": 0.5 if phase == "refine"
+                                     else 0.8 if phase == "finalize"
+                                     else 0.1,
+                "acceptance_test":  0.1 if phase != "finalize"
+                                     else 0.7,
+                "idle":             0.8 if phase in ("bootstrap", "aggressive")
+                                     else 0.2,
+            },
+        },
+
+        "documenter": {
+            "actions_weight": {
+                "record_decision":  0.5 if phase != "bootstrap" else 0.2,
+                "archive_solution": 0   if phase != "finalize"
+                                     else 0.8,
+                "idle":             0.5 if phase == "bootstrap" else 0.2,
+            },
+        },
+    }
+
+    # 全局流量调整：覆盖率提升后东西向报告流量递减
+    if latest_cov > 80:
+        ew_reduction = (latest_cov - 80) / 20  # 0→1
+        for cat_id in dynamic:
+            if cat_id == "_meta":
+                continue
+            if "traffic_mix_override" not in dynamic[cat_id]:
+                dynamic[cat_id]["traffic_mix_override"] = {}
+            ov = dynamic[cat_id]["traffic_mix_override"]
+            static_mix = {  # fallback from scale_config
+                "ap_planner": {"EAST_WEST": 0.60},
+                "rf_engineer": {"EAST_WEST": 0.55},
+                "cost_analyst": {"EAST_WEST": 0.40},
+                "surveyor": {"EAST_WEST": 0.45},
+                "architect": {"EAST_WEST": 0.50},
+                "verifier": {"EAST_WEST": 0.40},
+                "deployer": {"EAST_WEST": 0.50},
+                "qa_engineer": {"EAST_WEST": 0.35},
+                "documenter": {"EAST_WEST": 0.30},
+            }.get(cat_id, {}).get("EAST_WEST", 0.40)
+            ov["EAST_WEST"] = round(static_mix * (1 - ew_reduction * 0.5), 2)
+            ov["INTERNAL"] = round(1 - ov.get("NORTH_SOUTH", 0.15) - ov["EAST_WEST"], 2)
+
+    return dynamic
+SkillRegistry.register("get_dynamic_behavior", get_dynamic_behavior)
+
+
+# ============================================================
 # get_panel_state — 供 GET /api/scenes/{name}/state 调用
 # ============================================================
 def get_panel_state(**kwargs):
