@@ -35,6 +35,9 @@ x-openclaw-env: &openclaw-env
   <<: *common-llm-env
   TZ: Asia/Shanghai
   AGENT_BACKEND: openclaw
+  # OpenCLAW Agent containers are strict by default: missing SDK/gateway is a
+  # deployment error, not a signal to silently run direct LLM fallback.
+  AGENT_STRICT_BACKEND_SDK: ${AGENT_STRICT_BACKEND_SDK:-1}
   MESSAGE_BUS_URL: http://bus:9000
   SERVER_URL: http://srv:8000
   LOG_DOCKER_HTTP: "0"
@@ -65,7 +68,7 @@ x-openclaw: &openclaw
     context: .
     dockerfile: docker/Dockerfile.openclaw
     args:
-      OPENCLAW_GATEWAY_NPM_PACKAGE: ${OPENCLAW_GATEWAY_NPM_PACKAGE:-}
+      OPENCLAW_GATEWAY_NPM_PACKAGE: ${OPENCLAW_GATEWAY_NPM_PACKAGE:-openclaw@latest}
   cap_add: [NET_RAW, NET_ADMIN]
   environment: *openclaw-env
   volumes: ["./services/agent_server.py:/app/services/agent_server.py", "./agent_network:/app/agent_network", "./scenes:/app/scenes:ro"]
