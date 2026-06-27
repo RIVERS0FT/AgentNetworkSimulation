@@ -3,12 +3,13 @@ import logging
 import os
 import asyncio
 from .base import BackendAdapter, AgentContext, AgentRunResult
+from .direct_llm import run_direct_llm
 from agent_network.skill_md_loader import load_scene_skill_registry
 
 try:
-    from openclaw import OpenCLAWClient
+    from openclaw_sdk import OpenClawClient
 except ImportError:
-    OpenCLAWClient = None
+    OpenClawClient = None
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,17 @@ def _build_task_payload(agent_context: AgentContext) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _system_prompt(agent_context: AgentContext) -> str:
+    return (
+        f"You are {agent_context.agent_name} ({agent_context.agent_id}).\n"
+        f"Role: {agent_context.role}\n"
+        f"Core Goal: {agent_context.core_goal}\n"
+        f"Trace ID: {agent_context.trace_id}\n"
+        "Skill.md content is SOP/context loaded inside this Agent container. "
+        "Do not assume Skill names are executable tools; call only exposed backend tools."
+    )
+
+
 def _completed_event(agent_context: AgentContext, output_text: str, backend_name: str) -> dict:
     return {
         "event": "agent_run_completed",
@@ -108,6 +120,32 @@ def _completed_event(agent_context: AgentContext, output_text: str, backend_name
     }
 
 
+def _openclaw_agent_id(agent_context: AgentContext) -> str:
+    return (
+        os.environ.get("OPENCLAW_AGENT_ID")
+        or os.environ.get("OPENCLAW_DEFAULT_AGENT_ID")
+        or agent_context.agent_id
+    )
+
+
+def _openclaw_session_name(agent_context: AgentContext) -> str:
+    return (
+        os.environ.get("OPENCLAW_SESSION_NAME")
+        or agent_context.trace_id
+        or "main"
+    )
+
+
+def _extract_openclaw_text(result) -> str:
+    content = getattr(result, "content", None)
+    if content is not None:
+        return str(content)
+    data = getattr(result, "data", None)
+    if data is not None:
+        return str(data)
+    return str(result) if result is not None else ""
+
+
 class OpenCLAWAdapter(BackendAdapter):
     def run_agent_task(self, agent_context: AgentContext) -> AgentRunResult:
         if os.environ.get("MOCK_LLM") == "1":
@@ -126,61 +164,49 @@ class OpenCLAWAdapter(BackendAdapter):
                 error=None,
             )
 
-        if not OpenCLAWClient:
-            return AgentRunResult(
-                trace_id=agent_context.trace_id,
-                agent_id=agent_context.agent_id,
-                status="error",
-                final_message="",
-                error="openclaw SDK is not installed."
+        system_prompt = _system_prompt(agent_context)
+        current_task = _build_task_payload(agent_context)
+        prompt = f"{system_prompt}\n\nAgentNetwork task payload:\n{current_task}"
+
+        if not OpenClawClient:
+            if os.environ.get("AGENT_STRICT_BACKEND_SDK") == "1":
+                return AgentRunResult(
+                    trace_id=agent_context.trace_id,
+                    agent_id=agent_context.agent_id,
+                    status="error",
+                    final_message="",
+                    error="openclaw-sdk is not installed. Install pip package 'openclaw-sdk' and rebuild the OpenCLAW image.",
+                )
+            return run_direct_llm(
+                agent_context,
+                backend_name="openclaw-direct-llm",
+                system_prompt=system_prompt,
+                user_payload=current_task,
             )
 
-        scene_key = agent_context.scene_key or os.environ.get("AGENT_SCENE_KEY", "default")
-        skill_names = _skill_names(agent_context)
-        mcp_config = {
-            "mcpServers": {
-                "agent_tools": {
-                    "command": "python",
-                    "args": [
-                        "-m", "agent_network.mcp_server",
-                        "--scene", scene_key,
-                        "--agent-id", agent_context.agent_id,
-                        "--agent-name", agent_context.agent_name,
-                        "--allowed-skills", ",".join(skill_names),
-                        "--allowed-tools", ",".join(agent_context.allowed_tools),
-                    ],
-                }
-            }
-        }
-
-        system_prompt = (
-            f"You are {agent_context.agent_name} ({agent_context.agent_id}).\n"
-            f"Role: {agent_context.role}\n"
-            f"Core Goal: {agent_context.core_goal}\n"
-            f"Trace ID: {agent_context.trace_id}\n"
-            "Skill.md content is SOP/context loaded inside this Agent container. "
-            "Do not assume Skill names are executable tools; call only exposed MCP tools."
-        )
-        current_task = _build_task_payload(agent_context)
-
         try:
-            client = OpenCLAWClient(system_prompt=system_prompt, mcp_config=mcp_config)
+            async def _run():
+                async with OpenClawClient.connect() as client:
+                    agent = client.get_agent(
+                        _openclaw_agent_id(agent_context),
+                        session_name=_openclaw_session_name(agent_context),
+                    )
+                    return await agent.execute(prompt)
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            try:
+                response = loop.run_until_complete(_run())
+            finally:
+                loop.close()
 
-            async def _run():
-                return await client.chat(current_task)
-
-            response = loop.run_until_complete(_run())
-            loop.close()
-
-            output_text = str(response) if response else ""
+            output_text = _extract_openclaw_text(response)
             return AgentRunResult(
                 trace_id=agent_context.trace_id,
                 agent_id=agent_context.agent_id,
                 status="completed",
                 final_message=output_text,
-                application_events=[_completed_event(agent_context, output_text, "openclaw")],
+                application_events=[_completed_event(agent_context, output_text, "openclaw-sdk")],
                 tool_events=[],
                 state_changes=[],
                 outbound_messages=[],
@@ -194,5 +220,5 @@ class OpenCLAWAdapter(BackendAdapter):
                 agent_id=agent_context.agent_id,
                 status="error",
                 final_message="",
-                error=f"OpenCLAW SDK Error: {str(e)}"
+                error=f"OpenCLAW SDK Error: {str(e)}",
             )

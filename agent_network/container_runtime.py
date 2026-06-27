@@ -45,8 +45,10 @@ class ContainerRuntime:
     """Agent container manager and outer tick scheduler."""
 
     BACKEND_CONFIG = {
-        "claude-code": {"image": "agentnetwork-ag-c1", "cmd": "python3 agent_server.py", "prefix": "ag-c"},
-        "openclaw": {"image": "agentnetwork-ag-o1", "cmd": "python agent_server.py", "prefix": "ag-o"},
+        "claude-code": {"image": "agentnetwork-ag-c1", "cmd": "python3 services/agent_server.py", "prefix": "ag-c"},
+        # OpenCLAW agents are self-contained: the entrypoint script starts the
+        # local OpenCLAW gateway first, waits for it, then starts agent_server.py.
+        "openclaw": {"image": "agentnetwork-ag-o1", "cmd": "/app/start-openclaw-agent.sh", "prefix": "ag-o"},
     }
     DEFAULT_BACKEND = "openclaw"
     NETWORK_NAME = "an"
@@ -60,7 +62,7 @@ class ContainerRuntime:
         self._status_listener: Optional[Callable[[ContainerAgent, str, Optional[Dict[str, Any]]], None]] = None
         self._init_docker()
 
-    def set_status_listener(self, callback: Optional[Callable[[ContainerAgent, str, Optional[Dict[str, Any]]], None]]):
+    def set_status_listener(self, callback: Optional[Callable[[ContainerAgent, str, Optional[Dict[str, Any]]], None]):
         self._status_listener = callback
 
     def _set_status(self, ca: ContainerAgent, status: str, detail: Dict[str, Any] = None):
@@ -221,9 +223,15 @@ class ContainerRuntime:
             }
             for key in (
                 "LLM_API_KEY", "LLM_MODEL", "LLM_API_BASE", "LLM_PROVIDER",
+                "LLM_MAX_TOKENS", "LLM_TEMPERATURE", "LLM_TIMEOUT_SECONDS",
                 "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_BASE",
-                "OPENAI_API_KEY", "AGENT_MESSAGE_HISTORY_TURNS",
-                "AGENT_RECENT_HISTORY_TURNS",
+                "OPENAI_API_KEY", "AGENT_STRICT_BACKEND_SDK",
+                "AGENT_MESSAGE_HISTORY_TURNS", "AGENT_RECENT_HISTORY_TURNS",
+                "OPENCLAW_START_GATEWAY", "OPENCLAW_GATEWAY_HOST",
+                "OPENCLAW_GATEWAY_PORT", "OPENCLAW_GATEWAY_WS_URL",
+                "OPENCLAW_GATEWAY_CMD", "OPENCLAW_GATEWAY_READY_TIMEOUT",
+                "OPENCLAW_API_KEY", "OPENCLAW_OPENAI_BASE_URL",
+                "OPENCLAW_DEFAULT_AGENT_ID", "OPENCLAW_SESSION_NAME",
             ):
                 if os.environ.get(key):
                     env[key] = os.environ[key]

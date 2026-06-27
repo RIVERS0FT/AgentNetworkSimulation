@@ -5,7 +5,7 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
 
 # Python for the agent server wrapper + tcpdump for packet capture
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-requests tcpdump \
+    python3 python3-pip python3-venv python3-requests tcpdump \
     && rm -rf /var/lib/apt/lists/*
 
 # Claude Code CLI (npm 国内镜像)
@@ -14,17 +14,28 @@ RUN npm config set registry https://registry.npmmirror.com && \
 
 WORKDIR /app
 
-# Python dependencies for the agent server
-RUN pip install --no-cache-dir --break-system-packages fastapi uvicorn pydantic httpx requests
+# Python dependencies shared with srv/openclaw image. This includes FastAPI,
+# requests, PyYAML, anthropic, and mcp, which are required by agent_server.py
+# and agent_network.mcp_server in real backend mode.
+COPY requirements.txt .
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
+
+COPY vendor/python/ /tmp/vendor/python/
+RUN set -eux; \
+    if ls /tmp/vendor/python/claude_agent_sdk-*.whl >/dev/null 2>&1; then \
+        python3 -m pip install --no-cache-dir --break-system-packages /tmp/vendor/python/claude_agent_sdk-*.whl; \
+    fi
 
 COPY services/agent_server.py /app/services/
 COPY agent_network/ /app/agent_network/
+COPY scenes/ /app/scenes/
 
 # 注意: 使用 docker-compose 部署时，通过 environment 覆盖为 service name:
-#   MESSAGE_BUS_URL=http://message-bus:9000
-#   SERVER_URL=http://server:8000
+#   MESSAGE_BUS_URL=http://bus:9000
+#   SERVER_URL=http://srv:8000
 # host.docker.internal 仅在 Docker Desktop (Windows/Mac) 上可用，
 # Linux 请使用 docker-compose 或 --add-host 参数
+ENV PYTHONPATH="/app"
 ENV AGENT_ID="agent-001"
 ENV AGENT_ROLE="generic"
 ENV AGENT_NAME="Agent"

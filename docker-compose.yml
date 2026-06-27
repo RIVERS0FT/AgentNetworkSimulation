@@ -1,46 +1,56 @@
 # 启动: docker compose up -d --build
+# 默认使用真实 LLM。需要 0-token 演示时显式设置 MOCK_LLM=1。
+
+x-common-llm-env: &common-llm-env
+  MOCK_LLM: ${MOCK_LLM:-0}
+  LOG_LLM_API: ${LOG_LLM_API:-1}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+  LLM_API_BASE: ${LLM_API_BASE:-https://api.deepseek.com/v1}
+  OPENAI_API_BASE: ${OPENAI_API_BASE:-}
+  LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+  ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+  LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-2048}
+  LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+  LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
+  AGENT_STRICT_BACKEND_SDK: ${AGENT_STRICT_BACKEND_SDK:-0}
+  AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
+  AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
+  AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
+  AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
+  AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
 
 x-claude-env: &claude-env
+  <<: *common-llm-env
   TZ: Asia/Shanghai
-  MOCK_LLM: "1"
   AGENT_BACKEND: claude-code
   MESSAGE_BUS_URL: http://bus:9000
   SERVER_URL: http://srv:8000
   LOG_DOCKER_HTTP: "0"
   LOG_TRAFFIC: "0"
-  LOG_LLM_API: "1"
-  LLM_API_KEY: ${ANTHROPIC_API_KEY}
-  LLM_MODEL: deepseek-chat
-  LLM_API_BASE: https://api.deepseek.com/v1
-  LLM_PROVIDER: openai
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-  ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-  AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
-  AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
-  AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
-  AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
-  AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
 
 x-openclaw-env: &openclaw-env
+  <<: *common-llm-env
   TZ: Asia/Shanghai
-  MOCK_LLM: "1"
   AGENT_BACKEND: openclaw
   MESSAGE_BUS_URL: http://bus:9000
   SERVER_URL: http://srv:8000
   LOG_DOCKER_HTTP: "0"
   LOG_TRAFFIC: "0"
-  LOG_LLM_API: "1"
-  LLM_API_KEY: ${ANTHROPIC_API_KEY}
-  LLM_MODEL: deepseek-chat
-  LLM_API_BASE: https://api.deepseek.com/v1
-  LLM_PROVIDER: openai
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-  ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-  AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
-  AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
-  AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
-  AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
-  AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
+  # OpenCLAW self-contained mode: gateway and openclaw-sdk live in the same
+  # Agent container. The SDK connects to the local gateway by default.
+  OPENCLAW_START_GATEWAY: ${OPENCLAW_START_GATEWAY:-1}
+  OPENCLAW_GATEWAY_HOST: ${OPENCLAW_GATEWAY_HOST:-127.0.0.1}
+  OPENCLAW_GATEWAY_PORT: ${OPENCLAW_GATEWAY_PORT:-18789}
+  OPENCLAW_GATEWAY_WS_URL: ${OPENCLAW_GATEWAY_WS_URL:-ws://127.0.0.1:18789/gateway}
+  OPENCLAW_GATEWAY_CMD: ${OPENCLAW_GATEWAY_CMD:-}
+  OPENCLAW_GATEWAY_READY_TIMEOUT: ${OPENCLAW_GATEWAY_READY_TIMEOUT:-60}
+  OPENCLAW_API_KEY: ${OPENCLAW_API_KEY:-}
+  OPENCLAW_OPENAI_BASE_URL: ${OPENCLAW_OPENAI_BASE_URL:-}
+  OPENCLAW_DEFAULT_AGENT_ID: ${OPENCLAW_DEFAULT_AGENT_ID:-}
+  OPENCLAW_SESSION_NAME: ${OPENCLAW_SESSION_NAME:-}
 
 x-claude: &claude
   build: { context: ., dockerfile: docker/Dockerfile.claude }
@@ -51,7 +61,11 @@ x-claude: &claude
   networks: [an]
 
 x-openclaw: &openclaw
-  build: { context: ., dockerfile: docker/Dockerfile.openclaw }
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.openclaw
+    args:
+      OPENCLAW_GATEWAY_NPM_PACKAGE: ${OPENCLAW_GATEWAY_NPM_PACKAGE:-}
   cap_add: [NET_RAW, NET_ADMIN]
   environment: *openclaw-env
   volumes: ["./services/agent_server.py:/app/services/agent_server.py", "./agent_network:/app/agent_network", "./scenes:/app/scenes:ro"]
@@ -65,7 +79,13 @@ services:
     user: "1000:1000"
     ports: ["9000:9000"]
     volumes: ["./data/logs:/app/data/logs"]
-    environment: { TZ: "Asia/Shanghai", MESSAGE_BUS_PORT: "9000", SERVER_URL: "http://srv:8000", LOG_DOCKER_HTTP: "0", LOG_TRAFFIC: "0", LOG_LLM_API: "1" }
+    environment:
+      TZ: Asia/Shanghai
+      MESSAGE_BUS_PORT: "9000"
+      SERVER_URL: http://srv:8000
+      LOG_DOCKER_HTTP: "0"
+      LOG_TRAFFIC: "0"
+      LOG_LLM_API: ${LOG_LLM_API:-1}
     restart: unless-stopped
     networks: [an]
 
@@ -77,24 +97,12 @@ services:
     command: ["python", "services/server.py", "--host", "0.0.0.0"]
     volumes: ["/var/run/docker.sock:/var/run/docker.sock", "./data/logs:/app/data/logs", "./web/public:/app/web/public", "./scenes:/app/scenes", "./services/server.py:/app/services/server.py", "./services/agent_server.py:/app/services/agent_server.py", "./agent_network:/app/agent_network"]
     environment:
+      <<: *common-llm-env
       TZ: Asia/Shanghai
-      MOCK_LLM: "1"
       SERVER_PORT: "8000"
       MESSAGE_BUS_URL: http://bus:9000
       LOG_DOCKER_HTTP: "0"
       LOG_TRAFFIC: "0"
-      LOG_LLM_API: "1"
-      LLM_API_KEY: ${ANTHROPIC_API_KEY}
-      LLM_MODEL: deepseek-chat
-      LLM_API_BASE: https://api.deepseek.com/v1
-      LLM_PROVIDER: openai
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-      AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
-      AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
-      AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
-      AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
-      AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
     restart: unless-stopped
     networks: [an]
 
