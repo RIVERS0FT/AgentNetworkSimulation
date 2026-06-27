@@ -3,7 +3,6 @@ import logging
 import os
 import asyncio
 from .base import BackendAdapter, AgentContext, AgentRunResult
-from .direct_llm import run_direct_llm
 from agent_network.skill_md_loader import load_scene_skill_registry
 
 try:
@@ -169,23 +168,23 @@ class OpenCLAWAdapter(BackendAdapter):
         prompt = f"{system_prompt}\n\nAgentNetwork task payload:\n{current_task}"
 
         if not OpenClawClient:
-            if os.environ.get("AGENT_STRICT_BACKEND_SDK") == "1":
-                return AgentRunResult(
-                    trace_id=agent_context.trace_id,
-                    agent_id=agent_context.agent_id,
-                    status="error",
-                    final_message="",
-                    error="openclaw-sdk is not installed. Install pip package 'openclaw-sdk' and rebuild the OpenCLAW image.",
-                )
-            return run_direct_llm(
-                agent_context,
-                backend_name="openclaw-direct-llm",
-                system_prompt=system_prompt,
-                user_payload=current_task,
+            return AgentRunResult(
+                trace_id=agent_context.trace_id,
+                agent_id=agent_context.agent_id,
+                status="error",
+                final_message="",
+                error=(
+                    "openclaw-sdk is not installed or not importable. "
+                    "AGENT_BACKEND=openclaw never falls back to direct LLM. "
+                    "Install vendor/python/openclaw_sdk-*.whl and rebuild the OpenCLAW image, "
+                    "or set AGENT_BACKEND=direct_llm intentionally."
+                ),
             )
 
         try:
             async def _run():
+                gateway_url = os.environ.get("OPENCLAW_GATEWAY_WS_URL", "")
+                logger.info("Connecting to OpenCLAW gateway: %s", gateway_url or "SDK default")
                 async with OpenClawClient.connect() as client:
                     agent = client.get_agent(
                         _openclaw_agent_id(agent_context),
