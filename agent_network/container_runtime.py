@@ -290,6 +290,10 @@ class ContainerRuntime:
     def run_round(self, context: Dict = None) -> Dict:
         return {"results": self.run_all(context)}
 
+    def list_containers(self) -> List[Dict[str, Any]]:
+        """Return the scheduler's current Agent-to-container assignments."""
+        return [agent.to_dict() for agent in self.agents.values()]
+
     def run_all(self, context: Dict = None) -> List[Dict]:
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -342,6 +346,15 @@ class ContainerRuntime:
                 response = requests.post(f"{ca.url}/run", json=ctx, timeout=300)
                 response.raise_for_status()
                 result = response.json()
+                if result.get("status") == "error" or result.get("error"):
+                    error = result.get("error") or "agent adapter returned status=error"
+                    self._set_status(ca, "error", {
+                        "phase": "run:adapter",
+                        "error": error,
+                    })
+                    result.setdefault("agent_id", ca.agent_id)
+                    result["error"] = error
+                    return result
                 self._set_status(ca, "idle", {"phase": "run:done"})
                 return result
             except Exception as exc:

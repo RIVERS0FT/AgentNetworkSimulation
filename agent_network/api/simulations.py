@@ -284,6 +284,31 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
             results_log.append(round_result)
 
             results_list = round_result.get("results", [])
+            round_errors = []
+            for res in results_list:
+                error = res.get("error")
+                if not error:
+                    continue
+                agent_id = res.get("agent_id", "unknown")
+                round_errors.append({"agent_id": agent_id, "error": error})
+                logger.error(
+                    "agent_run_failed",
+                    f"Agent {agent_id} run failed: {error}",
+                    agent_id=agent_id,
+                    round=state.current_turn,
+                    error=error,
+                )
+
+            if results_list and len(round_errors) == len(results_list):
+                stop_reason = "all_agents_failed"
+                logger.error(
+                    "simulation_failed",
+                    "All Agent runs failed; simulation stopped",
+                    round=state.current_turn,
+                    errors=round_errors,
+                )
+                break
+
             meaningful_events = 0
             for res in results_list:
                 meaningful_events += len(res.get("outbound_messages", []))
@@ -320,7 +345,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
     actual_rounds = len(results_log)
     runtime_agent_count = len(runtime.agents)
 
-    logger.system(
+    (logger.error if stop_reason == "all_agents_failed" else logger.system)(
         "simulation_complete",
         f"仿真完成: {scene_def.scene_name} | {actual_rounds}轮 | {runtime_agent_count}/{len(scene_def.agents)} Agent | {stop_reason}",
         details={"scene": scene_def.scene_name, "rounds": actual_rounds, "agent_count": runtime_agent_count, "agent_defined": len(scene_def.agents), "stop_reason": stop_reason},
