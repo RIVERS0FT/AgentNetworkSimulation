@@ -2,6 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Parser only: srv never captures its own interface. Agent containers write the
+# PCAP files; srv uses tcpdump -r to expose structured analysis through the API.
+RUN apt-get update && apt-get install -y --no-install-recommends tcpdump \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

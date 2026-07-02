@@ -265,6 +265,11 @@ async def capture_start(request: Request):
         session_id=body.get("session_id", ""),
         pcap_dir=body.get("pcap_dir") or os.environ.get("PCAP_DIR", "/app/data/pcap"),
         interface=body.get("interface", "any"),
+        runtime_container=body.get("runtime_container") or AGENT_ID,
+        runtime_container_id=body.get("runtime_container_id", ""),
+        runtime_ip=body.get("runtime_ip", ""),
+        trace_id=body.get("trace_id", ""),
+        server_url=SERVER_URL,
     )
 
 

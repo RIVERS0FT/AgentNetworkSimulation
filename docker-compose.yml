@@ -4,6 +4,9 @@
 x-common-llm-env: &common-llm-env
   MOCK_LLM: ${MOCK_LLM:-0}
   LOG_FULL_PCAP: ${LOG_FULL_PCAP:-1}
+  # Default captures Agent runtime traffic only. Set to 1 for debugging srv
+  # orchestration, capture-control, and log-ingest traffic as well.
+  AGENT_CAPTURE_INCLUDE_CONTROL_PLANE: ${AGENT_CAPTURE_INCLUDE_CONTROL_PLANE:-0}
   PCAP_DIR: /app/data/pcap
   LLM_API_KEY: ${LLM_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}

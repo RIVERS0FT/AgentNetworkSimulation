@@ -47,22 +47,47 @@ def _get_runtime_with_status_listener():
     return runtime
 
 
-def _capture(created_cas: List[tuple], enabled: bool, requests_module, session_id: str = "") -> Dict[str, Any]:
+def _capture(
+    created_cas: List[tuple],
+    enabled: bool,
+    requests_module,
+    session_id: str = "",
+    trace_id: str = "",
+) -> Dict[str, Any]:
     ok = 0
     failed = 0
+    agents = []
     for ca, _ in created_cas:
         if ca.status == "error" or not ca.url:
             continue
         try:
             if enabled:
-                resp = requests_module.post(f"{ca.url}/capture/start", json={"session_id": session_id, "pcap_dir": "/app/data/pcap", "interface": "any"}, timeout=2)
+                resp = requests_module.post(
+                    f"{ca.url}/capture/start",
+                    json={
+                        "agent_id": ca.agent_id,
+                        "runtime_container": ca.container_name,
+                        "runtime_container_id": ca.container_id,
+                        "runtime_ip": ca.container_ip,
+                        "session_id": session_id,
+                        "trace_id": trace_id,
+                        "pcap_dir": "/app/data/pcap",
+                        "interface": "any",
+                    },
+                    timeout=3,
+                )
             else:
-                resp = requests_module.post(f"{ca.url}/capture/stop", timeout=2)
-            ok += 1 if resp.status_code == 200 else 0
-            failed += 0 if resp.status_code == 200 else 1
-        except Exception:
+                resp = requests_module.post(f"{ca.url}/capture/stop", timeout=6)
+            body = resp.json() if resp.status_code == 200 else {"status": "http_error", "http_status": resp.status_code}
+            accepted = {"started", "running"} if enabled else {"stopped", "not_running"}
+            success = resp.status_code == 200 and body.get("status") in accepted
+            ok += int(success)
+            failed += int(not success)
+            agents.append({"agent_id": ca.agent_id, "container": ca.container_name, **body})
+        except Exception as exc:
             failed += 1
-    return {"success": ok, "failed": failed}
+            agents.append({"agent_id": ca.agent_id, "container": ca.container_name, "status": "error", "error": str(exc)})
+    return {"success": ok, "failed": failed, "agents": agents}
 
 
 def _layout(agents: List[Any]) -> Dict[str, tuple]:
@@ -134,12 +159,12 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
 
     logger.start_session(scene_def.scene_name)
     session_id = getattr(logger, "_session_id", "")
+    talk_id = f"talk-{uuid.uuid4().hex[:12]}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
     state.reset_token_usage_state(session_id)
     state.simulation_active = True
-    capture_start = _capture(created_cas, True, _req, session_id=session_id)
+    capture_start = _capture(created_cas, True, _req, session_id=session_id, trace_id=talk_id)
     logger.system("capture_control", "full capture started", details={"session_id": session_id, **capture_start})
 
-    talk_id = f"talk-{uuid.uuid4().hex[:12]}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
     max_rounds = state.termination_config.get("max_rounds", 20)
     stalemate_threshold = state.termination_config.get("stalemate_rounds", 3)
     results_log = []
@@ -162,6 +187,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
                 "comm_matrix": {k: list(v) for k, v in _comm_matrix.items()},
                 "agent_directory": agent_directory,
                 "talk": talk_id,
+                "trace_id": talk_id,
                 "network_mode": "direct",
             }
             round_result = runtime.run_round(context)
@@ -178,7 +204,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
             time.sleep(0.3)
     finally:
         state.simulation_active = False
-        capture_stop = _capture(created_cas, False, _req, session_id=session_id)
+        capture_stop = _capture(created_cas, False, _req, session_id=session_id, trace_id=talk_id)
         logger.system("capture_control", "full capture stopped", details={"session_id": session_id, **capture_stop})
         for ca, _ in created_cas:
             if ca.status != "error":

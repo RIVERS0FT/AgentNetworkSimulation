@@ -1,6 +1,7 @@
 """Agent container runtime for direct network mode."""
 
 import os
+import socket
 import time
 import requests
 from typing import Callable, Dict, List, Any, Optional, Set
@@ -14,6 +15,7 @@ class ContainerAgent:
     role: str
     container_id: str = ""
     container_name: str = ""
+    container_ip: str = ""
     port: int = 8000
     status: str = "idle"
     url: str = ""
@@ -85,14 +87,40 @@ class ContainerRuntime:
             return []
 
     def _dynamic_volumes(self) -> Dict[str, Dict[str, str]]:
+        """Return host-side sources for mounts inherited by dynamic Agents.
+
+        Docker interprets bind sources in the daemon host namespace. When srv
+        itself runs in Docker, paths such as /app/data/pcap are container paths
+        and cannot safely be reused as bind sources. Resolve their actual host
+        sources from srv's mount metadata instead.
+        """
         root = os.environ.get("AGENT_HOST_PROJECT_ROOT") or os.environ.get("HOST_PROJECT_ROOT") or os.getcwd()
-        volumes = {
-            os.path.join(root, "services", "agent_server.py"): {"bind": "/app/services/agent_server.py", "mode": "rw"},
-            os.path.join(root, "agent_network"): {"bind": "/app/agent_network", "mode": "rw"},
-            os.path.join(root, "scenes"): {"bind": "/app/scenes", "mode": "ro"},
+        destinations = {
+            "/app/services/agent_server.py": (os.path.join(root, "services", "agent_server.py"), "rw"),
+            "/app/agent_network": (os.path.join(root, "agent_network"), "rw"),
+            "/app/scenes": (os.path.join(root, "scenes"), "ro"),
+            "/app/data/pcap": (
+                os.environ.get("AGENT_PCAP_HOST_PATH") or os.path.join(root, "data", "pcap"),
+                "rw",
+            ),
         }
-        pcap_host = os.environ.get("AGENT_PCAP_HOST_PATH") or os.path.join(root, "data", "pcap")
-        volumes[pcap_host] = {"bind": "/app/data/pcap", "mode": "rw"}
+
+        mounted_sources = {}
+        if self._docker_client and os.path.exists("/.dockerenv"):
+            try:
+                current = self._docker_client.containers.get(socket.gethostname())
+                mounted_sources = {
+                    mount.get("Destination"): mount.get("Source")
+                    for mount in current.attrs.get("Mounts", [])
+                    if mount.get("Destination") and mount.get("Source")
+                }
+            except Exception:
+                mounted_sources = {}
+
+        volumes = {}
+        for destination, (fallback, mode) in destinations.items():
+            source = mounted_sources.get(destination) or fallback
+            volumes[source] = {"bind": destination, "mode": mode}
         return volumes
 
     def _get_or_create_container(self, backend: str) -> str:
@@ -122,6 +150,7 @@ class ContainerRuntime:
                 "SERVER_URL": os.environ.get("SERVER_URL", "http://srv:8000"),
                 "AGENT_COMM_MODE": "direct",
                 "LOG_FULL_PCAP": os.environ.get("LOG_FULL_PCAP", "1"),
+                "AGENT_CAPTURE_INCLUDE_CONTROL_PLANE": os.environ.get("AGENT_CAPTURE_INCLUDE_CONTROL_PLANE", "0"),
                 "PCAP_DIR": os.environ.get("PCAP_DIR", "/app/data/pcap"),
                 "MOCK_LLM": os.environ.get("MOCK_LLM", "0"),
             }
@@ -165,7 +194,28 @@ class ContainerRuntime:
             url = ""
             status = "error"
             assign_error = str(exc)
-        ca = ContainerAgent(agent_id=agent_id, name=name, role=role, container_name=container_name, port=self.INTERNAL_PORT, url=url, status=status)
+        container_id = ""
+        container_ip = ""
+        if container_name and self._docker_client:
+            try:
+                container = self._docker_client.containers.get(container_name)
+                container_id = container.id
+                networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+                network = networks.get(self.NETWORK_NAME) or next(iter(networks.values()), {})
+                container_ip = network.get("IPAddress", "")
+            except Exception:
+                pass
+        ca = ContainerAgent(
+            agent_id=agent_id,
+            name=name,
+            role=role,
+            container_id=container_id,
+            container_name=container_name,
+            container_ip=container_ip,
+            port=self.INTERNAL_PORT,
+            url=url,
+            status=status,
+        )
         ca._extra_meta = extra_meta
         ca._assign_error = assign_error
         self.agents[agent_id] = ca
