@@ -1,29 +1,36 @@
 from typing import Optional
 from fastapi import APIRouter, Query
-from fastapi.responses import PlainTextResponse
 
-from agent_network.event_bus import PacketRecorder
+from agent_network.real_packet_store import packet_stats, query_packets, wireshark_lines
 
 router = APIRouter()
 
+
 @router.get("/")
-async def query_packets(
+async def packets(
     agent_id: Optional[str] = Query(None),
-    direction: Optional[str] = Query(None),
-    limit: int = Query(default=100, le=500),
+    session_id: str = Query(default=""),
+    limit: int = Query(default=100, le=1000),
 ):
-    records = PacketRecorder.get_records(agent_id=agent_id, direction=direction, limit=limit)
+    records = query_packets(session_id=session_id, agent_id=agent_id, limit=limit)
     return {
-        "total": PacketRecorder.get_stats()["total_packets"],
+        "source": "real",
+        "capture_source": "tcpdump_pcap",
+        "total": len(records),
         "packets": records,
-        "stats": PacketRecorder.get_stats(),
+        "stats": packet_stats(session_id=session_id),
     }
 
+
 @router.get("/stats")
-async def packet_stats():
-    return PacketRecorder.get_stats()
+async def stats(session_id: str = Query(default="")):
+    return packet_stats(session_id=session_id)
+
 
 @router.get("/stream")
-async def packet_stream(agent_id: Optional[str] = Query(None), limit: int = 100):
-    lines = PacketRecorder.get_wireshark_view(agent_id=agent_id, limit=limit)
-    return PlainTextResponse("\n".join(lines), media_type="text/plain")
+async def stream(
+    agent_id: Optional[str] = Query(None),
+    session_id: str = Query(default=""),
+    limit: int = Query(default=100, le=1000),
+):
+    return {"lines": wireshark_lines(session_id=session_id, agent_id=agent_id, limit=limit)}
