@@ -25,7 +25,7 @@ service_state = {
 simulation_stop_requested = False
 simulation_active = False
 
-current_relationships: List[Dict[str, Any]] = []
+current_topology: List[Dict[str, Any]] = []
 current_turn = 0
 current_scene_name = ""
 current_max_rounds = 20
