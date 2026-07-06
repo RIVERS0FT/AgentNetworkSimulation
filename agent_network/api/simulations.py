@@ -210,7 +210,7 @@ def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
         AgentRegistry.register(agent)
         agent.start()
     _pending_scene_def = scene_def
-    return {"agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "relationships": scene_def.workflow, "scene_name": scene_def.scene_name, "network_mode": "direct", "seed": _pending_seed}
+    return {"agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "relationships": scene_def.topology, "scene_name": scene_def.scene_name, "network_mode": "direct", "seed": _pending_seed}
 
 
 def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]:
@@ -247,7 +247,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
 
     agent_directory = {ca.agent_id.lower(): ca.url for ca, _ in created_cas if ca.url}
     _comm_matrix.clear()
-    for edge in (scene_def.workflow or []):
+    for edge in (scene_def.topology or []):
         if edge.get("can_direct_chat", True) is False:
             continue
         src = edge.get("from", "").lower()
@@ -304,7 +304,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
             "assignment_errors": assign_errors,
             "quality": quality,
         }
-    network_emulation = _configure_network(created_cas, scene_def.workflow or [], _req)
+    network_emulation = _configure_network(created_cas, scene_def.topology or [], _req)
     logger.system("network_emulation", "Agent network profiles configured", details=network_emulation)
     if network_emulation["requested_profiles"] and network_emulation["failed"]:
         finalize_manifest(
@@ -433,7 +433,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
         error=run_error,
     )
     quality = audit_session(session_id, verify_hashes=True)
-    return {"status": "error" if run_error else "completed", "error": run_error, "simulation_name": scene_def.scene_name, "session_id": session_id, "seed": _pending_seed, "experiment_status": experiment_status, "quality": quality, "agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "packet_stats": packet_stats(session_id=session_id), "capture_health": capture_health, "rounds": len(results_log), "max_rounds": max_rounds, "stop_reason": stop_reason, "results_log": results_log, "relationships": scene_def.workflow, "comm_policy": {"mode": "direct", "matrix": {k: list(v) for k, v in _comm_matrix.items()}}, "agent_directory": agent_directory, "network_mode": "direct", "network_emulation": network_emulation, "network_clear": network_clear, "assign_errors": assign_errors}
+    return {"status": "error" if run_error else "completed", "error": run_error, "simulation_name": scene_def.scene_name, "session_id": session_id, "seed": _pending_seed, "experiment_status": experiment_status, "quality": quality, "agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "packet_stats": packet_stats(session_id=session_id), "capture_health": capture_health, "rounds": len(results_log), "max_rounds": max_rounds, "stop_reason": stop_reason, "results_log": results_log, "relationships": scene_def.topology, "comm_policy": {"mode": "direct", "matrix": {k: list(v) for k, v in _comm_matrix.items()}}, "agent_directory": agent_directory, "network_mode": "direct", "network_emulation": network_emulation, "network_clear": network_clear, "assign_errors": assign_errors}
 
 
 def _normalize_backend(scene_name: str, role_id: str, backend: str) -> str:
@@ -482,7 +482,7 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
             if weight is None:
                 weight = 70 if edge.get("paradigm") == "COLLABORATION" else -50
             relationships.append({"from": edge["source"].lower(), "to": edge["target"].lower(), "relation_type": edge.get("paradigm", ""), "value": weight, "can_direct_chat": edge.get("direct_chat", True), "bidirectional": edge.get("bidirectional", False), "channel_id": edge.get("channel_id", ""), "network": edge.get("network", {})})
-    return SceneDefinition(scene_name=title, description=bg, agents=agents, workflow=relationships, event_triggers=[])
+    return SceneDefinition(scene_name=title, description=bg, agents=agents, topology=relationships)
 
 
 @router.post("/simulations/setup")
