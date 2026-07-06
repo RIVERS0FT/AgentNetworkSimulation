@@ -15,14 +15,13 @@ from dataclasses import dataclass, field
 
 @dataclass
 class AgentDef:
-    """LLM 解析出的单个 Agent 定义"""
+    """场景配置中的单个 Agent 定义。"""
     agent_id: str
-    role: str
+    role: str  # 直接保存角色 identity 内容
     name: str
-    skills: List[str] = field(default_factory=list)
-    tags: List[str] = field(default_factory=list)
-    tasks: List[str] = field(default_factory=list)  # 该 agent 要执行的任务
-    extra_meta: Dict[str, Any] = field(default_factory=dict)  # script_json 扩展字段
+    skill_refs: List[str] = field(default_factory=list)
+    tasks: List[str] = field(default_factory=list)
+    extra_meta: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -37,28 +36,22 @@ class SceneDefinition:
 # Agent 角色模板库
 ROLE_TEMPLATES = {
     "scout": {
-        "skills": ["intelligence_collection", "reconnaissance"],
-        "tags": ["blue_force", "recon"],
+        "skill_refs": ["intelligence_collection", "reconnaissance"],
     },
     "commander": {
-        "skills": ["strategy_planning", "command", "analysis"],
-        "tags": ["blue_force", "command"],
+        "skill_refs": ["strategy_planning", "command", "analysis"],
     },
     "analyst": {
-        "skills": ["data_analysis", "intelligence_collection"],
-        "tags": ["blue_force", "analysis"],
+        "skill_refs": ["data_analysis", "intelligence_collection"],
     },
     "support": {
-        "skills": ["logistics", "report_generation"],
-        "tags": ["blue_force", "support"],
+        "skill_refs": ["logistics", "report_generation"],
     },
     "observer": {
-        "skills": ["reconnaissance", "monitoring"],
-        "tags": ["blue_force", "observer"],
+        "skill_refs": ["reconnaissance", "monitoring"],
     },
     "generic": {
-        "skills": ["intelligence_collection"],
-        "tags": ["blue_force"],
+        "skill_refs": ["intelligence_collection"],
     },
 }
 
@@ -66,21 +59,46 @@ SCENE_TEMPLATES = {
     "battlefield": SceneDefinition(
         scene_name="战场推演",
         agents=[
-            AgentDef("scout-001", "scout", "侦察兵", ["intelligence_collection", "reconnaissance"],
-                     ["blue_force", "recon"], ["搜索敌军位置并分析地形"]),
-            AgentDef("commander-001", "commander", "指挥官", ["strategy_planning", "command", "analysis"],
-                     ["blue_force", "command"], ["接收情报", "制定攻击方案并下达指令"]),
+            AgentDef(
+                "scout-001",
+                "负责战场侦察、情报收集与地形分析",
+                "侦察兵",
+                ["intelligence_collection", "reconnaissance"],
+                ["搜索敌军位置并分析地形"],
+            ),
+            AgentDef(
+                "commander-001",
+                "负责综合情报、制定作战方案并下达指令",
+                "指挥官",
+                ["strategy_planning", "command", "analysis"],
+                ["接收情报", "制定攻击方案并下达指令"],
+            ),
         ],
     ),
     "fleet": SceneDefinition(
         scene_name="编队推演",
         agents=[
-            AgentDef("scout-fleet-a", "scout", "侦察兵A", ["intelligence_collection", "reconnaissance"],
-                     ["blue_force", "recon", "alpha_team"], ["搜索敌军雷达信号"]),
-            AgentDef("scout-fleet-b", "scout", "侦察兵B", ["intelligence_collection", "reconnaissance"],
-                     ["blue_force", "recon", "bravo_team"], ["收集目标区域地形数据"]),
-            AgentDef("cmd-fleet", "commander", "指挥官", ["strategy_planning", "command", "analysis"],
-                     ["blue_force", "command"], ["综合分析多路情报，制定联合作战方案"]),
+            AgentDef(
+                "scout-fleet-a",
+                "负责搜索敌军雷达信号",
+                "侦察兵A",
+                ["intelligence_collection", "reconnaissance"],
+                ["搜索敌军雷达信号"],
+            ),
+            AgentDef(
+                "scout-fleet-b",
+                "负责收集目标区域地形数据",
+                "侦察兵B",
+                ["intelligence_collection", "reconnaissance"],
+                ["收集目标区域地形数据"],
+            ),
+            AgentDef(
+                "cmd-fleet",
+                "负责综合多路情报并制定联合作战方案",
+                "指挥官",
+                ["strategy_planning", "command", "analysis"],
+                ["综合分析多路情报，制定联合作战方案"],
+            ),
         ],
     ),
 }
