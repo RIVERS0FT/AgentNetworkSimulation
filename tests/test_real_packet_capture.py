@@ -36,7 +36,6 @@ def test_capture_uses_logical_agent_id_excludes_srv_and_writes_manifest(tmp_path
     _reset_capture_globals()
     process = _FakeCaptureProcess()
     commands = []
-    monkeypatch.setattr(full_packet_capture.time, "sleep", lambda _: None)
     monkeypatch.setattr(
         full_packet_capture.socket,
         "getaddrinfo",
@@ -55,26 +54,29 @@ def test_capture_uses_logical_agent_id_excludes_srv_and_writes_manifest(tmp_path
         trace_id="trace-1",
         pcap_dir=str(tmp_path),
         server_url="http://srv:8000",
+        network_profiles=[{"target_agent": "peer", "delay_ms": 20}],
     )
 
     assert result["status"] == "started"
-    assert result["pcap_path"].endswith("session-1/planner.pcap")
+    assert Path(result["pcap_path"]).parts[-2:] == ("session-1", "planner.pcap")
     assert result["runtime_container"] == "ag-c1"
     assert result["capture_filter"] == "not host 172.20.0.2"
     assert commands[0][-1] == "not host 172.20.0.2"
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     assert manifest["agent_id"] == "planner"
     assert manifest["trace_id"] == "trace-1"
+    assert manifest["network_profiles"][0]["delay_ms"] == 20
+    assert full_packet_capture.capture_status()["status"] == "running"
     Path(result["pcap_path"]).write_bytes(b"0" * 24)
 
     stopped = full_packet_capture.stop_full_capture()
     assert stopped["status"] == "stopped"
     assert stopped["returncode"] == 0
+    assert full_packet_capture.capture_status()["status"] == "not_running"
 
 
 def test_capture_reports_immediate_tcpdump_failure(tmp_path, monkeypatch):
     _reset_capture_globals()
-    monkeypatch.setattr(full_packet_capture.time, "sleep", lambda _: None)
     monkeypatch.setattr(full_packet_capture.subprocess, "Popen", lambda *_args, **_kwargs: _FakeCaptureProcess(1, "denied"))
 
     result = full_packet_capture.start_full_capture("planner", pcap_dir=str(tmp_path))
@@ -96,15 +98,8 @@ def test_packet_store_returns_structured_packets_and_binary_stats(tmp_path, monk
         encoding="utf-8",
     )
     monkeypatch.setattr(real_packet_store, "PCAP_ROOT", tmp_path)
-    monkeypatch.setattr(
-        real_packet_store.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            stdout="2026-07-02 12:00:00.000000 IP 172.20.0.3.50123 > 1.2.3.4.443: Flags [P.], length 120\n",
-            stderr="",
-            returncode=0,
-        ),
-    )
+    decoded = "2026-07-02 12:00:00.000000 IP 172.20.0.3.50123 > 1.2.3.4.443: Flags [P.], length 120"
+    monkeypatch.setattr(real_packet_store, "_read_lines", lambda *_args, **_kwargs: ([decoded], "", 1))
 
     packets = real_packet_store.query_packets(session_id="session-1")
     stats = real_packet_store.packet_stats(session_id="session-1")
@@ -120,6 +115,12 @@ def test_packet_store_returns_structured_packets_and_binary_stats(tmp_path, monk
     assert stats["captured_bytes"] == 4
     assert stats["wire_bytes"] == 8
     assert stats["files"][0]["valid_pcap"] is True
+
+    analysis = real_packet_store.analyze_packets(session_id="session-1")
+    assert analysis["by_protocol"] == {"TCP": 1}
+    assert analysis["by_direction"] == {"outbound": 1}
+    assert analysis["top_endpoints"] == [{"endpoint": "1.2.3.4:443", "packets": 1}]
+    assert analysis["top_flows"][0]["ip_payload_bytes"] == 120
 
 
 def test_simulation_capture_passes_logical_identity_and_checks_body_status():

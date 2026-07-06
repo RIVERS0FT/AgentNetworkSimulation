@@ -64,6 +64,7 @@ def _build_task_payload(agent_context: AgentContext) -> str:
         "agent_directory": agent_context.agent_directory,
         "comm_matrix": agent_context.comm_matrix,
         "network_mode": "direct",
+        "simulation_seed": agent_context.simulation_seed,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -105,6 +106,8 @@ def _claude_mcp_server(agent_context: AgentContext, skill_names: list[str]) -> d
             "--allowed-tools", ",".join(agent_context.allowed_tools),
             "--agent-directory-json", json.dumps(agent_context.agent_directory, ensure_ascii=False),
             "--comm-matrix-json", json.dumps(agent_context.comm_matrix, ensure_ascii=False),
+            "--trace-id", agent_context.trace_id,
+            "--simulation-seed", str(agent_context.simulation_seed + agent_context.tick),
         ],
     }
 
@@ -131,6 +134,95 @@ def _extract_text_from_message(message) -> list[str]:
         if isinstance(content, str) and content:
             parts.append(content)
     return parts
+
+
+def _bounded_value(value, max_chars: int = 64 * 1024):
+    """Keep SDK evidence serializable without allowing unbounded log records."""
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        encoded = str(value)
+    if len(encoded) <= max_chars:
+        try:
+            return json.loads(encoded)
+        except Exception:
+            return encoded
+    return {"truncated": True, "original_chars": len(encoded), "preview": encoded[:max_chars]}
+
+
+def _tool_events_from_message(message, agent_context: AgentContext) -> list[dict]:
+    """Extract backend tool intent/result blocks without coupling to SDK versions."""
+    events = []
+    for block in getattr(message, "content", []) or []:
+        class_name = block.__class__.__name__.lower()
+        tool_call_id = getattr(block, "id", "") or getattr(block, "tool_use_id", "")
+        tool_name = getattr(block, "name", "")
+        tool_input = getattr(block, "input", None)
+        if "tooluse" in class_name or (tool_call_id and tool_name and tool_input is not None):
+            events.append({
+                "event": "tool_call_requested",
+                "trace_id": agent_context.trace_id,
+                "actor": {"agent_id": agent_context.agent_id, "backend": "claude-agent-sdk"},
+                "action": {"type": "tool_call", "name": tool_name, "status": "requested"},
+                "tool": {
+                    "name": tool_name,
+                    "tool_call_id": str(tool_call_id),
+                    "input": _bounded_value(tool_input),
+                    "status": "requested",
+                },
+                "result": {"status": "requested"},
+                "links": {"tool_call_id": str(tool_call_id)},
+            })
+            continue
+
+        result_content = getattr(block, "content", None)
+        if "toolresult" in class_name or (getattr(block, "tool_use_id", "") and result_content is not None):
+            is_error = bool(getattr(block, "is_error", False))
+            events.append({
+                "event": "tool_result_received",
+                "trace_id": agent_context.trace_id,
+                "actor": {"agent_id": agent_context.agent_id, "backend": "claude-agent-sdk"},
+                "action": {"type": "tool_result", "name": "tool_result", "status": "failed" if is_error else "success"},
+                "tool": {
+                    "tool_call_id": str(tool_call_id),
+                    "output": _bounded_value(result_content),
+                    "status": "failed" if is_error else "success",
+                },
+                "result": {"status": "failed" if is_error else "success"},
+                "links": {"tool_call_id": str(tool_call_id)},
+            })
+    return events
+
+
+def _runtime_event_from_message(message, agent_context: AgentContext) -> list[dict]:
+    class_name = message.__class__.__name__.lower()
+    if "resultmessage" not in class_name and not hasattr(message, "duration_ms"):
+        return []
+    is_error = bool(getattr(message, "is_error", False))
+    duration_ms = getattr(message, "duration_ms", 0) or 0
+    return [{
+        "event": "llm_runtime_completed",
+        "trace_id": agent_context.trace_id,
+        "actor": {"agent_id": agent_context.agent_id, "backend": "claude-agent-sdk"},
+        "action": {
+            "type": "llm_call",
+            "name": "claude_agent_query",
+            "status": "failed" if is_error else "success",
+            "duration_ms": duration_ms,
+        },
+        "result": {
+            "status": "failed" if is_error else "success",
+            "message": str(getattr(message, "subtype", "") or ""),
+        },
+        "metrics": {
+            "duration_ms": duration_ms,
+            "duration_api_ms": getattr(message, "duration_api_ms", 0) or 0,
+            "num_turns": getattr(message, "num_turns", 0) or 0,
+            "total_cost_usd": getattr(message, "total_cost_usd", 0) or 0,
+            "usage": _bounded_value(getattr(message, "usage", {}) or {}),
+            "session_id": str(getattr(message, "session_id", "") or ""),
+        },
+    }]
 
 
 class ClaudeCodeAdapter(BackendAdapter):
@@ -172,14 +264,18 @@ class ClaudeCodeAdapter(BackendAdapter):
 
             async def _run():
                 text_parts: list[str] = []
+                tool_events: list[dict] = []
+                runtime_events: list[dict] = []
                 async for message in query(prompt=current_task, options=options):
                     text_parts.extend(_extract_text_from_message(message))
-                return "\n".join([part for part in text_parts if part]).strip()
+                    tool_events.extend(_tool_events_from_message(message, agent_context))
+                    runtime_events.extend(_runtime_event_from_message(message, agent_context))
+                return "\n".join([part for part in text_parts if part]).strip(), tool_events, runtime_events
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                output_text = loop.run_until_complete(_run())
+                output_text, tool_events, runtime_events = loop.run_until_complete(_run())
             finally:
                 loop.close()
 
@@ -188,7 +284,8 @@ class ClaudeCodeAdapter(BackendAdapter):
                 agent_id=agent_context.agent_id,
                 status="completed",
                 final_message=output_text,
-                application_events=[_completed_event(agent_context, output_text, "claude-agent-sdk")],
+                application_events=tool_events + runtime_events + [_completed_event(agent_context, output_text, "claude-agent-sdk")],
+                tool_events=tool_events,
             )
         except Exception as e:
             return AgentRunResult(trace_id=agent_context.trace_id, agent_id=agent_context.agent_id, status="error", final_message="", error=f"Claude Agent SDK Error: {str(e)}")

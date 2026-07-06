@@ -55,6 +55,9 @@ def test_claude_task_payload_contains_full_context_not_latest_message_only():
     assert payload["skills"][0]["sop_content"] == "Plan step by step"
     assert payload["allowed_tools"] == ["send_message", "write_plan"]
 
+    server = claude_code._claude_mcp_server(_context(), ["planning"])
+    assert "--simulation-seed" in server["args"]
+
 
 def test_openclaw_task_payload_contains_full_context_not_latest_message_only():
     payload = json.loads(openclaw._build_task_payload(_context()))
@@ -86,3 +89,47 @@ def test_mock_openclaw_adapter_returns_application_event_without_real_llm(monkey
     assert result.application_events
     assert result.application_events[0]["event"] == "agent_run_completed"
     assert result.application_events[0]["actor"]["backend"] == "openclaw"
+
+
+def test_claude_tool_blocks_become_traceable_application_events():
+    context = _context()
+
+    class ToolUseBlock:
+        id = "tool-1"
+        name = "mcp__agent_tools__write_plan"
+        input = {"title": "Plan"}
+
+    class ToolResultBlock:
+        tool_use_id = "tool-1"
+        content = {"status": "success"}
+        is_error = False
+
+    use_message = type("Message", (), {"content": [ToolUseBlock()]})()
+    result_message = type("Message", (), {"content": [ToolResultBlock()]})()
+    use_event = claude_code._tool_events_from_message(use_message, context)[0]
+    result_event = claude_code._tool_events_from_message(result_message, context)[0]
+
+    assert use_event["event"] == "tool_call_requested"
+    assert use_event["trace_id"] == "trace-test"
+    assert use_event["tool"]["tool_call_id"] == "tool-1"
+    assert result_event["event"] == "tool_result_received"
+    assert result_event["links"]["tool_call_id"] == "tool-1"
+
+
+def test_claude_result_message_becomes_llm_runtime_event():
+    class ResultMessage:
+        duration_ms = 1250
+        duration_api_ms = 1100
+        num_turns = 2
+        total_cost_usd = 0.02
+        usage = {"input_tokens": 10, "output_tokens": 5}
+        session_id = "sdk-session"
+        subtype = "success"
+        is_error = False
+
+    event = claude_code._runtime_event_from_message(ResultMessage(), _context())[0]
+
+    assert event["event"] == "llm_runtime_completed"
+    assert event["trace_id"] == "trace-test"
+    assert event["metrics"]["duration_ms"] == 1250
+    assert event["metrics"]["usage"]["input_tokens"] == 10

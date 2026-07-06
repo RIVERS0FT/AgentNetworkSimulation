@@ -16,6 +16,7 @@ class ContainerAgent:
     container_id: str = ""
     container_name: str = ""
     container_ip: str = ""
+    image_id: str = ""
     port: int = 8000
     status: str = "idle"
     url: str = ""
@@ -62,6 +63,8 @@ class ContainerRuntime:
         backend = (backend or self.DEFAULT_BACKEND).strip()
         if backend == "claudecode":
             return "claude-code"
+        if backend == "brain":
+            raise RuntimeError("Backend 'brain' has been removed.")
         if backend not in self.BACKEND_CONFIG:
             raise RuntimeError(f"Unsupported backend '{backend}'.")
         return backend
@@ -151,7 +154,10 @@ class ContainerRuntime:
                 "AGENT_COMM_MODE": "direct",
                 "LOG_FULL_PCAP": os.environ.get("LOG_FULL_PCAP", "1"),
                 "AGENT_CAPTURE_INCLUDE_CONTROL_PLANE": os.environ.get("AGENT_CAPTURE_INCLUDE_CONTROL_PLANE", "0"),
+                "AGENT_NETWORK_EMULATION": os.environ.get("AGENT_NETWORK_EMULATION", "1"),
                 "PCAP_DIR": os.environ.get("PCAP_DIR", "/app/data/pcap"),
+                "PCAP_MAX_BYTES": os.environ.get("PCAP_MAX_BYTES", str(1024 * 1024 * 1024)),
+                "PCAP_SHA256": os.environ.get("PCAP_SHA256", "1"),
                 "MOCK_LLM": os.environ.get("MOCK_LLM", "0"),
             }
             for key in (
@@ -196,10 +202,12 @@ class ContainerRuntime:
             assign_error = str(exc)
         container_id = ""
         container_ip = ""
+        image_id = ""
         if container_name and self._docker_client:
             try:
                 container = self._docker_client.containers.get(container_name)
                 container_id = container.id
+                image_id = getattr(getattr(container, "image", None), "id", "") or ""
                 networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
                 network = networks.get(self.NETWORK_NAME) or next(iter(networks.values()), {})
                 container_ip = network.get("IPAddress", "")
@@ -212,6 +220,7 @@ class ContainerRuntime:
             container_id=container_id,
             container_name=container_name,
             container_ip=container_ip,
+            image_id=image_id,
             port=self.INTERNAL_PORT,
             url=url,
             status=status,
@@ -257,8 +266,15 @@ class ContainerRuntime:
                 if agent_tasks:
                     ctx["task"] = "\n".join([t for t in agent_tasks if t])
                 if not ctx.get("task") and not ctx.get("messages"):
-                    self._set_status(ca, "idle", {"phase": "run:skip", "reason": "no_task_or_message"})
-                    return {"agent_id": ca.agent_id, "status": "skipped", "reason": "no_task_or_message", "outbound_messages": [], "tool_events": [], "state_changes": []}
+                    try:
+                        status_response = requests.get(f"{ca.url}/status", timeout=3)
+                        status_response.raise_for_status()
+                        inbox_size = status_response.json().get("inbox_size", 0)
+                    except Exception as exc:
+                        return {"agent_id": ca.agent_id, "error": f"inbox_status_unavailable: {exc}"}
+                    if inbox_size <= 0:
+                        self._set_status(ca, "idle", {"phase": "run:skip", "reason": "no_task_or_message"})
+                        return {"agent_id": ca.agent_id, "status": "skipped", "reason": "no_task_or_message", "outbound_messages": [], "tool_events": [], "state_changes": []}
                 response = requests.post(f"{ca.url}/run", json=ctx, timeout=300)
                 response.raise_for_status()
                 result = response.json()

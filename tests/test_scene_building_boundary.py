@@ -1,4 +1,5 @@
 import json
+import asyncio
 
 import pytest
 
@@ -88,8 +89,9 @@ def test_scene_building_uses_core_goal_as_task_and_skills_as_context(tmp_path, m
     assert agent.agent_id == "ceo"
     assert agent.tasks == ["Coordinate the team"]
     assert agent.skills == ["planning", "reporting"]
-    assert agent.extra_meta["skills_list"][0]["name"] == "planning"
     assert agent.extra_meta["allowed_tools"] == ["write_plan"]
+    assert agent.extra_meta["allowed_skills"] == ["planning", "reporting"]
+    assert "skills_list" not in agent.extra_meta
     assert agent.extra_meta["action_space"] == ["send_message", "broadcast", "write_plan"]
     assert agent.extra_meta["skill_execution_mode"] == "backend_native_mcp"
 
@@ -121,3 +123,13 @@ def test_scene_building_rejects_unknown_backend(tmp_path, monkeypatch):
         simulations._build_scene_from_folder("demo_scene")
 
     assert "unsupported backend" in str(exc.value)
+
+
+def test_setup_records_explicit_simulation_seed(tmp_path, monkeypatch):
+    _write_scene(tmp_path)
+    monkeypatch.setattr(simulations, "_SCENES_DIR", tmp_path)
+
+    result = asyncio.run(simulations.setup_simulation(simulations.SimulationRunRequest(scene="demo_scene", seed=1234)))
+
+    assert result["seed"] == 1234
+    assert simulations._pending_seed == 1234

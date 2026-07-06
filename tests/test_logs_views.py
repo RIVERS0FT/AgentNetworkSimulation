@@ -58,12 +58,39 @@ def test_messages_api_view(mock_logs):
     assert data["entries"][0]["event"] == "agent_message"
 
 @pytest.mark.not_llm
-def test_behavior_api_view(mock_logs):
-    response = client.get("/api/logs/behavior")
+def test_application_api_view(mock_logs):
+    response = client.get("/api/logs/application")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 2
+    assert data["total"] == 4
     events = [e["event"] for e in data["entries"]]
     assert "decide" in events
     assert "act" in events
-    assert "agent_message" not in events
+    assert "agent_message" in events
+
+
+@pytest.mark.not_llm
+def test_agent_log_ingest_always_emits_traceable_tool_event():
+    logger = get_logger()
+    logger._entries.clear()
+
+    response = client.post("/api/logs/agent", json={
+        "agent_id": "planner",
+        "event": "tool_result",
+        "action": "tool_result",
+        "action_status": "success",
+        "trace_id": "trace-1",
+        "details": {
+            "tool_name": "write_plan",
+            "arguments": {"title": "Plan"},
+            "result": {"status": "success"},
+            "duration_ms": 12.5,
+        },
+    })
+
+    assert response.status_code == 200
+    record = logger._entries[-1]
+    assert record["event"] == "tool_result"
+    assert record["trace"]["trace_id"] == "trace-1"
+    assert record["tool"]["name"] == "write_plan"
+    assert record["action"]["duration_ms"] == 12.5

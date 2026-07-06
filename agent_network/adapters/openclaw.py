@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import asyncio
+import time
 from .base import BackendAdapter, AgentContext, AgentRunResult
 from agent_network.skill_md_loader import load_scene_skill_registry
 
@@ -59,6 +60,7 @@ def _build_task_payload(agent_context: AgentContext) -> str:
         "agent_directory": agent_context.agent_directory,
         "comm_matrix": agent_context.comm_matrix,
         "network_mode": "direct",
+        "simulation_seed": agent_context.simulation_seed,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -118,6 +120,7 @@ class OpenCLAWAdapter(BackendAdapter):
             return AgentRunResult(trace_id=agent_context.trace_id, agent_id=agent_context.agent_id, status="error", final_message="", error="openclaw-sdk is not installed or not importable.")
 
         try:
+            started = time.monotonic()
             async def _run():
                 gateway_url = os.environ.get("OPENCLAW_GATEWAY_WS_URL", "")
                 logger.info("Connecting to OpenCLAW gateway: %s", gateway_url or "SDK default")
@@ -133,6 +136,24 @@ class OpenCLAWAdapter(BackendAdapter):
                 loop.close()
 
             output_text = _extract_openclaw_text(response)
-            return AgentRunResult(trace_id=agent_context.trace_id, agent_id=agent_context.agent_id, status="completed", final_message=output_text, application_events=[_completed_event(agent_context, output_text, "openclaw-sdk")])
+            duration_ms = round((time.monotonic() - started) * 1000, 1)
+            runtime_event = {
+                "event": "llm_runtime_completed",
+                "trace_id": agent_context.trace_id,
+                "actor": {"agent_id": agent_context.agent_id, "backend": "openclaw-sdk"},
+                "action": {
+                    "type": "llm_call",
+                    "name": "openclaw_agent_execute",
+                    "status": "success",
+                    "duration_ms": duration_ms,
+                },
+                "result": {"status": "success"},
+                "metrics": {
+                    "duration_ms": duration_ms,
+                    "session_id": _openclaw_session_name(agent_context),
+                    "gateway_url": os.environ.get("OPENCLAW_GATEWAY_WS_URL", ""),
+                },
+            }
+            return AgentRunResult(trace_id=agent_context.trace_id, agent_id=agent_context.agent_id, status="completed", final_message=output_text, application_events=[runtime_event, _completed_event(agent_context, output_text, "openclaw-sdk")])
         except Exception as e:
             return AgentRunResult(trace_id=agent_context.trace_id, agent_id=agent_context.agent_id, status="error", final_message="", error=f"OpenCLAW SDK Error: {str(e)}")

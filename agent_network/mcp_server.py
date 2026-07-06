@@ -2,6 +2,7 @@ import os
 import argparse
 import json
 import time
+import random
 import asyncio
 import importlib.util
 from pathlib import Path
@@ -26,6 +27,7 @@ _SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:8000")
 _AGENT_DIRECTORY = {}
 _COMM_MATRIX = {}
 _COMM = DirectBus()
+_TRACE_ID = ""
 
 ATOMIC_TOOL_NAMES = {"send_message", "broadcast"}
 
@@ -58,7 +60,8 @@ def _log_agent(event: str, detail: str, **kw):
         "to_agent": target if action_type in ("send_message", "broadcast") else "",
         "action": target if action_type == "skill" else action_type,
         "action_status": kw.get("status", "success"),
-        "details": {k: v for k, v in kw.items() if k not in ("action_type", "target")},
+        "trace_id": _TRACE_ID,
+        "details": {k: v for k, v in kw.items() if k != "action_type"},
     }, timeout=2)
 
 
@@ -71,9 +74,11 @@ def setup_runtime(
     scenes_root: str,
     agent_directory: dict = None,
     comm_matrix: dict = None,
+    trace_id: str = "",
+    simulation_seed: int = 0,
 ):
     global _SCENE_KEY, _AGENT_ID, _AGENT_NAME, _ALLOWED_SKILLS, _ALLOWED_TOOLS
-    global _SCENES_ROOT, _SKILLS_CACHE, _TOOL_REGISTRY, _AGENT_DIRECTORY, _COMM_MATRIX, _COMM
+    global _SCENES_ROOT, _SKILLS_CACHE, _TOOL_REGISTRY, _AGENT_DIRECTORY, _COMM_MATRIX, _COMM, _TRACE_ID
 
     _SCENE_KEY = scene_key
     _AGENT_ID = agent_id.lower()
@@ -89,6 +94,8 @@ def setup_runtime(
         for k, v in (comm_matrix or {}).items()
     }
     _COMM = DirectBus(agent_directory=_AGENT_DIRECTORY, comm_matrix=_COMM_MATRIX)
+    _TRACE_ID = trace_id
+    random.seed(f"{simulation_seed}:{_AGENT_ID}")
 
     skill_dir = _SCENES_ROOT / _SCENE_KEY / "skills"
     if skill_dir.exists() and skill_dir.is_dir():
@@ -112,29 +119,37 @@ def _register_atomic_tools():
         target: str = Field(description="Target agent_id"),
         content: str = Field(description="Message content")
     ) -> str:
-        ok = asyncio.run(asyncio.to_thread(_COMM.send, _AGENT_ID, _AGENT_NAME, target, content, "", ""))
+        start_time = time.time()
+        _log_agent("tool_call", "Tool call start: send_message", tool_name="send_message", arguments={"target": target, "content": content}, status="running")
+        ok = asyncio.run(asyncio.to_thread(_COMM.send, _AGENT_ID, _AGENT_NAME, target, content, "", _TRACE_ID))
         status = "success" if ok else "failed"
         _log_agent(
-            "agent_action",
+            "tool_result",
             f"send_message -> {target}",
-            action_type="send_message",
+            action_type="tool_result",
+            tool_name="send_message",
             target=target,
             content=content,
             status=status,
+            duration_ms=round((time.time() - start_time) * 1000, 1),
         )
         return json.dumps({"status": status, "target": target, "mode": "direct"}, ensure_ascii=False)
 
     @mcp.tool()
     def broadcast(content: str = Field(description="Message content to broadcast")) -> str:
-        ok = asyncio.run(asyncio.to_thread(_COMM.broadcast, _AGENT_ID, _AGENT_NAME, content, set(), "", ""))
+        start_time = time.time()
+        _log_agent("tool_call", "Tool call start: broadcast", tool_name="broadcast", arguments={"content": content}, status="running")
+        ok = asyncio.run(asyncio.to_thread(_COMM.broadcast, _AGENT_ID, _AGENT_NAME, content, set(), "", _TRACE_ID))
         status = "success" if ok else "failed"
         _log_agent(
-            "agent_action",
+            "tool_result",
             "broadcast",
-            action_type="broadcast",
+            action_type="tool_result",
+            tool_name="broadcast",
             target="broadcast",
             content=content,
             status=status,
+            duration_ms=round((time.time() - start_time) * 1000, 1),
         )
         return json.dumps({"status": status, "target": "broadcast", "mode": "direct"}, ensure_ascii=False)
 
@@ -231,6 +246,8 @@ def main():
     parser.add_argument("--scenes-root", default="/app/scenes")
     parser.add_argument("--agent-directory-json", default=os.environ.get("AGENT_DIRECTORY_JSON", "{}"))
     parser.add_argument("--comm-matrix-json", default=os.environ.get("COMM_MATRIX_JSON", "{}"))
+    parser.add_argument("--trace-id", default="")
+    parser.add_argument("--simulation-seed", type=int, default=0)
     args = parser.parse_args()
 
     setup_runtime(
@@ -242,6 +259,8 @@ def main():
         scenes_root=args.scenes_root,
         agent_directory=_json_arg(args.agent_directory_json),
         comm_matrix=_json_arg(args.comm_matrix_json),
+        trace_id=args.trace_id,
+        simulation_seed=args.simulation_seed,
     )
     load_tools()
     mcp.run()

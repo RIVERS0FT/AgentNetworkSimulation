@@ -5,14 +5,15 @@ import os
 import re
 import struct
 import subprocess
-from datetime import datetime, timezone
+from collections import Counter, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 
 PCAP_ROOT = Path(os.environ.get("PCAP_DIR", "data/pcap"))
 _LINE_RE = re.compile(
-    r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s+\S+)\s+"
+    r"^(?P<timestamp>(?:\d{4}-\d{2}-\d{2}\s+\S+)|(?:\d+(?:\.\d+)?))\s+"
     r"(?P<ip_version>IP6?)\s+(?P<src>\S+)\s+>\s+(?P<dst>\S+):\s*(?P<details>.*)$"
 )
 _LENGTH_RE = re.compile(r"\blength\s+(?P<length>\d+)\b")
@@ -42,16 +43,38 @@ def _load_manifest(pcap_path: Path) -> dict:
         return {}
 
 
-def _read_lines(pcap_path: Path):
-    cmd = ["tcpdump", "-tttt", "-nn", "-r", str(pcap_path)]
+def _read_lines(pcap_path: Path, limit: int = 1000):
+    """Read the newest decoded packets with bounded memory.
+
+    tcpdump still scans the file to reach the newest records, but Python never
+    materializes unbounded stdout for a large capture.
+    """
+    # Epoch timestamps avoid container/server timezone ambiguity.
+    cmd = ["tcpdump", "-tt", "-nn", "-r", str(pcap_path)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        lines = deque(maxlen=max(1, limit))
+        scanned = 0
+        for line in proc.stdout or []:
+            if line.strip():
+                lines.append(line.rstrip("\r\n"))
+                scanned += 1
+        proc.wait(timeout=30)
+        stderr = (proc.stderr.read() if proc.stderr else "").strip()
     except Exception as exc:
-        return [], f"pcap_parse_error {pcap_path}: {exc}"
-    lines = [line for line in proc.stdout.splitlines() if line.strip()]
-    stderr = (proc.stderr or "").strip()
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return [], f"pcap_parse_error {pcap_path}: {exc}", 0
     error = stderr if proc.returncode != 0 else ""
-    return lines, error
+    return list(lines), error, scanned
 
 
 def _endpoint(value: str) -> tuple[str, int]:
@@ -59,6 +82,21 @@ def _endpoint(value: str) -> tuple[str, int]:
     if separator and port.isdigit():
         return host, int(port)
     return value, 0
+
+
+def _timestamp(value: str) -> tuple[str, float]:
+    try:
+        epoch = float(value)
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat(), epoch
+    except ValueError:
+        pass
+    try:
+        local = datetime.fromisoformat(value.replace(" ", "T"))
+        if local.tzinfo is None:
+            local = local.replace(tzinfo=timezone(timedelta(hours=8)))
+        return local.astimezone(timezone.utc).isoformat(), local.timestamp()
+    except ValueError:
+        return value, 0.0
 
 
 def _parse_line(line: str, pcap_path: Path, manifest: dict, identities: dict = None) -> dict:
@@ -78,6 +116,7 @@ def _parse_line(line: str, pcap_path: Path, manifest: dict, identities: dict = N
         return record
 
     values = match.groupdict()
+    timestamp, timestamp_epoch = _timestamp(values["timestamp"])
     src_ip, src_port = _endpoint(values["src"])
     dst_ip, dst_port = _endpoint(values["dst"])
     identities = identities or {}
@@ -106,7 +145,9 @@ def _parse_line(line: str, pcap_path: Path, manifest: dict, identities: dict = N
         protocol = "IP"
     record.update({
         "parsed": True,
-        "timestamp": values["timestamp"],
+        "timestamp": timestamp,
+        "timestamp_raw": values["timestamp"],
+        "timestamp_epoch": timestamp_epoch,
         "ip_version": values["ip_version"],
         "protocol": protocol,
         "src_ip": src_ip,
@@ -192,7 +233,7 @@ def query_packets(session_id: str = "", agent_id: Optional[str] = None, limit: i
     selected_pcaps = [pcap for pcap in all_pcaps if not agent_id or pcap.stem == agent_id]
     for pcap in selected_pcaps:
         manifest = _load_manifest(pcap)
-        lines, error = _read_lines(pcap)
+        lines, error, _ = _read_lines(pcap, limit=limit)
         packets.extend(_parse_line(line, pcap, manifest, identities) for line in lines)
         if error:
             errors.append({
@@ -208,6 +249,105 @@ def query_packets(session_id: str = "", agent_id: Optional[str] = None, limit: i
 
 def wireshark_lines(session_id: str = "", agent_id: Optional[str] = None, limit: int = 100):
     return [p.get("raw") or p.get("error", "") for p in query_packets(session_id, agent_id, limit)]
+
+
+def pcap_path(session_id: str, agent_id: str) -> Optional[Path]:
+    files = _pcap_files(session_id=session_id, agent_id=agent_id)
+    return files[0] if len(files) == 1 else None
+
+
+def analyze_packets(session_id: str = "", agent_id: Optional[str] = None, max_packets: int = 100_000):
+    all_pcaps = _pcap_files(session_id=session_id)
+    identities = {}
+    for pcap in all_pcaps:
+        manifest = _load_manifest(pcap)
+        if manifest.get("runtime_ip") and manifest.get("agent_id"):
+            identities[manifest["runtime_ip"]] = manifest["agent_id"]
+
+    selected = [pcap for pcap in all_pcaps if not agent_id or pcap.stem == agent_id]
+    protocols = Counter()
+    directions = Counter()
+    traffic_classes = Counter()
+    endpoints = Counter()
+    flows = {}
+    payload_bytes = 0
+    scanned = 0
+    analyzed = 0
+    retained = 0
+    errors = []
+    per_file_limit = max(1, max_packets // max(1, len(selected)))
+
+    for pcap in selected:
+        manifest = _load_manifest(pcap)
+        lines, error, file_scanned = _read_lines(pcap, limit=per_file_limit)
+        scanned += file_scanned
+        retained += len(lines)
+        if error:
+            errors.append({"pcap": str(pcap), "error": error})
+        for line in lines:
+            packet = _parse_line(line, pcap, manifest, identities)
+            if not packet.get("parsed"):
+                continue
+            analyzed += 1
+            protocols[packet["protocol"]] += 1
+            directions[packet["direction"]] += 1
+            traffic_classes[packet["traffic_class"]] += 1
+            payload_bytes += packet["ip_payload_bytes"]
+            if packet["direction"] == "outbound":
+                endpoint = f"{packet['dst_ip']}:{packet['dst_port']}"
+            elif packet["direction"] == "inbound":
+                endpoint = f"{packet['src_ip']}:{packet['src_port']}"
+            else:
+                endpoint = f"{packet['dst_ip']}:{packet['dst_port']}"
+            endpoints[endpoint] += 1
+            left = f"{packet['src_ip']}:{packet['src_port']}"
+            right = f"{packet['dst_ip']}:{packet['dst_port']}"
+            flow_endpoints = tuple(sorted((left, right)))
+            flow_key = (packet["protocol"], *flow_endpoints)
+            flow = flows.setdefault(flow_key, {
+                "protocol": packet["protocol"],
+                "endpoint_a": flow_endpoints[0],
+                "endpoint_b": flow_endpoints[1],
+                "packets": 0,
+                "ip_payload_bytes": 0,
+                "first_timestamp_epoch": packet.get("timestamp_epoch", 0),
+                "last_timestamp_epoch": packet.get("timestamp_epoch", 0),
+            })
+            flow["packets"] += 1
+            flow["ip_payload_bytes"] += packet["ip_payload_bytes"]
+            timestamp_epoch = packet.get("timestamp_epoch", 0)
+            if timestamp_epoch:
+                if not flow["first_timestamp_epoch"] or timestamp_epoch < flow["first_timestamp_epoch"]:
+                    flow["first_timestamp_epoch"] = timestamp_epoch
+                if timestamp_epoch > flow["last_timestamp_epoch"]:
+                    flow["last_timestamp_epoch"] = timestamp_epoch
+
+    return {
+        "capture_source": "tcpdump_pcap",
+        "session_id": session_id,
+        "agent_id": agent_id or "",
+        "pcap_files": len(selected),
+        "packets_scanned": scanned,
+        "packets_analyzed": analyzed,
+        "sampled": scanned > retained,
+        "sample_limit": max_packets,
+        "ip_payload_bytes": payload_bytes,
+        "by_protocol": dict(protocols),
+        "by_direction": dict(directions),
+        "by_traffic_class": dict(traffic_classes),
+        "top_endpoints": [
+            {"endpoint": endpoint, "packets": count}
+            for endpoint, count in endpoints.most_common(50)
+        ],
+        "top_flows": sorted(
+            flows.values(),
+            key=lambda flow: (flow["ip_payload_bytes"], flow["packets"]),
+            reverse=True,
+        )[:100],
+        "errors": errors,
+        "aggregation_scope": "per_agent_observations",
+        "aggregation_note": "Agent-to-Agent packets are visible in both endpoint PCAPs and are not deduplicated.",
+    }
 
 
 def packet_stats(session_id: str = ""):

@@ -48,8 +48,17 @@ def test_run_request_contains_scene_key_and_run_agent_uses_backend_adapter():
     assert "The full ReAct loop is delegated" in text
 
 
-def test_agent_server_supported_backends_are_only_openclaw_and_claude_code():
+def test_agent_server_uploads_backend_application_events_to_srv():
     text = _text()
 
-    assert 'SUPPORTED_BACKENDS = {"openclaw", "claude-code"}' in text
+    assert 'f"{SERVER_URL}/api/logs/ingest"' in text
+    assert "record = logger.emit_application_event(" in text
+    assert "_snapshot_inbox()" in text
+    assert "_ack_inbox(pending_ids)" in text
+
+
+def test_agent_server_supported_backends_are_explicit_and_exclude_brain():
+    text = _text()
+
+    assert 'SUPPORTED_BACKENDS = {"openclaw", "claude-code", "direct_llm"}' in text
     assert "The brain backend has been removed" in text

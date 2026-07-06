@@ -5,7 +5,7 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
 
 # Python for the agent server wrapper + tcpdump for packet capture
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv python3-requests tcpdump \
+    python3 python3-pip python3-venv python3-requests tcpdump iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Claude Code CLI (npm 国内镜像)

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import uuid
 import time
 import random
@@ -13,6 +14,8 @@ from agent_network import state
 from agent_network.agent_model import AgentRegistry, Agent
 from agent_network.logger import get_logger
 from agent_network.real_packet_store import packet_stats
+from agent_network.network_emulation import normalize_profile
+from agent_network.experiment_manifest import audit_session, create_manifest, finalize_manifest
 from agent_network.scene_def import get_api_config, SceneDefinition, AgentDef
 from agent_network.container_runtime import get_runtime
 
@@ -23,10 +26,12 @@ _llm_config: Dict[str, str] = {}
 _pending_scene_def: Optional[SceneDefinition] = None
 _pending_config: Dict[str, str] = {}
 _comm_matrix: Dict[str, set] = {}
+_pending_seed: int = 0
 
 
 class SimulationRunRequest(BaseModel):
     scene: str = ""
+    seed: Optional[int] = None
 
 
 def _get_effective_llm_config() -> Dict[str, str]:
@@ -53,6 +58,7 @@ def _capture(
     requests_module,
     session_id: str = "",
     trace_id: str = "",
+    network_profiles: Dict[str, List[Dict]] = None,
 ) -> Dict[str, Any]:
     ok = 0
     failed = 0
@@ -71,13 +77,14 @@ def _capture(
                         "runtime_ip": ca.container_ip,
                         "session_id": session_id,
                         "trace_id": trace_id,
+                        "network_profiles": (network_profiles or {}).get(ca.agent_id, []),
                         "pcap_dir": "/app/data/pcap",
                         "interface": "any",
                     },
                     timeout=3,
                 )
             else:
-                resp = requests_module.post(f"{ca.url}/capture/stop", timeout=6)
+                resp = requests_module.post(f"{ca.url}/capture/stop", timeout=60)
             body = resp.json() if resp.status_code == 200 else {"status": "http_error", "http_status": resp.status_code}
             accepted = {"started", "running"} if enabled else {"stopped", "not_running"}
             success = resp.status_code == 200 and body.get("status") in accepted
@@ -88,6 +95,98 @@ def _capture(
             failed += 1
             agents.append({"agent_id": ca.agent_id, "container": ca.container_name, "status": "error", "error": str(exc)})
     return {"success": ok, "failed": failed, "agents": agents}
+
+
+def _configure_network(created_cas: List[tuple], relationships: List[Dict], requests_module) -> Dict[str, Any]:
+    agents = {ca.agent_id.lower(): ca for ca, _ in created_cas}
+    profile_maps = {agent_id: {} for agent_id in agents}
+    validation_errors = []
+
+    def add_profile(source: str, target: str, network: dict):
+        profile = {
+            "target_agent": target,
+            "target_host": agents[target].container_name,
+            "target_ip": agents[target].container_ip,
+            "network": network,
+        }
+        previous = profile_maps[source].get(target)
+        if previous and previous["network"] != network:
+            validation_errors.append(f"conflicting network profiles for {source}->{target}")
+            return
+        profile_maps[source][target] = profile
+
+    for edge in relationships or []:
+        raw_network = edge.get("network") or {}
+        if not raw_network:
+            continue
+        try:
+            network = normalize_profile(raw_network)
+        except ValueError as exc:
+            validation_errors.append(f"{edge.get('from', '')}->{edge.get('to', '')}: {exc}")
+            continue
+        if not any(network.values()):
+            continue
+        source = str(edge.get("from", "")).lower()
+        target = str(edge.get("to", "")).lower()
+        if source in agents and target in agents:
+            add_profile(source, target, network)
+        if edge.get("bidirectional") and source in agents and target in agents:
+            add_profile(target, source, network)
+
+    profiles = {agent_id: list(items.values()) for agent_id, items in profile_maps.items()}
+    requested = sum(len(items) for items in profiles.values())
+
+    if validation_errors:
+        for ca, _ in created_cas:
+            try:
+                requests_module.post(f"{ca.url}/network/clear", json={"interface": "eth0"}, timeout=5)
+            except Exception:
+                pass
+        return {
+            "requested_profiles": requested,
+            "failed": len(validation_errors),
+            "validation_errors": validation_errors,
+            "agents": [],
+        }
+
+    results = []
+    failed = 0
+    for agent_id, ca in agents.items():
+        try:
+            response = requests_module.post(
+                f"{ca.url}/network/configure",
+                json={"interface": "eth0", "profiles": profiles[agent_id]},
+                timeout=15,
+            )
+            body = response.json() if response.status_code == 200 else {"status": "http_error", "http_status": response.status_code}
+        except Exception as exc:
+            body = {"status": "error", "error": str(exc)}
+        if profiles[agent_id] and body.get("status") != "configured":
+            failed += 1
+        results.append({"agent_id": agent_id, "container": ca.container_name, **body})
+
+    if failed:
+        for ca, _ in created_cas:
+            try:
+                requests_module.post(f"{ca.url}/network/clear", json={"interface": "eth0"}, timeout=5)
+            except Exception:
+                pass
+    return {"requested_profiles": requested, "failed": failed, "agents": results}
+
+
+def _capture_health(created_cas: List[tuple], requests_module) -> Dict[str, Any]:
+    agents = []
+    failed = 0
+    for ca, _ in created_cas:
+        try:
+            response = requests_module.get(f"{ca.url}/capture/status", timeout=3)
+            body = response.json() if response.status_code == 200 else {"status": "http_error", "http_status": response.status_code}
+        except Exception as exc:
+            body = {"status": "error", "error": str(exc)}
+        if body.get("status") != "running":
+            failed += 1
+        agents.append({"agent_id": ca.agent_id, "container": ca.container_name, **body})
+    return {"healthy": failed == 0, "failed": failed, "agents": agents}
 
 
 def _layout(agents: List[Any]) -> Dict[str, tuple]:
@@ -111,7 +210,7 @@ def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
         AgentRegistry.register(agent)
         agent.start()
     _pending_scene_def = scene_def
-    return {"agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "relationships": scene_def.workflow, "scene_name": scene_def.scene_name, "network_mode": "direct"}
+    return {"agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "relationships": scene_def.workflow, "scene_name": scene_def.scene_name, "network_mode": "direct", "seed": _pending_seed}
 
 
 def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]:
@@ -137,6 +236,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
             if agent:
                 agent.container_url = ca.url
 
+    all_assignments = list(created_cas)
     created_cas = [(ca, tasks) for ca, tasks in created_cas if ca.status != "error"]
     for ca, _ in created_cas:
         try:
@@ -161,9 +261,103 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
     session_id = getattr(logger, "_session_id", "")
     talk_id = f"talk-{uuid.uuid4().hex[:12]}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
     state.reset_token_usage_state(session_id)
+    experiment_agents = [
+        {
+            "agent_id": ca.agent_id,
+            "name": ca.name,
+            "role": ca.role,
+            "backend": (getattr(ca, "_extra_meta", {}) or {}).get("backend", ""),
+            "runtime_container": ca.container_name,
+            "runtime_container_id": ca.container_id,
+            "runtime_ip": ca.container_ip,
+            "image_id": ca.image_id,
+        }
+        for ca, _ in all_assignments
+    ]
+    create_manifest(
+        session_id=session_id,
+        scene_name=scene_def.scene_name,
+        scene_dir=_SCENES_DIR / state.current_scene_name,
+        trace_id=talk_id,
+        seed=_pending_seed,
+        agents=experiment_agents,
+        llm_config=config,
+        scheduler={
+            "mode": "event_driven_rounds",
+            "initial_task_delivery": "once",
+            "max_rounds": state.termination_config.get("max_rounds", 20),
+            "stalemate_rounds": state.termination_config.get("stalemate_rounds", 3),
+        },
+    )
+    if assign_errors:
+        finalize_manifest(
+            session_id,
+            status="error",
+            stop_reason="assignment_failed",
+            assignment_errors=assign_errors,
+        )
+        quality = audit_session(session_id, verify_hashes=True)
+        return {
+            "status": "error",
+            "error": "one or more Agent containers could not be assigned",
+            "session_id": session_id,
+            "assignment_errors": assign_errors,
+            "quality": quality,
+        }
+    network_emulation = _configure_network(created_cas, scene_def.workflow or [], _req)
+    logger.system("network_emulation", "Agent network profiles configured", details=network_emulation)
+    if network_emulation["requested_profiles"] and network_emulation["failed"]:
+        finalize_manifest(
+            session_id,
+            status="error",
+            stop_reason="network_emulation_failed",
+            network_emulation=network_emulation,
+        )
+        quality = audit_session(session_id, verify_hashes=True)
+        return {
+            "status": "error",
+            "error": "requested Agent network emulation could not be applied",
+            "session_id": session_id,
+            "network_emulation": network_emulation,
+            "quality": quality,
+        }
     state.simulation_active = True
-    capture_start = _capture(created_cas, True, _req, session_id=session_id, trace_id=talk_id)
+    applied_network_profiles = {
+        item["agent_id"]: item.get("profiles", [])
+        for item in network_emulation.get("agents", [])
+    }
+    capture_start = _capture(
+        created_cas,
+        True,
+        _req,
+        session_id=session_id,
+        trace_id=talk_id,
+        network_profiles=applied_network_profiles,
+    )
     logger.system("capture_control", "full capture started", details={"session_id": session_id, **capture_start})
+    if capture_start["failed"]:
+        capture_stop = _capture(created_cas, False, _req, session_id=session_id, trace_id=talk_id)
+        network_clear = _configure_network(created_cas, [], _req)
+        state.simulation_active = False
+        finalize_manifest(
+            session_id,
+            status="error",
+            stop_reason="capture_start_failed",
+            network_emulation=network_emulation,
+            capture_start=capture_start,
+            capture_stop=capture_stop,
+            network_clear=network_clear,
+        )
+        quality = audit_session(session_id, verify_hashes=True)
+        return {
+            "status": "error",
+            "error": "one or more Agent packet captures failed to start",
+            "session_id": session_id,
+            "capture_start": capture_start,
+            "capture_stop": capture_stop,
+            "network_clear": network_clear,
+            "quality": quality,
+        }
 
     max_rounds = state.termination_config.get("max_rounds", 20)
     stalemate_threshold = state.termination_config.get("stalemate_rounds", 3)
@@ -171,6 +365,9 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
     silent_rounds = 0
     stop_reason = "hard_limit"
     state.simulation_stop_requested = False
+    network_clear = {"requested_profiles": 0, "failed": 0, "agents": []}
+    capture_health = {"healthy": True, "failed": 0, "agents": []}
+    run_error = ""
 
     try:
         for round_num in range(max_rounds):
@@ -183,16 +380,23 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
                 "total_rounds": max_rounds,
                 "scene": scene_def.scene_name,
                 "agents": [{"id": ca.agent_id, "role": ca.role, "name": ca.name} for ca, _ in created_cas],
-                "tasks": {ca.agent_id: tasks for ca, tasks in created_cas},
+                "tasks": {ca.agent_id: tasks for ca, tasks in created_cas} if round_num == 0 else {},
                 "comm_matrix": {k: list(v) for k, v in _comm_matrix.items()},
                 "agent_directory": agent_directory,
                 "talk": talk_id,
                 "trace_id": talk_id,
+                "tick": state.current_turn,
+                "simulation_seed": _pending_seed,
                 "network_mode": "direct",
             }
             round_result = runtime.run_round(context)
             results_log.append(round_result)
             results = round_result.get("results", [])
+            capture_health = _capture_health(created_cas, _req)
+            if not capture_health["healthy"]:
+                stop_reason = "capture_incomplete"
+                logger.system("capture_health", "Agent capture stopped unexpectedly", details=capture_health)
+                break
             if results and all(res.get("error") for res in results):
                 stop_reason = "all_agents_failed"
                 break
@@ -202,21 +406,42 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
                 stop_reason = f"stalemate_{stalemate_threshold}_silent_rounds"
                 break
             time.sleep(0.3)
+    except Exception as exc:
+        run_error = str(exc)
+        stop_reason = "runtime_exception"
+        logger.system("simulation_runtime_error", "Simulation runtime failed", details={"error": run_error})
     finally:
         state.simulation_active = False
         capture_stop = _capture(created_cas, False, _req, session_id=session_id, trace_id=talk_id)
         logger.system("capture_control", "full capture stopped", details={"session_id": session_id, **capture_stop})
+        network_clear = _configure_network(created_cas, [], _req)
+        logger.system("network_emulation", "Agent network profiles cleared", details=network_clear)
         for ca, _ in created_cas:
             if ca.status != "error":
                 runtime._set_status(ca, "idle", {"phase": "simulation:finish", "stop_reason": stop_reason})
 
-    return {"simulation_name": scene_def.scene_name, "agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "packet_stats": packet_stats(session_id=session_id), "rounds": len(results_log), "max_rounds": max_rounds, "stop_reason": stop_reason, "results_log": results_log, "relationships": scene_def.workflow, "comm_policy": {"mode": "direct", "matrix": {k: list(v) for k, v in _comm_matrix.items()}}, "agent_directory": agent_directory, "network_mode": "direct", "assign_errors": assign_errors}
+    experiment_status = "complete" if not run_error and stop_reason != "capture_incomplete" and capture_stop["failed"] == 0 else "error"
+    finalize_manifest(
+        session_id,
+        status=experiment_status,
+        stop_reason=stop_reason,
+        rounds=len(results_log),
+        network_emulation=network_emulation,
+        network_clear=network_clear,
+        capture_start=capture_start,
+        capture_stop=capture_stop,
+        error=run_error,
+    )
+    quality = audit_session(session_id, verify_hashes=True)
+    return {"status": "error" if run_error else "completed", "error": run_error, "simulation_name": scene_def.scene_name, "session_id": session_id, "seed": _pending_seed, "experiment_status": experiment_status, "quality": quality, "agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "packet_stats": packet_stats(session_id=session_id), "capture_health": capture_health, "rounds": len(results_log), "max_rounds": max_rounds, "stop_reason": stop_reason, "results_log": results_log, "relationships": scene_def.workflow, "comm_policy": {"mode": "direct", "matrix": {k: list(v) for k, v in _comm_matrix.items()}}, "agent_directory": agent_directory, "network_mode": "direct", "network_emulation": network_emulation, "network_clear": network_clear, "assign_errors": assign_errors}
 
 
 def _normalize_backend(scene_name: str, role_id: str, backend: str) -> str:
     backend = (backend or "openclaw").strip()
     if backend == "claudecode":
         return "claude-code"
+    if backend == "brain":
+        raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses removed backend 'brain'.")
     if backend not in {"openclaw", "claude-code"}:
         raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses unsupported backend '{backend}'.")
     return backend
@@ -262,9 +487,15 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
 
 @router.post("/simulations/setup")
 async def setup_simulation(req: SimulationRunRequest):
-    global _pending_config
+    global _pending_config, _pending_seed
     if not req.scene or not (_SCENES_DIR / req.scene).is_dir():
         raise HTTPException(status_code=400, detail=f"Scene '{req.scene}' not found")
+    if req.seed is None:
+        configured_seed = os.environ.get("SIMULATION_SEED", "").strip()
+        _pending_seed = int(configured_seed) if configured_seed else random.SystemRandom().randrange(1, 2**31)
+    else:
+        _pending_seed = req.seed
+    random.seed(_pending_seed)
     scene_def = _build_scene_from_folder(req.scene)
     _pending_config = _get_effective_llm_config()
     result = _setup_scene(scene_def)

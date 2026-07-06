@@ -42,6 +42,17 @@ def test_run_all_skips_agent_without_task_or_messages(monkeypatch):
         status="idle",
     )
 
+    class StatusResponse:
+        ok = True
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"inbox_size": 0}
+
+    monkeypatch.setattr("agent_network.container_runtime.requests.get", lambda *_args, **_kwargs: StatusResponse())
+
     results = runtime.run_all({"tasks": {}, "messages": []})
 
     assert results == [
@@ -66,10 +77,10 @@ def test_run_all_posts_structured_context_without_local_agent_execution(monkeypa
         status="idle",
     )
     ca._extra_meta = {
-        "skills_list": [{"name": "planning", "sop_content": "SOP"}],
         "core_goal": "Coordinate",
         "action_space": ["send_message"],
         "scene_key": "demo_scene",
+        "allowed_skills": ["planning"],
         "allowed_tools": ["write_plan"],
     }
     runtime.agents["agent_a"] = ca
@@ -97,5 +108,42 @@ def test_run_all_posts_structured_context_without_local_agent_execution(monkeypa
     assert posted["url"] == "http://agent-a:8000/run"
     assert posted["json"]["task"] == "Do the assigned work"
     assert posted["json"]["scene_key"] == "demo_scene"
-    assert posted["json"]["skills"] == [{"name": "planning", "sop_content": "SOP"}]
+    assert "skills" not in posted["json"]
+    assert posted["json"]["allowed_skills"] == ["planning"]
     assert posted["json"]["allowed_tools"] == ["send_message", "write_plan"]
+
+
+def test_run_all_wakes_agent_when_container_inbox_has_messages(monkeypatch):
+    runtime = _runtime(monkeypatch)
+    runtime.agents["agent_a"] = ContainerAgent(
+        agent_id="agent_a",
+        name="Agent A",
+        role="planner",
+        url="http://agent-a:8000",
+        status="idle",
+    )
+
+    class StatusResponse:
+        ok = True
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"inbox_size": 1}
+
+    class RunResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"agent_id": "agent_a", "status": "completed", "application_events": []}
+
+    posted = []
+    monkeypatch.setattr("agent_network.container_runtime.requests.get", lambda *_args, **_kwargs: StatusResponse())
+    monkeypatch.setattr("agent_network.container_runtime.requests.post", lambda url, **kwargs: posted.append(url) or RunResponse())
+
+    result = runtime.run_all({"tasks": {}, "messages": []})
+
+    assert result[0]["status"] == "completed"
+    assert posted == ["http://agent-a:8000/run"]

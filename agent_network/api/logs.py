@@ -134,6 +134,9 @@ async def agent_log_ingest(req: Request):
     detail = body.get("detail", "")
     details = body.get("details", {})
     action_status = body.get("action_status", "success")
+    from_agent = body.get("from_agent", agent_id)
+    to_agent = body.get("to_agent", "") or details.get("target", "")
+    action_name = body.get("action", event)
 
     state.agent_logs.append({
         "timestamp": _beijing_time(body.get("timestamp", "")),
@@ -142,64 +145,72 @@ async def agent_log_ingest(req: Request):
         "agent_name": body.get("agent_name", "?"),
         "event": event,
         "detail": detail,
-        "from_agent": body.get("from_agent", agent_id),
-        "to_agent": body.get("to_agent", ""),
-        "action": body.get("action", event),
+        "from_agent": from_agent,
+        "to_agent": to_agent,
+        "action": action_name,
         "action_status": action_status,
     })
     if len(state.agent_logs) > 500:
         state.agent_logs.pop(0)
 
-        content_text = body.get("content", details.get("content", ""))
-        reasoning = body.get("reasoning", details.get("reasoning", ""))
+    content_text = body.get("content", details.get("content", ""))
+    reasoning = body.get("reasoning", details.get("reasoning", ""))
+    tool_name = body.get("tool_name", details.get("tool_name", ""))
 
-        logger.emit_application_event(
-            event=event,
-            actor={
-                "agent_id": from_agent,
-                "name": body.get("agent_name", ""),
-            },
-            target={"agent_id": to_agent} if to_agent else {},
-            action={
-                "type": action_name,
-                "name": action_name,
-                "status": action_status,
-            },
-            content={
-                "content_type": "agent_log",
-                "text": content_text or detail,
-                "summary": (detail or content_text or f"[{agent_id}] {action_name}")[:120],
-                "size_bytes": len((content_text or detail or "").encode("utf-8")),
-            },
-            decision={
-                "decision_summary": reasoning[:200] if reasoning else "",
-                "reasoning_visible": reasoning[:500] if reasoning else "",
-            },
-            skill={
-                "name": body.get("skill_name", details.get("skill_name", "")),
-                "input": body.get("skill_params", details.get("skill_params", {})),
-                "output": body.get("skill_result", details.get("skill_result", {})),
-                "status": action_status,
-            },
-            result={
-                "status": action_status,
-                "message": detail or f"[{agent_id}] {action_name}",
-                "error_message": "" if action_status != "failed" else detail,
-            },
-            trace_id=body.get("trace_id", details.get("trace_id", "")),
-            tick=body.get("tick", details.get("tick", 0)),
-            level="ERROR" if action_status == "failed" else "INFO",
-            component=agent_id,
-            source="agent",
-            debug={
-                "schema_version": "application.v1",
-                "emitter": "api.logs.agent_log_ingest",
-                "legacy_agent_log_ingest": True,
-            },
-        )
-        if state.ws_clients:
-            asyncio.create_task(_ws_broadcast({"type": "agent_log", "data": state.agent_logs[-1]}))
-        return {"status": "ok", "total_logs": len(state.agent_logs)}
+    logger.emit_application_event(
+        event=event,
+        actor={
+            "agent_id": from_agent,
+            "name": body.get("agent_name", ""),
+        },
+        target={"agent_id": to_agent} if to_agent else {},
+        action={
+            "type": action_name,
+            "name": action_name,
+            "status": action_status,
+            "duration_ms": details.get("duration_ms", 0),
+        },
+        content={
+            "content_type": "agent_log",
+            "text": content_text or detail,
+            "summary": (detail or content_text or f"[{agent_id}] {action_name}")[:120],
+            "size_bytes": len((content_text or detail or "").encode("utf-8")),
+        },
+        decision={
+            "decision_summary": reasoning[:200] if reasoning else "",
+            "reasoning_visible": reasoning[:500] if reasoning else "",
+        },
+        skill={
+            "name": body.get("skill_name", details.get("skill_name", "")),
+            "input": body.get("skill_params", details.get("skill_params", {})),
+            "output": body.get("skill_result", details.get("skill_result", {})),
+            "status": action_status,
+        },
+        tool={
+            "name": tool_name,
+            "input": details.get("arguments", {}),
+            "output": details.get("result", {}),
+            "status": action_status,
+        } if tool_name else {},
+        result={
+            "status": action_status,
+            "message": detail or f"[{agent_id}] {action_name}",
+            "error_message": "" if action_status != "failed" else detail,
+        },
+        trace_id=body.get("trace_id", details.get("trace_id", "")),
+        tick=body.get("tick", details.get("tick", 0)),
+        level="ERROR" if action_status == "failed" else "INFO",
+        component=agent_id,
+        source="agent",
+        debug={
+            "schema_version": "application.v1",
+            "emitter": "api.logs.agent_log_ingest",
+            "legacy_agent_log_ingest": True,
+        },
+    )
+    if state.ws_clients:
+        asyncio.create_task(_ws_broadcast({"type": "agent_log", "data": state.agent_logs[-1]}))
+    return {"status": "ok", "total_logs": len(state.agent_logs)}
 
 @router.post("/ingest")
 async def log_ingest(req: Request):

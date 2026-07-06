@@ -80,7 +80,10 @@ async def list_tools():
 @router.post("/tools/execute")
 async def execute_tool(req: Request):
     if os.environ.get("ENABLE_DEBUG_TOOL_EXECUTE") != "1":
-        raise HTTPException(status_code=403, detail="Direct server-side tool execution is disabled.")
+        raise HTTPException(
+            status_code=403,
+            detail="Direct server-side tool execution is disabled; use backend-native MCP tool calling.",
+        )
     data = await req.json()
     tool_name = data.get("tool_name")
     params = data.get("params", {})

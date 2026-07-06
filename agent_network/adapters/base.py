@@ -22,6 +22,7 @@ class AgentContext:
     allowed_skills: List[str] = field(default_factory=list)
     agent_directory: Dict[str, str] = field(default_factory=dict)
     comm_matrix: Dict[str, List[str]] = field(default_factory=dict)
+    simulation_seed: int = 0
 
 
 @dataclass

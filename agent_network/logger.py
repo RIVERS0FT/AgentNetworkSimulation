@@ -242,9 +242,9 @@ def normalize_application_record(record: Dict) -> Dict:
 
     trace = _ensure_dict(record.get("trace"))
     trace_id = record.get("trace_id") or trace.get("trace_id") or f"trace_{uuid.uuid4().hex[:12]}"
-    record["trace_id"] = trace_id
     trace["trace_id"] = trace_id
     record["trace"] = trace
+    record.pop("trace_id", None)
 
     record.setdefault("parent_event_id", "")
     record.setdefault("tick", 0)

@@ -63,6 +63,7 @@ class DirectBus(CommLayer):
                 json={
                     "from_id": source_id,
                     "from_name": from_name,
+                    "to": target_id,
                     "content": content,
                     "type": "direct",
                     "channel_id": channel_id,

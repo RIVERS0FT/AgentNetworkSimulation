@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from typing import Optional
 
 import requests
@@ -54,7 +55,7 @@ def _extract_anthropic_text(response) -> str:
     return "\n".join(parts).strip()
 
 
-def _call_anthropic(system_prompt: str, user_payload: str) -> str:
+def _call_anthropic(system_prompt: str, user_payload: str) -> tuple[str, dict]:
     api_key = _first_env("ANTHROPIC_API_KEY", "LLM_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -78,10 +79,15 @@ def _call_anthropic(system_prompt: str, user_payload: str) -> str:
         messages=[{"role": "user", "content": user_payload}],
     )
     text = _extract_anthropic_text(response)
-    return text or str(response)
+    usage = getattr(response, "usage", None)
+    usage_data = {
+        "input_tokens": getattr(usage, "input_tokens", 0) or 0,
+        "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+    }
+    return text or str(response), usage_data
 
 
-def _call_openai_compatible(system_prompt: str, user_payload: str) -> str:
+def _call_openai_compatible(system_prompt: str, user_payload: str) -> tuple[str, dict]:
     api_key = _first_env("LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -109,7 +115,7 @@ def _call_openai_compatible(system_prompt: str, user_payload: str) -> str:
     resp.raise_for_status()
     data = resp.json()
     try:
-        return data["choices"][0]["message"]["content"] or ""
+        return data["choices"][0]["message"]["content"] or "", data.get("usage") or {}
     except Exception as exc:
         raise RuntimeError(f"Unexpected OpenAI-compatible response shape: {data}") from exc
 
@@ -144,17 +150,37 @@ def run_direct_llm(agent_context: AgentContext, backend_name: str, system_prompt
     when you intentionally want a plain model call instead of OpenCLAW / Claude.
     """
     try:
+        started = time.monotonic()
         provider = _provider()
         if provider in {"anthropic", "claude"}:
-            output_text = _call_anthropic(system_prompt, user_payload)
+            output_text, usage = _call_anthropic(system_prompt, user_payload)
         else:
-            output_text = _call_openai_compatible(system_prompt, user_payload)
+            output_text, usage = _call_openai_compatible(system_prompt, user_payload)
+        duration_ms = round((time.monotonic() - started) * 1000, 1)
+        llm_event = {
+            "event": "llm_runtime_completed",
+            "trace_id": agent_context.trace_id,
+            "actor": {"agent_id": agent_context.agent_id, "backend": backend_name},
+            "action": {
+                "type": "llm_call",
+                "name": "direct_llm_request",
+                "status": "success",
+                "duration_ms": duration_ms,
+            },
+            "result": {"status": "success"},
+            "metrics": {
+                "provider": provider,
+                "model": _model(),
+                "duration_ms": duration_ms,
+                "usage": usage,
+            },
+        }
         return AgentRunResult(
             trace_id=agent_context.trace_id,
             agent_id=agent_context.agent_id,
             status="completed",
             final_message=output_text,
-            application_events=[_completed_event(agent_context, output_text, backend_name)],
+            application_events=[llm_event, _completed_event(agent_context, output_text, backend_name)],
             tool_events=[],
             state_changes=[],
             outbound_messages=[],
@@ -230,6 +256,7 @@ def _build_task_payload(agent_context: AgentContext) -> str:
         "permissions": agent_context.permissions,
         "state_snapshot": agent_context.state_snapshot,
         "tick": agent_context.tick,
+        "simulation_seed": agent_context.simulation_seed,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
