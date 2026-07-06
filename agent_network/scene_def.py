@@ -31,53 +31,30 @@ class SceneDefinition:
     scene_name: str = ""
     description: str = ""
     agents: List[AgentDef] = field(default_factory=list)
-    workflow: List[Dict[str, Any]] = field(default_factory=list)  # Agent 协作与网络关系
+    topology: List[Dict[str, Any]] = field(default_factory=list)  # Agent 协作与网络拓扑
 
     def __init__(
         self,
         scene_name: str = "",
         description: str = "",
         agents: List[AgentDef] = None,
-        workflow: List[Dict[str, Any]] = None,
+        topology: List[Dict[str, Any]] = None,
         **legacy_fields: Any,
     ):
         self.scene_name = scene_name
         self.description = description
         self.agents = list(agents or [])
-        self.workflow = list(workflow or [])
+        legacy_topology = legacy_fields.pop("workflow", None)
+        self.topology = list(topology if topology is not None else (legacy_topology or []))
 
-    def to_workflow_steps(self):
-        """
-        将 workflow 字典列表转换为 WorkflowStep 对象列表
+    @property
+    def workflow(self) -> List[Dict[str, Any]]:
+        """旧字段兼容入口；新代码统一使用 topology。"""
+        return self.topology
 
-        支持两种格式:
-        1. 新格式: {"step_id": "s1", "type": "task", "agent_id": "...", "depends_on": [...]}
-        2. 旧格式: {"step": 1, "agent": "agent_id", "action": "..."} → 自动转换
-        """
-        from .workflow import WorkflowStep
-
-        steps = []
-        for wf in self.workflow:
-            # 检测旧格式: 有 "step" 字段但没有 "step_id"
-            if "step" in wf and "step_id" not in wf:
-                step_id = f"step-{wf['step']}"
-                agent_id = wf.get("agent", "")
-                action = wf.get("action", "")
-                # 旧格式线性依赖（除了第一步，其他依赖前一步）
-                deps = [f"step-{wf['step'] - 1}"] if wf["step"] > 1 else []
-                wf = {
-                    "step_id": step_id,
-                    "type": "task",
-                    "agent_id": agent_id,
-                    "action": action,
-                    "depends_on": deps,
-                    "description": wf.get("description", f"Step {wf['step']}"),
-                }
-
-            step = WorkflowStep.from_dict(wf)
-            steps.append(step)
-
-        return steps
+    @workflow.setter
+    def workflow(self, value: List[Dict[str, Any]]):
+        self.topology = list(value or [])
 
 
 # Agent 角色模板库
