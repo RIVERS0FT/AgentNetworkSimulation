@@ -25,36 +25,13 @@ class AgentDef:
     extra_meta: Dict[str, Any] = field(default_factory=dict)  # script_json 扩展字段
 
 
-@dataclass(init=False)
+@dataclass
 class SceneDefinition:
     """完整场景定义。"""
     scene_name: str = ""
     description: str = ""
     agents: List[AgentDef] = field(default_factory=list)
     topology: List[Dict[str, Any]] = field(default_factory=list)  # Agent 协作与网络拓扑
-
-    def __init__(
-        self,
-        scene_name: str = "",
-        description: str = "",
-        agents: List[AgentDef] = None,
-        topology: List[Dict[str, Any]] = None,
-        **legacy_fields: Any,
-    ):
-        self.scene_name = scene_name
-        self.description = description
-        self.agents = list(agents or [])
-        legacy_topology = legacy_fields.pop("workflow", None)
-        self.topology = list(topology if topology is not None else (legacy_topology or []))
-
-    @property
-    def workflow(self) -> List[Dict[str, Any]]:
-        """旧字段兼容入口；新代码统一使用 topology。"""
-        return self.topology
-
-    @workflow.setter
-    def workflow(self, value: List[Dict[str, Any]]):
-        self.topology = list(value or [])
 
 
 # Agent 角色模板库
