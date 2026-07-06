@@ -1,8 +1,0 @@
-name: Topology migration
-on:
-  workflow_dispatch:
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo topology-migration
