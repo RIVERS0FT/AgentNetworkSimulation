@@ -9,8 +9,8 @@
 import os
 
 from .config import DEFAULT_LLM_MODEL
-from typing import Dict, Any, List, Optional
-from dataclasses import dataclass, field, asdict
+from typing import Dict, Any, List
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -27,45 +27,11 @@ class AgentDef:
 
 @dataclass
 class SceneDefinition:
-    """LLM 解析出的完整场景定义"""
+    """完整场景定义。"""
     scene_name: str = ""
     description: str = ""
     agents: List[AgentDef] = field(default_factory=list)
-    workflow: List[Dict[str, Any]] = field(default_factory=list)  # 任务执行顺序
-    event_triggers: List[Dict[str, Any]] = field(default_factory=list)  # script_json 事件
-
-    def to_workflow_steps(self):
-        """
-        将 workflow 字典列表转换为 WorkflowStep 对象列表
-
-        支持两种格式:
-        1. 新格式: {"step_id": "s1", "type": "task", "agent_id": "...", "depends_on": [...]}
-        2. 旧格式: {"step": 1, "agent": "agent_id", "action": "..."} → 自动转换
-        """
-        from .workflow import WorkflowStep
-
-        steps = []
-        for i, wf in enumerate(self.workflow):
-            # 检测旧格式: 有 "step" 字段但没有 "step_id"
-            if "step" in wf and "step_id" not in wf:
-                step_id = f"step-{wf['step']}"
-                agent_id = wf.get("agent", "")
-                action = wf.get("action", "")
-                # 旧格式线性依赖（除了第一步，其他依赖前一步）
-                deps = [f"step-{wf['step'] - 1}"] if wf["step"] > 1 else []
-                wf = {
-                    "step_id": step_id,
-                    "type": "task",
-                    "agent_id": agent_id,
-                    "action": action,
-                    "depends_on": deps,
-                    "description": wf.get("description", f"Step {wf['step']}"),
-                }
-
-            step = WorkflowStep.from_dict(wf)
-            steps.append(step)
-
-        return steps
+    topology: List[Dict[str, Any]] = field(default_factory=list)  # Agent 双向网络链路
 
 
 # Agent 角色模板库
