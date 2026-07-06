@@ -31,7 +31,7 @@ class SceneDefinition:
     scene_name: str = ""
     description: str = ""
     agents: List[AgentDef] = field(default_factory=list)
-    topology: List[Dict[str, Any]] = field(default_factory=list)  # Agent 协作与网络拓扑
+    topology: List[Dict[str, Any]] = field(default_factory=list)  # Agent 双向网络链路
 
 
 # Agent 角色模板库
