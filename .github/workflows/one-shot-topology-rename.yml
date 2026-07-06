@@ -1,10 +1,22 @@
-name: Disabled one-shot topology rename
+name: One-shot workflow cleanup
 
 on:
-  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/one-shot-topology-rename.yml
+
+permissions:
+  contents: write
 
 jobs:
-  noop:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Topology rename already completed."
+      - uses: actions/checkout@v4
+      - name: Remove one-shot workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/one-shot-topology-rename.yml
+          git commit -m "remove one-shot topology workflow"
+          git push
