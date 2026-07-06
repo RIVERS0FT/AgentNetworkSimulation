@@ -97,7 +97,7 @@ def _capture(
     return {"success": ok, "failed": failed, "agents": agents}
 
 
-def _configure_network(created_cas: List[tuple], relationships: List[Dict], requests_module) -> Dict[str, Any]:
+def _configure_network(created_cas: List[tuple], topology: List[Dict], requests_module) -> Dict[str, Any]:
     agents = {ca.agent_id.lower(): ca for ca, _ in created_cas}
     profile_maps = {agent_id: {} for agent_id in agents}
     validation_errors = []
@@ -115,7 +115,7 @@ def _configure_network(created_cas: List[tuple], relationships: List[Dict], requ
             return
         profile_maps[source][target] = profile
 
-    for edge in relationships or []:
+    for edge in topology or []:
         raw_network = edge.get("network") or {}
         if not raw_network:
             continue
@@ -210,7 +210,7 @@ def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
         AgentRegistry.register(agent)
         agent.start()
     _pending_scene_def = scene_def
-    return {"agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "relationships": scene_def.topology, "scene_name": scene_def.scene_name, "network_mode": "direct", "seed": _pending_seed}
+    return {"agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "topology": scene_def.topology, "scene_name": scene_def.scene_name, "network_mode": "direct", "seed": _pending_seed}
 
 
 def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]:
@@ -433,7 +433,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
         error=run_error,
     )
     quality = audit_session(session_id, verify_hashes=True)
-    return {"status": "error" if run_error else "completed", "error": run_error, "simulation_name": scene_def.scene_name, "session_id": session_id, "seed": _pending_seed, "experiment_status": experiment_status, "quality": quality, "agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "packet_stats": packet_stats(session_id=session_id), "capture_health": capture_health, "rounds": len(results_log), "max_rounds": max_rounds, "stop_reason": stop_reason, "results_log": results_log, "relationships": scene_def.topology, "comm_policy": {"mode": "direct", "matrix": {k: list(v) for k, v in _comm_matrix.items()}}, "agent_directory": agent_directory, "network_mode": "direct", "network_emulation": network_emulation, "network_clear": network_clear, "assign_errors": assign_errors}
+    return {"status": "error" if run_error else "completed", "error": run_error, "simulation_name": scene_def.scene_name, "session_id": session_id, "seed": _pending_seed, "experiment_status": experiment_status, "quality": quality, "agents": [a.get_status() for a in AgentRegistry.list_all()], "agent_stats": AgentRegistry.get_stats(), "packet_stats": packet_stats(session_id=session_id), "capture_health": capture_health, "rounds": len(results_log), "max_rounds": max_rounds, "stop_reason": stop_reason, "results_log": results_log, "topology": scene_def.topology, "comm_policy": {"mode": "direct", "matrix": {k: list(v) for k, v in _comm_matrix.items()}}, "agent_directory": agent_directory, "network_mode": "direct", "network_emulation": network_emulation, "network_clear": network_clear, "assign_errors": assign_errors}
 
 
 def _normalize_backend(scene_name: str, role_id: str, backend: str) -> str:
@@ -451,7 +451,7 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
     folder = _SCENES_DIR / scene_name
     meta = json.loads((folder / "meta_and_roles.json").read_text(encoding="utf-8"))
     instances = json.loads((folder / "instances_and_skills.json").read_text(encoding="utf-8"))
-    topology = json.loads((folder / "network_topology.json").read_text(encoding="utf-8"))
+    topology_config = json.loads((folder / "network_topology.json").read_text(encoding="utf-8"))
     smeta = meta.get("scenario_metadata", {})
     title = smeta.get("title", scene_name)
     bg = smeta.get("global_rules", "")
@@ -475,14 +475,14 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
         core_goal = role.get("core_goal", "")
         paradigm = role.get("primary_interaction_paradigm", "")
         agents.append(AgentDef(agent_id=role_id.lower(), role="generic", name=role.get("name", role_id), skills=skills[:4], tags=[paradigm] if paradigm else [], tasks=[core_goal] if core_goal else [], extra_meta={"identity": role.get("identity", ""), "core_goal": core_goal, "initial_assets": role.get("initial_assets", {}), "action_space": ["send_message", "broadcast"] + allowed_tools, "background_rules": bg, "backend": backend, "interaction_paradigm": paradigm, "scene_key": scene_name, "scene_title": title, "allowed_skills": skills, "allowed_tools": allowed_tools, "skill_execution_mode": "backend_native_mcp"}))
-    relationships = []
-    for subnet in topology.get("sub_networks", []):
+    topology_edges = []
+    for subnet in topology_config.get("sub_networks", []):
         for edge in subnet.get("edges", []):
             weight = edge.get("weight")
             if weight is None:
                 weight = 70 if edge.get("paradigm") == "COLLABORATION" else -50
-            relationships.append({"from": edge["source"].lower(), "to": edge["target"].lower(), "relation_type": edge.get("paradigm", ""), "value": weight, "can_direct_chat": edge.get("direct_chat", True), "bidirectional": edge.get("bidirectional", False), "channel_id": edge.get("channel_id", ""), "network": edge.get("network", {})})
-    return SceneDefinition(scene_name=title, description=bg, agents=agents, topology=relationships)
+            topology_edges.append({"from": edge["source"].lower(), "to": edge["target"].lower(), "relation_type": edge.get("paradigm", ""), "value": weight, "can_direct_chat": edge.get("direct_chat", True), "bidirectional": edge.get("bidirectional", False), "channel_id": edge.get("channel_id", ""), "network": edge.get("network", {})})
+    return SceneDefinition(scene_name=title, description=bg, agents=agents, topology=topology_edges)
 
 
 @router.post("/simulations/setup")
@@ -499,7 +499,7 @@ async def setup_simulation(req: SimulationRunRequest):
     scene_def = _build_scene_from_folder(req.scene)
     _pending_config = _get_effective_llm_config()
     result = _setup_scene(scene_def)
-    state.current_relationships = result["relationships"]
+    state.current_topology = result["topology"]
     return result
 
 
