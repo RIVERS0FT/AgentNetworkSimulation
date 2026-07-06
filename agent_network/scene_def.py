@@ -9,8 +9,8 @@
 import os
 
 from .config import DEFAULT_LLM_MODEL
-from typing import Dict, Any, List, Optional
-from dataclasses import dataclass, field, asdict
+from typing import Dict, Any, List
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -25,13 +25,26 @@ class AgentDef:
     extra_meta: Dict[str, Any] = field(default_factory=dict)  # script_json 扩展字段
 
 
-@dataclass
+@dataclass(init=False)
 class SceneDefinition:
-    """LLM 解析出的完整场景定义"""
+    """完整场景定义。"""
     scene_name: str = ""
     description: str = ""
     agents: List[AgentDef] = field(default_factory=list)
-    workflow: List[Dict[str, Any]] = field(default_factory=list)  # 任务执行顺序
+    workflow: List[Dict[str, Any]] = field(default_factory=list)  # Agent 协作与网络关系
+
+    def __init__(
+        self,
+        scene_name: str = "",
+        description: str = "",
+        agents: List[AgentDef] = None,
+        workflow: List[Dict[str, Any]] = None,
+        **legacy_fields: Any,
+    ):
+        self.scene_name = scene_name
+        self.description = description
+        self.agents = list(agents or [])
+        self.workflow = list(workflow or [])
 
     def to_workflow_steps(self):
         """
@@ -44,7 +57,7 @@ class SceneDefinition:
         from .workflow import WorkflowStep
 
         steps = []
-        for i, wf in enumerate(self.workflow):
+        for wf in self.workflow:
             # 检测旧格式: 有 "step" 字段但没有 "step_id"
             if "step" in wf and "step_id" not in wf:
                 step_id = f"step-{wf['step']}"
