@@ -3,7 +3,7 @@ Agent 数据模型与注册中心。
 
 本模块只维护仿真控制面需要的 Agent 元数据：
 - agent_id / role / name
-- skills / tags / capability_scores
+- skill_refs / capability_scores
 - status / container_url
 - position / extra_meta
 - pending task descriptions
@@ -48,15 +48,13 @@ class Agent:
         agent_id: str = None,
         role: str = "generic",
         name: str = "",
-        skills: List[str] = None,
-        tags: List[str] = None,
+        skill_refs: List[str] = None,
         capability_scores: Dict[str, float] = None,
     ):
         self.agent_id = agent_id or f"agent-{str(uuid.uuid4())}"
         self.role = role
         self.name = name or self.agent_id
-        self.skills = skills or []
-        self.tags = tags or []
+        self.skill_refs = list(skill_refs or [])
         self.capability_scores = capability_scores or {}
         self.status = "idle"
         self.container_id = f"docker-{self.agent_id}"
@@ -136,8 +134,7 @@ class Agent:
             "url": getattr(self, "container_url", ""),
             "container_id": self.container_id,
             "status": self.status,
-            "skills": self.skills,
-            "tags": self.tags,
+            "skill_refs": self.skill_refs,
             "capability_scores": self.capability_scores,
             "pending_tasks": len(self.task_queue),
             "pending_task_descs": self.pending_task_descs,
@@ -192,8 +189,7 @@ class AgentRegistry:
     def find_agent(
         cls,
         role: str = None,
-        skill: str = None,
-        tag: str = None,
+        skill_ref: str = None,
     ) -> List[Agent]:
         with cls._lock:
             agents_snapshot = list(cls._agents.values())
@@ -201,23 +197,21 @@ class AgentRegistry:
         for agent in agents_snapshot:
             if role and agent.role != role:
                 continue
-            if skill and skill not in agent.skills:
-                continue
-            if tag and tag not in agent.tags:
+            if skill_ref and skill_ref not in agent.skill_refs:
                 continue
             results.append(agent)
         return results
 
     @classmethod
-    def find_best_agent(cls, skill: str) -> Optional[Agent]:
+    def find_best_agent(cls, skill_ref: str) -> Optional[Agent]:
         with cls._lock:
             agents_snapshot = list(cls._agents.values())
-        candidates = [a for a in agents_snapshot if skill in a.skills]
+        candidates = [a for a in agents_snapshot if skill_ref in a.skill_refs]
         if not candidates:
-            candidates = [a for a in agents_snapshot if skill in a.capability_scores]
+            candidates = [a for a in agents_snapshot if skill_ref in a.capability_scores]
         if not candidates:
             return None
-        return max(candidates, key=lambda a: a.capability_scores.get(skill, 0))
+        return max(candidates, key=lambda a: a.capability_scores.get(skill_ref, 0))
 
     @classmethod
     def list_all(cls) -> List[Agent]:
