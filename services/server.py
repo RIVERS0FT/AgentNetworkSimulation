@@ -80,7 +80,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "stats": AgentRegistry.get_stats(),
                             "agent_logs": state.agent_logs[-50:],
                             "log_entries": logger.get_entries(50),
-                            "relationships": state.current_relationships,
+                            "topology": state.current_topology,
                         },
                     })
                 elif data == "packets":
@@ -110,7 +110,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "log_entries": logger.get_entries(50),
                             "log_stats": logger.get_index_stats(),
                             "packet_stats": PacketRecorder.get_stats(),
-                            "relationships": state.current_relationships,
+                            "topology": state.current_topology,
                         },
                     })
             except asyncio.TimeoutError:
