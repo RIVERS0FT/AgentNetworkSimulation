@@ -12,12 +12,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Apply migration
-        run: python scripts/remove_skill_compat.py
+        id: migrate
+        continue-on-error: true
+        run: python scripts/remove_skill_compat.py > migration.log 2>&1
 
       - name: Compile
+        if: steps.migrate.outcome == 'success'
         run: python -m compileall -q agent_network services tests
 
       - name: Run boundary tests
+        if: steps.migrate.outcome == 'success'
         run: >-
           pytest -q
           tests/test_scene_building_boundary.py
@@ -28,6 +32,7 @@ jobs:
           tests/test_agent_server_boundary.py
 
       - name: Build migration artifact
+        if: steps.migrate.outcome == 'success'
         run: |
           mkdir -p migration-output
           cp --parents \
@@ -52,7 +57,19 @@ jobs:
             docs/设计文档.md \
             migration-output/
 
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          cp migration.log diagnostics/migration.log
+          if [ -d migration-output ]; then cp -R migration-output diagnostics/; fi
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: skill-refs-migration
-          path: migration-output
+          path: diagnostics
+
+      - name: Fail when migration failed
+        if: steps.migrate.outcome != 'success'
+        run: exit 1
