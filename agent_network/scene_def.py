@@ -32,7 +32,6 @@ class SceneDefinition:
     description: str = ""
     agents: List[AgentDef] = field(default_factory=list)
     workflow: List[Dict[str, Any]] = field(default_factory=list)  # 任务执行顺序
-    event_triggers: List[Dict[str, Any]] = field(default_factory=list)  # script_json 事件
 
     def to_workflow_steps(self):
         """
