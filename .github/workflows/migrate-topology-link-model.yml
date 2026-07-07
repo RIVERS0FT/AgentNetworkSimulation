@@ -1,0 +1,66 @@
+name: Validate topology link migration
+
+on:
+  push:
+    branches:
+      - refactor/topology-link-model
+    paths:
+      - scripts/migrate_topology_link_model.py
+      - .github/workflows/migrate-topology-link-model.yml
+
+jobs:
+  migrate-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/topology-link-model
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Apply strict TopologyLink migration
+        run: python scripts/migrate_topology_link_model.py
+
+      - name: Compile changed Python files
+        run: |
+          python -m py_compile \
+            agent_network/api/simulations.py \
+            agent_network/network_emulation.py \
+            scenes/scenario.py \
+            tests/test_network_emulation.py \
+            tests/test_scene_building_boundary.py
+
+      - name: Run topology boundary tests
+        run: |
+          pytest -q \
+            tests/test_network_emulation.py \
+            tests/test_scene_building_boundary.py
+
+      - name: Collect migrated files
+        if: always()
+        run: |
+          mkdir -p topology-migration-output
+          cp --parents \
+            agent_network/api/simulations.py \
+            agent_network/network_emulation.py \
+            web/public/dashboard.js \
+            tests/test_network_emulation.py \
+            tests/test_scene_building_boundary.py \
+            scenes/scenario.py \
+            scenes/README.md \
+            docs/设计文档.md \
+            topology-migration-output/
+          find scenes -name network_topology.json -print0 | xargs -0 -I{} cp --parents "{}" topology-migration-output/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: topology-link-model
+          path: topology-migration-output
