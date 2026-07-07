@@ -49,10 +49,23 @@ jobs:
             tests/test_scene_building_boundary.py
 
       - name: Run topology boundary tests
+        id: topology_tests
+        continue-on-error: true
         run: |
           pytest -q \
             tests/test_network_emulation.py \
-            tests/test_scene_building_boundary.py
+            tests/test_scene_building_boundary.py \
+            > pytest.log 2>&1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: topology-test-log
+          path: pytest.log
+
+      - name: Stop on test failure
+        if: steps.topology_tests.outcome != 'success'
+        run: exit 1
 
       - name: Remove one-shot migration files
         run: rm scripts/migrate_topology_link_model.py scripts/prepare_topology_link_migration.py .github/workflows/migrate-topology-link-model.yml
