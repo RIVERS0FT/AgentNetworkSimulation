@@ -7,6 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TEXT_EXTENSIONS = {
     ".py", ".md", ".json", ".yml", ".yaml", ".txt", ".toml", ".ini", ".cfg", ".js", ".ts", ".tsx", ".css", ".html"
 }
+ONE_SHOT_WORKFLOW = ROOT / ".github" / "workflows" / "strict-agent-model-cleanup.yml"
 FORBIDDEN = (
     "extra_meta",
     "_extra_meta",
@@ -24,7 +25,7 @@ def iter_text_files():
             continue
         if any(part in ignored_dirs for part in path.parts):
             continue
-        if path == pathlib.Path(__file__).resolve():
+        if path == pathlib.Path(__file__).resolve() or path == ONE_SHOT_WORKFLOW:
             continue
         if path.suffix.lower() in TEXT_EXTENSIONS:
             yield path
