@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from agent_network import state
-from agent_network.agent_model import AgentRegistry, Agent
+from agent_network.agent_management import AgentRegistry, Agent
 from agent_network.logger import get_logger
 from agent_network.real_packet_store import packet_stats
 from agent_network.network_emulation import normalize_profile

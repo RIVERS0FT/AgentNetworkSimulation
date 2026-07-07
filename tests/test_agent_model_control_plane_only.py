@@ -1,6 +1,6 @@
 import pytest
 
-from agent_network.agent_model import Agent, AgentRegistry, Message
+from agent_network.agent_management import Agent, AgentRegistry, Message
 
 
 def test_agent_execute_task_is_removed_from_control_plane_model():

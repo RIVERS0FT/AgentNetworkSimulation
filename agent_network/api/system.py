@@ -10,7 +10,7 @@ except ImportError:
     psutil = None
 
 from agent_network import state
-from agent_network.agent_model import AgentRegistry
+from agent_network.agent_management import AgentRegistry
 from agent_network.logger import get_logger
 from agent_network.real_packet_store import packet_stats
 
