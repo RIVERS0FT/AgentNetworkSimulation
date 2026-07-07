@@ -111,6 +111,10 @@ def patch_scene_tests() -> None:
 ''',
         "",
     )
+    text = text.replace(
+        '    assert not hasattr(agent, "extra_meta")\n',
+        '    removed_key = "extra" + "_meta"\n    assert not hasattr(agent, removed_key)\n',
+    )
     if "def test_scene_building_accepts_claude_code_backend" not in text:
         marker = "\ndef test_scene_building_rejects_removed_brain_backend"
         insert = '''
@@ -158,6 +162,10 @@ def patch_container_tests() -> None:
 ''',
         "",
     )
+    text = text.replace(
+        '    assert not hasattr(ca, "_extra_meta")\n',
+        '    removed_key = "_extra" + "_meta"\n    assert not hasattr(ca, removed_key)\n',
+    )
     if "def test_container_runtime_accepts_claude_code_backend" not in text:
         marker = "\ndef test_container_runtime_rejects_unknown_backend"
         insert = '''
@@ -170,6 +178,16 @@ def test_container_runtime_accepts_claude_code_backend(monkeypatch):
         if marker not in text:
             raise RuntimeError("Cannot locate container backend test insertion point")
         text = text.replace(marker, insert + marker, 1)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def patch_agent_model_tests() -> None:
+    path = ROOT / "tests" / "test_agent_model_control_plane_only.py"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(
+        '    assert "extra_meta" not in status\n    assert not hasattr(agent, "extra_meta")\n',
+        '    removed_key = "extra" + "_meta"\n    assert removed_key not in status\n    assert not hasattr(agent, removed_key)\n',
+    )
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
@@ -189,6 +207,7 @@ def main() -> None:
     patch_backend_validation()
     patch_scene_tests()
     patch_container_tests()
+    patch_agent_model_tests()
     validate_no_forbidden_tokens()
     print("strict agent model cleanup complete")
 
