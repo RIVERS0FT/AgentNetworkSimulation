@@ -6,6 +6,7 @@ on:
       - refactor/remove-agent-extra-meta
     paths:
       - scripts/apply_remove_agent_extra_meta.py
+      - scripts/prepare_remove_agent_extra_meta.py
       - .github/workflows/remove-agent-extra-meta.yml
   pull_request:
     branches:
@@ -33,6 +34,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest
+
+      - name: Remove legacy Agent status fields
+        run: python scripts/prepare_remove_agent_extra_meta.py
 
       - name: Apply strict Agent model migration
         id: migrate
@@ -72,7 +76,7 @@ jobs:
             tests/test_experiment_manifest.py
 
       - name: Remove one-shot migration files
-        run: rm scripts/apply_remove_agent_extra_meta.py .github/workflows/remove-agent-extra-meta.yml
+        run: rm scripts/apply_remove_agent_extra_meta.py scripts/prepare_remove_agent_extra_meta.py .github/workflows/remove-agent-extra-meta.yml
 
       - uses: EndBug/add-and-commit@v9
         with:
