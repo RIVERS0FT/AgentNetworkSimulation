@@ -15,7 +15,6 @@ import os
 import socket
 import threading
 import uuid
-from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -71,14 +70,6 @@ class Agent:
         self.task_queue: List[Message] = []
         self.completed_tasks: List[Dict[str, Any]] = []
         self.pending_task_descs: List[str] = []
-        self._created_at = datetime.now().isoformat(timespec="seconds")
-
-        # Frontend layout state.
-        self.x: float = 0.0
-        self.y: float = 0.0
-        self.speed: float = 1.0
-        self._target_x: Optional[float] = None
-        self._target_y: Optional[float] = None
 
     def set_comm(self, comm, registry=None):
         self.comm = comm
@@ -140,9 +131,6 @@ class Agent:
             "pending_tasks": len(self.task_queue),
             "pending_task_descs": self.pending_task_descs,
             "completed_tasks": len(self.completed_tasks),
-            "created_at": self._created_at,
-            "x": self.x,
-            "y": self.y,
         }
 
     def start(self):
