@@ -202,7 +202,7 @@ def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
     direct_bus = DirectBus()
     pos = _layout(scene_def.agents)
     for ad in scene_def.agents:
-        agent = Agent(agent_id=ad.agent_id, role=ad.role, name=ad.name, skills=ad.skills, tags=ad.tags)
+        agent = Agent(agent_id=ad.agent_id, role=ad.role, name=ad.name, skill_refs=ad.skill_refs)
         agent.set_comm(direct_bus)
         agent.x, agent.y = pos.get(ad.agent_id, (100, 100))
         agent.pending_task_descs = ad.tasks
@@ -227,7 +227,7 @@ def _launch_containers(config: Dict[str, str], scene_def=None) -> Dict[str, Any]
     assign_errors = []
 
     for ad in scene_def.agents:
-        ca = runtime.assign_agent(agent_id=ad.agent_id, role=ad.role, name=ad.name, extra_meta=ad.extra_meta if ad.extra_meta else None)
+        ca = runtime.assign_agent(agent_id=ad.agent_id, role=ad.role, name=ad.name, skill_refs=ad.skill_refs, extra_meta=ad.extra_meta if ad.extra_meta else None)
         created_cas.append((ca, ad.tasks))
         if ca.status == "error":
             assign_errors.append({"agent_id": ca.agent_id, "error": getattr(ca, "_assign_error", "unknown")})
@@ -467,14 +467,38 @@ def _build_scene_from_folder(scene_name: str) -> SceneDefinition:
     agents = []
     for role_id, role in roles.items():
         instance = containers.get(role_id, {})
-        raw_skills = instance.get("skill_refs") or instance.get("skills") or []
-        skills = [s.get("skill_name") or s.get("name") for s in raw_skills] if raw_skills and isinstance(raw_skills[0], dict) else raw_skills
-        skills = [s for s in skills if s]
+        skill_refs = list(instance.get("skill_refs") or [])
+        if not all(isinstance(item, str) and item for item in skill_refs):
+            raise ValueError(
+                f"Scene '{scene_name}' role '{role_id}' skill_refs must contain non-empty strings."
+            )
+        skill_refs = list(dict.fromkeys(skill_refs))
         allowed_tools = instance.get("tool_refs") or []
         backend = _normalize_backend(scene_name, role_id, role.get("model_backbone", "openclaw"))
         core_goal = role.get("core_goal", "")
         paradigm = role.get("primary_interaction_paradigm", "")
-        agents.append(AgentDef(agent_id=role_id.lower(), role="generic", name=role.get("name", role_id), skills=skills[:4], tags=[paradigm] if paradigm else [], tasks=[core_goal] if core_goal else [], extra_meta={"identity": role.get("identity", ""), "core_goal": core_goal, "initial_assets": role.get("initial_assets", {}), "action_space": ["send_message", "broadcast"] + allowed_tools, "background_rules": bg, "backend": backend, "interaction_paradigm": paradigm, "scene_key": scene_name, "scene_title": title, "allowed_skills": skills, "allowed_tools": allowed_tools, "skill_execution_mode": "backend_native_mcp"}))
+        identity = role.get("identity", "") or role.get("name", role_id)
+        agents.append(
+            AgentDef(
+                agent_id=role_id.lower(),
+                role=identity,
+                name=role.get("name", role_id),
+                skill_refs=skill_refs,
+                tasks=[core_goal] if core_goal else [],
+                extra_meta={
+                    "core_goal": core_goal,
+                    "initial_assets": role.get("initial_assets", {}),
+                    "action_space": ["send_message", "broadcast"] + allowed_tools,
+                    "background_rules": bg,
+                    "backend": backend,
+                    "interaction_paradigm": paradigm,
+                    "scene_key": scene_name,
+                    "scene_title": title,
+                    "allowed_tools": allowed_tools,
+                    "skill_execution_mode": "backend_native_mcp",
+                },
+            )
+        )
     topology_edges = []
     for subnet in topology_config.get("sub_networks", []):
         for edge in subnet.get("edges", []):

@@ -10,7 +10,6 @@ import requests
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
-from agent_network.skill_md_loader import parse_skill_md
 from agent_network.comm import DirectBus
 
 mcp = FastMCP("agent-network-mcp")
@@ -18,10 +17,8 @@ mcp = FastMCP("agent-network-mcp")
 _SCENE_KEY = ""
 _AGENT_ID = ""
 _AGENT_NAME = ""
-_ALLOWED_SKILLS = set()
 _ALLOWED_TOOLS = set()
 _SCENES_ROOT = Path("/app/scenes")
-_SKILLS_CACHE = {}
 _TOOL_REGISTRY = None
 _SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:8000")
 _AGENT_DIRECTORY = {}
@@ -69,7 +66,6 @@ def setup_runtime(
     scene_key: str,
     agent_id: str,
     agent_name: str,
-    allowed_skills: list,
     allowed_tools: list,
     scenes_root: str,
     agent_directory: dict = None,
@@ -77,16 +73,14 @@ def setup_runtime(
     trace_id: str = "",
     simulation_seed: int = 0,
 ):
-    global _SCENE_KEY, _AGENT_ID, _AGENT_NAME, _ALLOWED_SKILLS, _ALLOWED_TOOLS
-    global _SCENES_ROOT, _SKILLS_CACHE, _TOOL_REGISTRY, _AGENT_DIRECTORY, _COMM_MATRIX, _COMM, _TRACE_ID
+    global _SCENE_KEY, _AGENT_ID, _AGENT_NAME, _ALLOWED_TOOLS
+    global _SCENES_ROOT, _TOOL_REGISTRY, _AGENT_DIRECTORY, _COMM_MATRIX, _COMM, _TRACE_ID
 
     _SCENE_KEY = scene_key
     _AGENT_ID = agent_id.lower()
     _AGENT_NAME = agent_name
-    _ALLOWED_SKILLS = set(allowed_skills or [])
     _ALLOWED_TOOLS = set(allowed_tools or [])
     _SCENES_ROOT = Path(scenes_root)
-    _SKILLS_CACHE = {}
     _TOOL_REGISTRY = None
     _AGENT_DIRECTORY = {str(k).lower(): v for k, v in (agent_directory or {}).items() if v}
     _COMM_MATRIX = {
@@ -97,16 +91,6 @@ def setup_runtime(
     _TRACE_ID = trace_id
     random.seed(f"{simulation_seed}:{_AGENT_ID}")
 
-    skill_dir = _SCENES_ROOT / _SCENE_KEY / "skills"
-    if skill_dir.exists() and skill_dir.is_dir():
-        for p in sorted(skill_dir.glob("*.md")):
-            parsed = parse_skill_md(p)
-            if not parsed:
-                continue
-            s_name = parsed["name"]
-            if _ALLOWED_SKILLS and s_name not in _ALLOWED_SKILLS:
-                continue
-            _SKILLS_CACHE[s_name] = parsed
 
 
 def _tool_allowed(tool_name: str) -> bool:
@@ -241,7 +225,6 @@ def main():
     parser.add_argument("--scene", required=True)
     parser.add_argument("--agent-id", required=True)
     parser.add_argument("--agent-name", default="")
-    parser.add_argument("--allowed-skills", default="")
     parser.add_argument("--allowed-tools", default="")
     parser.add_argument("--scenes-root", default="/app/scenes")
     parser.add_argument("--agent-directory-json", default=os.environ.get("AGENT_DIRECTORY_JSON", "{}"))
@@ -254,7 +237,6 @@ def main():
         scene_key=args.scene,
         agent_id=args.agent_id,
         agent_name=args.agent_name or args.agent_id,
-        allowed_skills=args.allowed_skills.split(",") if args.allowed_skills else [],
         allowed_tools=args.allowed_tools.split(",") if args.allowed_tools else [],
         scenes_root=args.scenes_root,
         agent_directory=_json_arg(args.agent_directory_json),

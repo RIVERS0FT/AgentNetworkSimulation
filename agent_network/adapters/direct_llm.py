@@ -198,19 +198,6 @@ def run_direct_llm(agent_context: AgentContext, backend_name: str, system_prompt
         )
 
 
-def _unique(items: list[str]) -> list[str]:
-    return list(dict.fromkeys([item for item in items if item]))
-
-
-def _skill_names(agent_context: AgentContext) -> list[str]:
-    names = list(getattr(agent_context, "allowed_skills", []) or [])
-    if not names:
-        for item in agent_context.skills or []:
-            if isinstance(item, dict):
-                names.append(item.get("name") or item.get("skill_name") or "")
-            elif isinstance(item, str):
-                names.append(item)
-    return _unique(names)
 
 
 def _skill_context(agent_context: AgentContext) -> list[dict]:
@@ -219,12 +206,10 @@ def _skill_context(agent_context: AgentContext) -> list[dict]:
     registry = load_scene_skill_registry(
         scene_key=scene_key,
         scenes_root=scenes_root,
-        allowed_skills=_skill_names(agent_context),
+        skill_refs=agent_context.skill_refs,
     )
     specs = registry.context_specs()
-    if specs:
-        return specs
-    return [item for item in (agent_context.skills or []) if isinstance(item, dict)]
+    return specs
 
 
 def _system_prompt(agent_context: AgentContext) -> str:
@@ -250,8 +235,8 @@ def _build_task_payload(agent_context: AgentContext) -> str:
             "core_goal": agent_context.core_goal,
         },
         "messages": agent_context.messages,
-        "allowed_skills": _skill_names(agent_context),
-        "skills": _skill_context(agent_context),
+        "skill_refs": agent_context.skill_refs,
+        "skill_context": _skill_context(agent_context),
         "allowed_tools": agent_context.allowed_tools,
         "permissions": agent_context.permissions,
         "state_snapshot": agent_context.state_snapshot,

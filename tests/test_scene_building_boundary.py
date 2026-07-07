@@ -79,7 +79,7 @@ Reporting SOP.
     return folder
 
 
-def test_scene_building_uses_core_goal_as_task_and_skills_as_context(tmp_path, monkeypatch):
+def test_scene_building_uses_identity_role_and_skill_refs(tmp_path, monkeypatch):
     _write_scene(tmp_path)
     monkeypatch.setattr(simulations, "_SCENES_DIR", tmp_path)
 
@@ -87,10 +87,12 @@ def test_scene_building_uses_core_goal_as_task_and_skills_as_context(tmp_path, m
     agent = scene_def.agents[0]
 
     assert agent.agent_id == "ceo"
+    assert agent.role == "Leader"
     assert agent.tasks == ["Coordinate the team"]
-    assert agent.skills == ["planning", "reporting"]
+    assert agent.skill_refs == ["planning", "reporting"]
     assert agent.extra_meta["allowed_tools"] == ["write_plan"]
-    assert agent.extra_meta["allowed_skills"] == ["planning", "reporting"]
+    assert "identity" not in agent.extra_meta
+    assert "allowed_skills" not in agent.extra_meta
     assert "skills_list" not in agent.extra_meta
     assert agent.extra_meta["action_space"] == ["send_message", "broadcast", "write_plan"]
     assert agent.extra_meta["skill_execution_mode"] == "backend_native_mcp"

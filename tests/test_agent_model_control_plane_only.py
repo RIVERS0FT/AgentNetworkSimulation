@@ -22,18 +22,25 @@ def test_agent_call_tool_is_removed_from_control_plane_model():
     assert "backend-native MCP tool calling" in str(exc.value)
 
 
-def test_agent_status_and_registry_remain_control_plane_features():
+def test_agent_status_and_registry_use_skill_refs_only():
     AgentRegistry.reset()
-    agent = Agent(agent_id="agent_a", role="planner", name="Agent A", skills=["planning"], tags=["demo"])
+    agent = Agent(
+        agent_id="agent_a",
+        role="planner",
+        name="Agent A",
+        skill_refs=["planning"],
+    )
     AgentRegistry.register(agent)
 
     status = agent.get_status()
 
     assert status["agent_id"] == "agent_a"
     assert status["role"] == "planner"
-    assert status["skills"] == ["planning"]
+    assert status["skill_refs"] == ["planning"]
+    assert "skills" not in status
+    assert "tags" not in status
     assert AgentRegistry.get("agent_a") is agent
-    assert AgentRegistry.find_agent(skill="planning") == [agent]
+    assert AgentRegistry.find_agent(skill_ref="planning") == [agent]
 
     AgentRegistry.reset()
     assert AgentRegistry.get("agent_a") is None

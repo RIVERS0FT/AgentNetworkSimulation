@@ -5,7 +5,7 @@ import socket
 import time
 import requests
 from typing import Callable, Dict, List, Any, Optional, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -13,6 +13,7 @@ class ContainerAgent:
     agent_id: str
     name: str
     role: str
+    skill_refs: List[str] = field(default_factory=list)
     container_id: str = ""
     container_name: str = ""
     container_ip: str = ""
@@ -187,7 +188,7 @@ class ContainerRuntime:
         except Exception as exc:
             raise RuntimeError(f"Pool exhausted for backend '{backend}': {exc}")
 
-    def assign_agent(self, agent_id: str, role: str, name: str, extra_meta: Dict = None) -> ContainerAgent:
+    def assign_agent(self, agent_id: str, role: str, name: str, skill_refs: List[str] = None, extra_meta: Dict = None) -> ContainerAgent:
         extra_meta = extra_meta or {}
         try:
             backend = self._normalize_backend(extra_meta.get("backend", self.DEFAULT_BACKEND))
@@ -217,6 +218,7 @@ class ContainerRuntime:
             agent_id=agent_id,
             name=name,
             role=role,
+            skill_refs=list(skill_refs or []),
             container_id=container_id,
             container_name=container_name,
             container_ip=container_ip,
@@ -254,8 +256,9 @@ class ContainerRuntime:
                 ctx["agent_id"] = ca.agent_id
                 ctx["agent_name"] = ca.name
                 ctx["role"] = ca.role
+                ctx["skill_refs"] = list(ca.skill_refs)
                 extra_meta = getattr(ca, "_extra_meta", {}) or {}
-                for src_key, dst_key in (("core_goal", "core_goal"), ("scene_key", "scene_key"), ("allowed_skills", "allowed_skills")):
+                for src_key, dst_key in (("core_goal", "core_goal"), ("scene_key", "scene_key")):
                     if extra_meta.get(src_key):
                         ctx[dst_key] = extra_meta[src_key]
                 if extra_meta.get("action_space"):

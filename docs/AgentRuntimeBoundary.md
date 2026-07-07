@@ -18,7 +18,7 @@ srv
   ├─ 为 Agent 分配容器
   ├─ 向 bus 注册 agent_id -> container_url
   ├─ 向 bus 下发 comm_matrix
-  └─ 向 Agent /run 注入 scene_key、allowed_skills、allowed_tools、任务和消息
+  └─ 向 Agent /run 注入 scene_key、skill_refs、allowed_tools、任务和消息
 
 Agent 容器
   ├─ BackendAdapter 启动容器本地 MCP server
@@ -47,7 +47,7 @@ bus
 允许保留的 `srv` 行为：
 
 - 读取 `instances_and_skills.json` 中的 `skill_refs` / `tool_refs` 作为 allowlist；
-- 把 `scene_key`、`allowed_skills`、`allowed_tools` 传给 Agent 容器；
+- 把 `scene_key`、`skill_refs`、`allowed_tools` 传给 Agent 容器；
 - 为前端展示 Agent 已绑定的 Skill 名称；
 - 调试接口必须默认关闭，只能显式开启。
 
@@ -117,10 +117,10 @@ Tool 是原子动作，放在场景目录的 `tools.py` 中。
 
 - `services/message_bus.py` 已增加通信矩阵接口，并在 `/relay` 中执行权限校验；
 - `agent_network/api/simulations.py` 已删除 `srv` 侧 `tools.py` import 和 `Skill.md` 正文读取路径；
-- `agent_network/api/simulations.py` 只从 `instances_and_skills.json` 读取 `skill_refs` / `tool_refs`，并作为 `allowed_skills` / `allowed_tools` 下发；
+- `agent_network/api/simulations.py` 只从 `instances_and_skills.json` 读取 `skill_refs` / `tool_refs`，并作为 `skill_refs` / `allowed_tools` 下发；
 - `agent_network/api/simulations.py` 在 launch 阶段把 `comm_matrix` 下发给 `bus`；
-- `services/agent_server.py` 已接收 `allowed_skills` 并写入 `AgentContext`；
-- `agent_network/adapters/openclaw.py` 与 `agent_network/adapters/claude_code.py` 已在容器内读取 Skill.md SOP，并把 `allowed_skills` 传给 MCP server；
+- `services/agent_server.py` 已接收 `skill_refs` 并写入 `AgentContext`；
+- `agent_network/adapters/openclaw.py` 与 `agent_network/adapters/claude_code.py` 已在容器内读取 Skill.md SOP，并把 `skill_refs` 传给 MCP server；
 - `agent_network/mcp_server.py` 负责在容器内读取 `tools.py`，并把 ToolRegistry 中允许的原子 Tool 注册为 MCP tools；
 - `docker-compose.yml` 已增加 `ag-o1` / `ag-c1` 可构建 Agent runtime 镜像服务。
 

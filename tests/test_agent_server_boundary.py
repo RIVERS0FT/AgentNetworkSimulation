@@ -62,3 +62,12 @@ def test_agent_server_supported_backends_are_explicit_and_exclude_brain():
 
     assert 'SUPPORTED_BACKENDS = {"openclaw", "claude-code", "direct_llm"}' in text
     assert "The brain backend has been removed" in text
+
+
+def test_agent_server_exposes_only_skill_refs_contract():
+    text = _text()
+
+    assert "skill_refs: List[str]" in text
+    assert "allowed_skills" not in text
+    assert "_skill_names_from_legacy" not in text
+    assert "skills: List[Dict" not in text

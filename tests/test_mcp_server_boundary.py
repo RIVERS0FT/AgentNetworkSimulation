@@ -63,29 +63,16 @@ def test_scene_tool_registration_exposes_toolregistry_entries_as_atomic_tools(mo
     assert '"tool": "write_plan"' in result
 
 
-def test_setup_runtime_keeps_skill_metadata_as_context_only(tmp_path):
+def test_mcp_server_does_not_cache_or_parse_skill_content(tmp_path):
     import agent_network.mcp_server as mcp_server
-
-    scene_dir = tmp_path / "demo" / "skills"
-    scene_dir.mkdir(parents=True)
-    (scene_dir / "planning.md").write_text(
-        """---
-name: planning
-description: Plan work
----
-Planning SOP.
-""",
-        encoding="utf-8",
-    )
 
     mcp_server.setup_runtime(
         scene_key="demo",
         agent_id="agent_a",
         agent_name="Agent A",
-        allowed_skills=["planning"],
         allowed_tools=[],
         scenes_root=str(tmp_path),
     )
 
-    assert "planning" in mcp_server._SKILLS_CACHE
-    assert mcp_server._SKILLS_CACHE["planning"]["sop_content"] == "Planning SOP."
+    assert not hasattr(mcp_server, "_SKILLS_CACHE")
+    assert not hasattr(mcp_server, "_ALLOWED_SKILLS")

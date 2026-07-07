@@ -10,17 +10,17 @@ async def list_agents():
     return [a.get_status() for a in AgentRegistry.list_all()]
 
 @router.get("/discover")
-async def discover_agents(role: str = None, skill: str = None, tag: str = None):
-    """服务发现：按条件查询 Agent"""
-    agents = AgentRegistry.find_agent(role=role, skill=skill, tag=tag)
+async def discover_agents(role: str = None, skill_ref: str = None):
+    """服务发现：按角色或技能引用查询 Agent。"""
+    agents = AgentRegistry.find_agent(role=role, skill_ref=skill_ref)
     return [a.get_status() for a in agents]
 
 @router.get("/discover/best")
-async def discover_best_agent(skill: str):
+async def discover_best_agent(skill_ref: str):
     """按能力评分查找最优 Agent"""
-    agent = AgentRegistry.find_best_agent(skill)
+    agent = AgentRegistry.find_best_agent(skill_ref)
     if not agent:
-        raise HTTPException(status_code=404, detail=f"No agent found for skill '{skill}'")
+        raise HTTPException(status_code=404, detail=f"No agent found for skill_ref '{skill_ref}'")
     return agent.get_status()
 
 @router.get("/stats")
@@ -46,8 +46,7 @@ async def register_agent(req: Dict[str, Any]):
         agent_id=agent_id,
         role=req.get("role", "generic"),
         name=req.get("name", agent_id),
-        skills=req.get("skills", []),
-        tags=req.get("tags", []),
+        skill_refs=req.get("skill_refs", []),
         capability_scores=req.get("capability_scores", {})
     )
     AgentRegistry.register(agent)

@@ -38,6 +38,7 @@ def test_run_all_skips_agent_without_task_or_messages(monkeypatch):
         agent_id="agent_a",
         name="Agent A",
         role="planner",
+        skill_refs=["planning"],
         url="http://agent-a:8000",
         status="idle",
     )
@@ -80,7 +81,6 @@ def test_run_all_posts_structured_context_without_local_agent_execution(monkeypa
         "core_goal": "Coordinate",
         "action_space": ["send_message"],
         "scene_key": "demo_scene",
-        "allowed_skills": ["planning"],
         "allowed_tools": ["write_plan"],
     }
     runtime.agents["agent_a"] = ca
@@ -109,7 +109,8 @@ def test_run_all_posts_structured_context_without_local_agent_execution(monkeypa
     assert posted["json"]["task"] == "Do the assigned work"
     assert posted["json"]["scene_key"] == "demo_scene"
     assert "skills" not in posted["json"]
-    assert posted["json"]["allowed_skills"] == ["planning"]
+    assert "allowed_skills" not in posted["json"]
+    assert posted["json"]["skill_refs"] == ["planning"]
     assert posted["json"]["allowed_tools"] == ["send_message", "write_plan"]
 
 

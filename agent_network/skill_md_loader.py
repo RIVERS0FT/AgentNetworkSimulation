@@ -60,7 +60,6 @@ def parse_skill_md(path: str | Path) -> dict:
 
     return {
         "name": name,
-        "skill_name": name,
         "description": meta.get("description", name),
         "version": str(meta.get("version", "1.0")),
         "category": meta.get("category", ""),
@@ -105,12 +104,12 @@ class LocalSkillRegistry:
     Atomic executable Tools must be registered through tools.py / MCP.
     """
 
-    def __init__(self, allowed_skills=None):
-        self.allowed_skills = set(allowed_skills or [])
+    def __init__(self, skill_refs=None):
+        self.skill_refs = set(skill_refs or [])
         self._skills: dict[str, SkillSpec] = {}
 
     def register(self, spec: SkillSpec):
-        if not self.allowed_skills or spec.name in self.allowed_skills:
+        if spec.name in self.skill_refs:
             self._skills[spec.name] = spec
 
     def list_skills(self) -> list[dict]:
@@ -157,9 +156,9 @@ class LocalSkillRegistry:
 def load_scene_skill_registry(
     scene_key: str,
     scenes_root: str = "/app/scenes",
-    allowed_skills: list[str] | None = None
+    skill_refs: list[str] | None = None
 ) -> LocalSkillRegistry:
-    registry = LocalSkillRegistry(allowed_skills)
+    registry = LocalSkillRegistry(skill_refs)
     skill_dir = Path(scenes_root) / scene_key / "skills"
 
     if not skill_dir.exists() or not skill_dir.is_dir():

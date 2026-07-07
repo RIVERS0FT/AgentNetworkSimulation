@@ -19,16 +19,7 @@ def _context() -> AgentContext:
             {"from": "user", "content": "first"},
             {"from": "agent_b", "content": "second"},
         ],
-        skills=[
-            {
-                "name": "planning",
-                "description": "Plan tasks",
-                "input_schema": {"type": "object"},
-                "output_schema": {"type": "object"},
-                "sop_content": "Plan step by step",
-                "tools": ["write_plan"],
-            }
-        ],
+        skill_refs=["planning"],
         allowed_tools=["send_message", "write_plan"],
         permissions={"can_send": ["agent_b"]},
         state_snapshot={"version": 1},
@@ -51,11 +42,11 @@ def test_claude_task_payload_contains_full_context_not_latest_message_only():
     assert payload["trace_id"] == "trace-test"
     assert payload["agent"]["agent_id"] == "agent_a"
     assert [m["content"] for m in payload["messages"]] == ["first", "second"]
-    assert payload["skills"][0]["name"] == "planning"
-    assert payload["skills"][0]["sop_content"] == "Plan step by step"
+    assert payload["skill_refs"] == ["planning"]
+    assert payload["skill_context"] == []
     assert payload["allowed_tools"] == ["send_message", "write_plan"]
 
-    server = claude_code._claude_mcp_server(_context(), ["planning"])
+    server = claude_code._claude_mcp_server(_context())
     assert "--simulation-seed" in server["args"]
 
 
@@ -64,7 +55,8 @@ def test_openclaw_task_payload_contains_full_context_not_latest_message_only():
 
     assert payload["scene_key"] == "demo_scene"
     assert [m["content"] for m in payload["messages"]] == ["first", "second"]
-    assert payload["skills"][0]["tools"] == ["write_plan"]
+    assert payload["skill_refs"] == ["planning"]
+    assert payload["skill_context"] == []
 
 
 def test_mock_claude_adapter_returns_application_event_without_real_llm(monkeypatch):

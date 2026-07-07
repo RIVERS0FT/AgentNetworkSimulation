@@ -41,7 +41,7 @@ Follow the reporting SOP.
 
 
 def test_local_skill_registry_returns_context_specs_only():
-    registry = LocalSkillRegistry(allowed_skills=["submit_report"])
+    registry = LocalSkillRegistry(skill_refs=["submit_report"])
     registry.register(
         SkillSpec(
             name="submit_report",

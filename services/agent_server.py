@@ -137,15 +137,6 @@ def _log_agent(event: str, detail: str, **kw):
     }, timeout=2)
 
 
-def _skill_names_from_legacy(skills: List[Dict[str, Any]]) -> List[str]:
-    names = []
-    for item in skills or []:
-        if isinstance(item, dict):
-            names.append(item.get("name") or item.get("skill_name") or "")
-        elif isinstance(item, str):
-            names.append(item)
-    return list(dict.fromkeys([name for name in names if name]))
-
 
 class MessageIn(BaseModel):
     from_id: str
@@ -165,8 +156,7 @@ class RunRequest(BaseModel):
     core_goal: str = ""
     task: str = ""
     messages: List[Dict[str, Any]] = []
-    skills: List[Dict[str, Any]] = []
-    allowed_skills: List[str] = []
+    skill_refs: List[str] = []
     allowed_tools: List[str] = []
     permissions: Dict[str, Any] = {}
     state_snapshot: Dict[str, Any] = {}
@@ -190,7 +180,6 @@ def _make_adapter():
 @app.post("/run")
 async def run_agent(req: RunRequest):
     """The full ReAct loop is delegated to the selected backend adapter."""
-    allowed_skills = req.allowed_skills or _skill_names_from_legacy(req.skills)
     comm.update_directory(req.agent_directory, req.comm_matrix)
     pending_messages, pending_ids = _snapshot_inbox()
     effective_messages = req.messages or pending_messages
@@ -202,7 +191,7 @@ async def run_agent(req: RunRequest):
         core_goal=req.core_goal or AGENT_CORE_GOAL,
         task=req.task,
         messages=effective_messages,
-        skills=req.skills or [],
+        skill_refs=req.skill_refs,
         allowed_tools=req.allowed_tools,
         permissions=req.permissions,
         state_snapshot=req.state_snapshot,
@@ -210,7 +199,6 @@ async def run_agent(req: RunRequest):
         timeout_seconds=req.timeout_seconds,
         max_turns=req.max_turns,
         scene_key=req.scene_key or os.environ.get("AGENT_SCENE_KEY", "default"),
-        allowed_skills=allowed_skills,
         agent_directory=req.agent_directory,
         comm_matrix=req.comm_matrix,
         simulation_seed=req.simulation_seed,

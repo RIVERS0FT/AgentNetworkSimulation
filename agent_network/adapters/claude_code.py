@@ -22,25 +22,13 @@ def _unique(items: list[str]) -> list[str]:
     return list(dict.fromkeys([item for item in items if item]))
 
 
-def _skill_names(agent_context: AgentContext) -> list[str]:
-    names = list(getattr(agent_context, "allowed_skills", []) or [])
-    if not names:
-        for item in agent_context.skills or []:
-            if isinstance(item, dict):
-                names.append(item.get("name") or item.get("skill_name") or "")
-            elif isinstance(item, str):
-                names.append(item)
-    return _unique(names)
-
 
 def _skill_context(agent_context: AgentContext) -> list[dict]:
     scene_key = agent_context.scene_key or os.environ.get("AGENT_SCENE_KEY", "default")
     scenes_root = os.environ.get("AGENT_SCENES_ROOT", "/app/scenes")
-    registry = load_scene_skill_registry(scene_key=scene_key, scenes_root=scenes_root, allowed_skills=_skill_names(agent_context))
+    registry = load_scene_skill_registry(scene_key=scene_key, scenes_root=scenes_root, skill_refs=agent_context.skill_refs)
     specs = registry.context_specs()
-    if specs:
-        return specs
-    return [item for item in (agent_context.skills or []) if isinstance(item, dict)]
+    return specs
 
 
 def _build_task_payload(agent_context: AgentContext) -> str:
@@ -55,8 +43,8 @@ def _build_task_payload(agent_context: AgentContext) -> str:
             "core_goal": agent_context.core_goal,
         },
         "messages": agent_context.messages,
-        "allowed_skills": _skill_names(agent_context),
-        "skills": _skill_context(agent_context),
+        "skill_refs": agent_context.skill_refs,
+        "skill_context": _skill_context(agent_context),
         "allowed_tools": agent_context.allowed_tools,
         "permissions": agent_context.permissions,
         "state_snapshot": agent_context.state_snapshot,
@@ -92,7 +80,7 @@ def _completed_event(agent_context: AgentContext, output_text: str, backend_name
     }
 
 
-def _claude_mcp_server(agent_context: AgentContext, skill_names: list[str]) -> dict:
+def _claude_mcp_server(agent_context: AgentContext) -> dict:
     scene_key = agent_context.scene_key or os.environ.get("AGENT_SCENE_KEY", "default")
     return {
         "type": "stdio",
@@ -102,7 +90,6 @@ def _claude_mcp_server(agent_context: AgentContext, skill_names: list[str]) -> d
             "--scene", scene_key,
             "--agent-id", agent_context.agent_id,
             "--agent-name", agent_context.agent_name,
-            "--allowed-skills", ",".join(skill_names),
             "--allowed-tools", ",".join(agent_context.allowed_tools),
             "--agent-directory-json", json.dumps(agent_context.agent_directory, ensure_ascii=False),
             "--comm-matrix-json", json.dumps(agent_context.comm_matrix, ensure_ascii=False),
@@ -237,7 +224,6 @@ class ClaudeCodeAdapter(BackendAdapter):
                 application_events=[_completed_event(agent_context, output_text, "claude-code")],
             )
 
-        skill_names = _skill_names(agent_context)
         system_prompt = _system_prompt(agent_context)
         current_task = _build_task_payload(agent_context)
 
@@ -250,7 +236,7 @@ class ClaudeCodeAdapter(BackendAdapter):
             options_kwargs = {
                 "system_prompt": system_prompt,
                 "allowed_tools": _claude_allowed_tools(agent_context),
-                "mcp_servers": {"agent_tools": _claude_mcp_server(agent_context, skill_names)},
+                "mcp_servers": {"agent_tools": _claude_mcp_server(agent_context)},
             }
             max_turns = agent_context.max_turns or int(os.environ.get("CLAUDE_AGENT_MAX_TURNS", "1"))
             if max_turns:
