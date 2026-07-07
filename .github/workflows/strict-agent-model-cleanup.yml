@@ -60,7 +60,11 @@ jobs:
 
       - name: Verify compatibility tokens are gone
         run: |
-          ! grep -RIn --exclude-dir=.git --exclude='strict_agent_model_cleanup.py' 'extra_meta\|_extra_meta\|"action_space"\|'"'"'action_space'"'"'\|skill_execution_mode\|claudecode' .
+          ! grep -RIn \
+            --exclude-dir=.git \
+            --exclude='strict_agent_model_cleanup.py' \
+            --exclude='strict-agent-model-cleanup.yml' \
+            'extra_meta\|_extra_meta\|"action_space"\|'"'"'action_space'"'"'\|skill_execution_mode\|claudecode' .
 
       - name: Remove one-shot cleanup files
         run: rm scripts/strict_agent_model_cleanup.py .github/workflows/strict-agent-model-cleanup.yml
