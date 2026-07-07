@@ -663,7 +663,7 @@ let ws = null;
 let hoveredAgent = null;
 let simRunning = false;
 let draggingId = null;
-let _relationships = [];
+let _topology = [];
 let _lastLogCount = 0;
 let _serverTimeOffset = 0; // ms, 服务端与浏览器时差
 
@@ -767,8 +767,8 @@ function getAgentWorldPos(agentId) {
   return (a && a.x != null) ? { x: a.x, y: a.y } : null;
 }
 
-function hasRelationship(fromId, toId) {
-  return _relationships.some(r => {
+function hasTopologyEdge(fromId, toId) {
+  return _topology.some(r => {
     const f = r.from.toLowerCase();
     const t = r.to.toLowerCase();
     return (f === fromId && t === toId) || (f === toId && t === fromId);
@@ -898,13 +898,13 @@ function drawCommandBackground(canvasW, canvasH, now) {
 }
 
 // ── Draw permanent relationship lines ──
-function drawRelationshipLines(relationships, agents) {
-  if (!ctx || !relationships.length || !agents.length) return;
+function drawTopologyLines(topology, agents) {
+  if (!ctx || !topology.length || !agents.length) return;
 
   ctx.save();
   ctx.lineCap = 'round';
 
-  for (const rel of relationships) {
+  for (const rel of topology) {
     const fromPos = getAgentWorldPos(rel.from.toLowerCase());
     const toPos = getAgentWorldPos(rel.to.toLowerCase());
     if (!fromPos || !toPos) continue;
@@ -1064,7 +1064,7 @@ function drawTrajectories(now) {
     const to = worldToScreen(toPos.x, toPos.y);
 
     const edgeKey = traj.from + '→' + traj.to;
-    if (!hasRelationship(traj.from, traj.to) && !tempLinks.has(edgeKey)) {
+    if (!hasTopologyEdge(traj.from, traj.to) && !tempLinks.has(edgeKey)) {
       tempLinks.set(edgeKey, { from, to });
     }
 
@@ -1073,7 +1073,7 @@ function drawTrajectories(now) {
 
   // Draw temp links behind trajectories (draw after trajectories so they're visible underneath)
   // Actually we need to draw them before trajectories. Let's reorder:
-  // This is handled in the main drawRelationshipsComposite which draws lines first,
+  // This is handled in the main drawTopologyComposite which draws lines first,
   // so we just collect them here.
 
   ctx.restore();
@@ -1081,8 +1081,8 @@ function drawTrajectories(now) {
   return tempLinks;
 }
 
-// ── Composite: relationships + trajectories ──
-function drawRelationshipsComposite(agents, relationships, now) {
+// ── Composite: topology + trajectories ──
+function drawTopologyComposite(agents, topology, now) {
   if (!ctx || !agents.length) return;
 
   // Auto-fit on first render with agents
@@ -1091,7 +1091,7 @@ function drawRelationshipsComposite(agents, relationships, now) {
   }
 
   // 1. Permanent relationship lines
-  drawRelationshipLines(relationships, agents);
+  drawTopologyLines(topology, agents);
 
   // 2. Collect temp links and draw trajectories
   if (!_trajectories.length) return;
@@ -1119,7 +1119,7 @@ function drawRelationshipsComposite(agents, relationships, now) {
     const to = worldToScreen(toPos.x, toPos.y);
 
     const edgeKey = traj.from + '→' + traj.to;
-    if (!hasRelationship(traj.from, traj.to) && !drawnTemp.has(edgeKey)) {
+    if (!hasTopologyEdge(traj.from, traj.to) && !drawnTemp.has(edgeKey)) {
       drawnTemp.add(edgeKey);
       drawTempLink(from, to);
     }
@@ -1155,9 +1155,9 @@ function drawAgents(agents, hoveredId, time) {
   const activeIds = new Set(agents.map(a => a.agent_id));
   for (const id of _simState.keys()) { if (!activeIds.has(id)) _simState.delete(id); }
 
-  // Build adjacency from relationships
+  // Build adjacency from topology
   const adj = new Map();
-  for (const rel of _relationships) {
+  for (const rel of _topology) {
     const f = rel.from.toLowerCase();
     const t = rel.to.toLowerCase();
     if (!adj.has(f)) adj.set(f, new Set());
@@ -1288,7 +1288,7 @@ function render() {
   drawCommandBackground(canvasW, canvasH, now);
 
   if (agents.length > 0) {
-    drawRelationshipsComposite(agents, _relationships, now);
+    drawTopologyComposite(agents, _topology, now);
     drawAgents(agents, hoveredAgent?.agent_id, now);
   } else {
     ctx.save();
@@ -1307,8 +1307,8 @@ render();
 
 // ============== Canvas Mouse Events ==============
 const statusLabel = { idle:'空闲', thinking:'思考中', acting:'执行中', error:'异常' };
-const roleLabel = { scout:'侦察兵', commander:'指挥官', analyst:'分析师', support:'支援', brain:'Brain', 'claude-code':'Claude Code', openclaw:'OpenClaw', observer:'观察员' };
-const backendLabel = { brain:'Brain', 'claude-code':'Claude Code', openclaw:'OpenClaw' };
+const roleLabel = { scout:'侦察兵', commander:'指挥官', analyst:'分析师', support:'支援', 'claude-code':'Claude Code', openclaw:'OpenClaw', observer:'观察员' };
+const backendLabel = { 'claude-code':'Claude Code', openclaw:'OpenClaw' };
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({
@@ -1563,7 +1563,7 @@ if (msg.type === 'agent_log' && msg.data) {
         pushCommEvent(from.toLowerCase(), to.toLowerCase(), false);
       } else if (action === 'broadcast') {
         if (to === '0.0.0.0') {
-          for (const rel of _relationships) {
+          for (const rel of _topology) {
             const rf = rel.from.toLowerCase();
             const rt = rel.to.toLowerCase();
             if (rf === from.toLowerCase()) {
@@ -1609,7 +1609,7 @@ if (msg.type === 'status' || msg.type === 'all') {
       viewport.userControlled = false;
     }
     agents = msg.data.agents || [];
-    if (msg.data.relationships !== undefined && (msg.data.relationships.length > 0 || agents.length === 0)) _relationships = msg.data.relationships;
+    if (msg.data.topology !== undefined && (msg.data.topology.length > 0 || agents.length === 0)) _topology = msg.data.topology;
     // ── agent_logs 旧缓冲区（兼容） ──
     if (_lastLogCount === 0) {
     const logs = msg.data.agent_logs || [];
@@ -1742,7 +1742,7 @@ async function runSelectedScene() {
     });
     if (!r1.ok) throw new Error((await r1.text()).slice(0, 200));
     const d1 = await r1.json();
-    if (d1.relationships) { _relationships = d1.relationships; }
+    if (d1.topology) { _topology = d1.topology; }
     if (ws && ws.readyState === WebSocket.OPEN) ws.send('all');
     logEntry('scene', '场景就绪: ' + (d1.agent_stats?.total_agents || 0) + ' Agent');
   } catch(e) { logEntry('scene', '场景构建失败: ' + e.message); return; }
@@ -1753,7 +1753,7 @@ async function runSelectedScene() {
     .then(d => {
       if (d.error) { logEntry('scene', '容器: ' + d.error); return; }
       logEntry('scene', '仿真完成: ' + (d.duration_seconds||0) + 's | ' + (d.agent_stats?.total_agents||0) + ' Agent');
-      if (d.relationships) { _relationships = d.relationships; }
+      if (d.topology) { _topology = d.topology; }
       if (ws && ws.readyState === WebSocket.OPEN) ws.send('all');
     })
     .catch(e => logEntry('scene', '容器启动失败: ' + e.message))

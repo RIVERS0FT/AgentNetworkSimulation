@@ -1,0 +1,66 @@
+FROM node:22-slim
+
+# Debian 国内镜像加速
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
+
+# Python is used by AgentNetwork's agent server and openclaw-sdk. Node is kept
+# in the image because the OpenCLAW gateway/runtime is installed as a
+# Node/TypeScript command inside the same container.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv python3-requests python-is-python3 \
+    tcpdump iproute2 ca-certificates curl netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Strict gateway runtime install hook. The OpenCLAW image must contain a real
+# gateway/runtime package; otherwise the build fails instead of producing a
+# container that later falls back to direct LLM.
+ARG OPENCLAW_GATEWAY_NPM_PACKAGE
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN set -eux; \
+    test -n "${OPENCLAW_GATEWAY_NPM_PACKAGE:-}" || \
+        (echo "OPENCLAW_GATEWAY_NPM_PACKAGE is required, for example openclaw@latest" >&2; exit 1); \
+    npm config set registry "${NPM_REGISTRY}"; \
+    npm install -g "${OPENCLAW_GATEWAY_NPM_PACKAGE}"
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
+
+# Install only the supported OpenCLAW SDK wheel. Do not install every wheel in
+# vendor/python because that directory may contain host/Python-version-specific
+# wheels such as cp312 artifacts. Missing SDK is a build error for this image.
+COPY vendor/python/ /tmp/vendor/python/
+RUN set -eux; \
+    wheel="$(find /tmp/vendor/python -maxdepth 1 -type f -name 'openclaw_sdk-*.whl' | head -n 1)"; \
+    test -n "${wheel}" || \
+        (echo "openclaw-sdk wheel is required in vendor/python/ as openclaw_sdk-*.whl" >&2; exit 1); \
+    python3 -m pip install --no-cache-dir --break-system-packages "${wheel}"; \
+    python3 -c "from openclaw_sdk import OpenClawClient; print('openclaw_sdk import ok')"
+
+COPY services/agent_server.py /app/services/
+COPY agent_network/ /app/agent_network/
+COPY scenes/ /app/scenes/
+COPY docker/start-openclaw-agent.sh /app/start-openclaw-agent.sh
+RUN chmod +x /app/start-openclaw-agent.sh
+
+# 注意: 使用 docker-compose 部署时，通过 environment 覆盖为 service name:
+#   MESSAGE_BUS_URL=http://bus:9000
+#   SERVER_URL=http://srv:8000
+# OpenCLAW gateway is intentionally local to this Agent container by default.
+ENV PYTHONPATH="/app"
+ENV AGENT_ID="agent-001"
+ENV AGENT_ROLE="generic"
+ENV AGENT_NAME="Agent"
+ENV MESSAGE_BUS_URL="http://localhost:9000"
+ENV SERVER_URL="http://localhost:8000"
+ENV AGENT_BACKEND="openclaw"
+ENV AGENT_STRICT_BACKEND_SDK="1"
+ENV OPENCLAW_START_GATEWAY="1"
+ENV OPENCLAW_GATEWAY_HOST="127.0.0.1"
+ENV OPENCLAW_GATEWAY_PORT="18789"
+ENV OPENCLAW_GATEWAY_WS_URL="ws://127.0.0.1:18789/gateway"
+
+EXPOSE 8000
+
+CMD ["/app/start-openclaw-agent.sh"]

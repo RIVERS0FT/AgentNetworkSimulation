@@ -1,121 +1,138 @@
 # 启动: docker compose up -d --build
+# 默认使用真实 LLM。需要 0-token 演示时显式设置 MOCK_LLM=1。
 
-x-brain: &brain
-  build: { context: ., dockerfile: Dockerfile }
-  cap_add: [NET_RAW, NET_ADMIN]
-  environment:
-    TZ: Asia/Shanghai
-    AGENT_BACKEND: brain
-    MESSAGE_BUS_URL: http://bus:9000
-    SERVER_URL: http://srv:8000
-    LOG_DOCKER_HTTP: "0"
-    LOG_TRAFFIC: "0"
-    LOG_LLM_API: "1"
-    LLM_API_KEY: ${ANTHROPIC_API_KEY}
-    LLM_MODEL: deepseek-chat
-    LLM_API_BASE: https://api.deepseek.com/v1
-    LLM_PROVIDER: openai
-    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-    ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-    AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
-    AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
-    AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
-    AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
-    AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
-  volumes: ["./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
-  restart: unless-stopped
-  networks: [an]
+x-common-llm-env: &common-llm-env
+  MOCK_LLM: ${MOCK_LLM:-0}
+  SIMULATION_SEED: ${SIMULATION_SEED:-}
+  LOG_FULL_PCAP: ${LOG_FULL_PCAP:-1}
+  # Default captures Agent runtime traffic only. Set to 1 for debugging srv
+  # orchestration, capture-control, and log-ingest traffic as well.
+  AGENT_CAPTURE_INCLUDE_CONTROL_PLANE: ${AGENT_CAPTURE_INCLUDE_CONTROL_PLANE:-0}
+  AGENT_NETWORK_EMULATION: ${AGENT_NETWORK_EMULATION:-1}
+  PCAP_DIR: /app/data/pcap
+  PCAP_MAX_BYTES: ${PCAP_MAX_BYTES:-1073741824}
+  PCAP_SHA256: ${PCAP_SHA256:-1}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+  LLM_API_BASE: ${LLM_API_BASE:-https://api.deepseek.com/v1}
+  OPENAI_API_BASE: ${OPENAI_API_BASE:-}
+  LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+  ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+  LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-2048}
+  LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+  LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
+  AGENT_STRICT_BACKEND_SDK: ${AGENT_STRICT_BACKEND_SDK:-0}
+  AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
+  AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
+  AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
+  AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
+  AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
+
+x-claude-env: &claude-env
+  <<: *common-llm-env
+  TZ: Asia/Shanghai
+  AGENT_BACKEND: claude-code
+  SERVER_URL: http://srv:8000
+  AGENT_COMM_MODE: direct
+  LOG_DOCKER_HTTP: "0"
+  LOG_TRAFFIC: "0"
+
+x-openclaw-env: &openclaw-env
+  <<: *common-llm-env
+  TZ: Asia/Shanghai
+  AGENT_BACKEND: openclaw
+  AGENT_STRICT_BACKEND_SDK: ${AGENT_STRICT_BACKEND_SDK:-1}
+  SERVER_URL: http://srv:8000
+  AGENT_COMM_MODE: direct
+  LOG_DOCKER_HTTP: "0"
+  LOG_TRAFFIC: "0"
+  OPENCLAW_START_GATEWAY: ${OPENCLAW_START_GATEWAY:-1}
+  OPENCLAW_GATEWAY_HOST: ${OPENCLAW_GATEWAY_HOST:-127.0.0.1}
+  OPENCLAW_GATEWAY_PORT: ${OPENCLAW_GATEWAY_PORT:-18789}
+  OPENCLAW_GATEWAY_WS_URL: ${OPENCLAW_GATEWAY_WS_URL:-ws://127.0.0.1:18789/gateway}
+  OPENCLAW_GATEWAY_CMD: ${OPENCLAW_GATEWAY_CMD:-}
+  OPENCLAW_GATEWAY_READY_TIMEOUT: ${OPENCLAW_GATEWAY_READY_TIMEOUT:-60}
+  OPENCLAW_API_KEY: ${OPENCLAW_API_KEY:-}
+  OPENCLAW_OPENAI_BASE_URL: ${OPENCLAW_OPENAI_BASE_URL:-}
+  OPENCLAW_DEFAULT_AGENT_ID: ${OPENCLAW_DEFAULT_AGENT_ID:-}
+  OPENCLAW_SESSION_NAME: ${OPENCLAW_SESSION_NAME:-}
 
 x-claude: &claude
-  build: { context: ., dockerfile: Dockerfile.claude }
+  build: { context: ., dockerfile: docker/Dockerfile.claude }
   cap_add: [NET_RAW, NET_ADMIN]
-  environment:
-    TZ: Asia/Shanghai
-    AGENT_BACKEND: claude-code
-    MESSAGE_BUS_URL: http://bus:9000
-    SERVER_URL: http://srv:8000
-    LOG_DOCKER_HTTP: "0"
-    LOG_TRAFFIC: "0"
-    LOG_LLM_API: "1"
-    LLM_API_KEY: ${ANTHROPIC_API_KEY}
-    LLM_MODEL: deepseek-chat
-    LLM_API_BASE: https://api.deepseek.com/v1
-    LLM_PROVIDER: openai
-    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-    ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-    AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
-    AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
-    AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
-    AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
-    AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
-  volumes: ["./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
+  environment: *claude-env
+  volumes:
+    - ./services/agent_server.py:/app/services/agent_server.py
+    - ./agent_network:/app/agent_network
+    - ./scenes:/app/scenes:ro
+    - ./data/pcap:/app/data/pcap
   restart: unless-stopped
   networks: [an]
 
 x-openclaw: &openclaw
-  build: { context: ., dockerfile: Dockerfile.openclaw }
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.openclaw
+    args:
+      OPENCLAW_GATEWAY_NPM_PACKAGE: ${OPENCLAW_GATEWAY_NPM_PACKAGE:-openclaw@latest}
   cap_add: [NET_RAW, NET_ADMIN]
-  environment:
-    TZ: Asia/Shanghai
-    AGENT_BACKEND: openclaw
-    MESSAGE_BUS_URL: http://bus:9000
-    SERVER_URL: http://srv:8000
-    LOG_DOCKER_HTTP: "0"
-    LOG_TRAFFIC: "0"
-    LOG_LLM_API: "1"
-    LLM_API_KEY: ${ANTHROPIC_API_KEY}
-    LLM_MODEL: deepseek-chat
-    LLM_API_BASE: https://api.deepseek.com/v1
-    LLM_PROVIDER: openai
-    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-    ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-    AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
-    AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
-    AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
-    AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
-    AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
-  volumes: ["./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
+  environment: *openclaw-env
+  volumes:
+    - ./services/agent_server.py:/app/services/agent_server.py
+    - ./agent_network:/app/agent_network
+    - ./scenes:/app/scenes:ro
+    - ./data/pcap:/app/data/pcap
   restart: unless-stopped
   networks: [an]
 
 services:
-  bus:
-    build: { context: ., dockerfile: Dockerfile.message-bus }
-    container_name: bus
-    user: "1000:1000"
-    ports: ["9000:9000"]
-    volumes: ["./data/logs:/app/data/logs"]
-    environment: { TZ: "Asia/Shanghai", MESSAGE_BUS_PORT: "9000", SERVER_URL: "http://srv:8000", LOG_DOCKER_HTTP: "0", LOG_TRAFFIC: "0", LOG_LLM_API: "1" }
-    restart: unless-stopped
-    networks: [an]
-
   srv:
-    build: { context: ., dockerfile: Dockerfile.server }
+    build: { context: ., dockerfile: docker/Dockerfile.server }
     container_name: srv
     user: "1000:110"
     ports: ["8000:8000"]
-    command: ["python", "server.py", "--host", "0.0.0.0"]
-    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "./data/logs:/app/data/logs", "./web/public:/app/web/dist", "./scenes:/app/scenes", "./server.py:/app/server.py", "./agent_server.py:/app/agent_server.py", "./agent_network:/app/agent_network"]
+    command: ["python", "services/server.py", "--host", "0.0.0.0"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/logs:/app/data/logs
+      - ./data/pcap:/app/data/pcap
+      - ./web/public:/app/web/public
+      - ./scenes:/app/scenes
+      - ./services/server.py:/app/services/server.py
+      - ./services/agent_server.py:/app/services/agent_server.py
+      - ./agent_network:/app/agent_network
     environment:
+      <<: *common-llm-env
       TZ: Asia/Shanghai
       SERVER_PORT: "8000"
-      MESSAGE_BUS_URL: http://bus:9000
+      AGENT_COMM_MODE: direct
       LOG_DOCKER_HTTP: "0"
       LOG_TRAFFIC: "0"
-      LOG_LLM_API: "1"
-      LLM_API_KEY: ${ANTHROPIC_API_KEY}
-      LLM_MODEL: deepseek-chat
-      LLM_API_BASE: https://api.deepseek.com/v1
-      LLM_PROVIDER: openai
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-      AGENT_MESSAGE_HISTORY_TURNS: ${AGENT_MESSAGE_HISTORY_TURNS:-8}
-      AGENT_RECENT_HISTORY_TURNS: ${AGENT_RECENT_HISTORY_TURNS:-2}
-      AGENT_FACT_BOARD_MAX_ITEMS: ${AGENT_FACT_BOARD_MAX_ITEMS:-40}
-      AGENT_FACT_BOARD_MAX_CHARS: ${AGENT_FACT_BOARD_MAX_CHARS:-6000}
-      AGENT_FACT_ITEM_MAX_CHARS: ${AGENT_FACT_ITEM_MAX_CHARS:-300}
+      AGENT_PCAP_HOST_PATH: /app/data/pcap
     restart: unless-stopped
     networks: [an]
+
+  ag-o1:
+    <<: *openclaw
+    image: agentnetwork-ag-o1
+    container_name: ag-o1
+    environment:
+      <<: *openclaw-env
+      AGENT_ID: ag-o1
+      AGENT_NAME: ag-o1
+      AGENT_ROLE: openclaw
+
+  ag-c1:
+    <<: *claude
+    image: agentnetwork-ag-c1
+    container_name: ag-c1
+    environment:
+      <<: *claude-env
+      AGENT_ID: ag-c1
+      AGENT_NAME: ag-c1
+      AGENT_ROLE: claude-code
 
 networks:
   an: { driver: bridge, name: an }
