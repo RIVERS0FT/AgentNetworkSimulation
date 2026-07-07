@@ -35,7 +35,19 @@ jobs:
           python -m pip install -r requirements.txt pytest
 
       - name: Apply strict Agent model migration
-        run: python scripts/apply_remove_agent_extra_meta.py
+        id: migrate
+        continue-on-error: true
+        run: python scripts/apply_remove_agent_extra_meta.py > migration.log 2>&1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-model-migration-log
+          path: migration.log
+
+      - name: Stop on migration failure
+        if: steps.migrate.outcome != 'success'
+        run: exit 1
 
       - name: Compile changed Python files
         run: |
