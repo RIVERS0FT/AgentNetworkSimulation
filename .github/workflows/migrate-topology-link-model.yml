@@ -7,6 +7,9 @@ on:
     paths:
       - scripts/migrate_topology_link_model.py
       - .github/workflows/migrate-topology-link-model.yml
+  pull_request:
+    branches:
+      - main
 
 jobs:
   migrate-and-test:
