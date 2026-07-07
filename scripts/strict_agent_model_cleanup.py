@@ -41,7 +41,7 @@ def replace_legacy_backend_aliases() -> None:
 def patch_backend_validation() -> None:
     path = ROOT / "agent_network" / "api" / "simulations.py"
     text = path.read_text(encoding="utf-8")
-    old = '''    if backend == "claude-code":
+    duplicate_alias_block = '''    if backend == "claude-code":
         return backend
     if backend == "brain":
         raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses removed backend 'brain'.")
@@ -54,16 +54,16 @@ def patch_backend_validation() -> None:
         raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses unsupported backend '{backend}'.")
     return backend
 '''
-    if old in text:
-        new = '''    if backend == "brain":
+    strict_block = '''    if backend == "brain":
         raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses removed backend 'brain'.")
     if backend not in {"openclaw", "claude-code"}:
         raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses unsupported backend '{backend}'.")
     return backend
 '''
-        text = text.replace(old, new, 1)
-    # Also handle the pre-replacement form, for idempotence when run manually.
-    old_original = '''    if backend == "brain":
+    if duplicate_alias_block in text:
+        text = text.replace(duplicate_alias_block, strict_block, 1)
+
+    pre_replacement_block = '''    if backend == "brain":
         raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses removed backend 'brain'.")
     if backend == "claudecode":
         raise ValueError(
@@ -74,14 +74,8 @@ def patch_backend_validation() -> None:
         raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses unsupported backend '{backend}'.")
     return backend
 '''
-    if old_original in text:
-        new = '''    if backend == "brain":
-        raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses removed backend 'brain'.")
-    if backend not in {"openclaw", "claude-code"}:
-        raise ValueError(f"Scene '{scene_name}' role '{role_id}' uses unsupported backend '{backend}'.")
-    return backend
-'''
-        text = text.replace(old_original, new, 1)
+    if pre_replacement_block in text:
+        text = text.replace(pre_replacement_block, strict_block, 1)
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
@@ -134,6 +128,50 @@ def test_scene_building_accepts_claude_code_backend(tmp_path, monkeypatch):
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def patch_container_tests() -> None:
+    path = ROOT / "tests" / "test_container_runtime_boundary.py"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(
+        '''def test_container_runtime_rejects_claude-code_backend(monkeypatch):
+    runtime = _runtime(monkeypatch)
+
+    with pytest.raises(RuntimeError) as exc:
+        runtime._normalize_backend("claude-code")
+
+    assert "Unsupported backend" in str(exc.value)
+
+
+''',
+        "",
+    )
+    text = text.replace(
+        '''def test_container_runtime_rejects_claudecode_backend(monkeypatch):
+    runtime = _runtime(monkeypatch)
+
+    with pytest.raises(RuntimeError) as exc:
+        runtime._normalize_backend("claudecode")
+
+    assert "Unsupported backend" in str(exc.value)
+
+
+''',
+        "",
+    )
+    if "def test_container_runtime_accepts_claude_code_backend" not in text:
+        marker = "\ndef test_container_runtime_rejects_unknown_backend"
+        insert = '''
+
+def test_container_runtime_accepts_claude_code_backend(monkeypatch):
+    runtime = _runtime(monkeypatch)
+
+    assert runtime._normalize_backend("claude-code") == "claude-code"
+'''
+        if marker not in text:
+            raise RuntimeError("Cannot locate container backend test insertion point")
+        text = text.replace(marker, insert + marker, 1)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def validate_no_forbidden_tokens() -> None:
     hits = []
     for path in iter_text_files():
@@ -149,6 +187,7 @@ def main() -> None:
     replace_legacy_backend_aliases()
     patch_backend_validation()
     patch_scene_tests()
+    patch_container_tests()
     validate_no_forbidden_tokens()
     print("strict agent model cleanup complete")
 
