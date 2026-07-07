@@ -19,6 +19,7 @@ class AgentDef:
     agent_id: str
     role: str  # 直接保存角色 identity 内容
     name: str
+    background: str = ""  # 角色经历、组织环境与业务背景
     core_goal: str = ""
     backend: str = "openclaw"
     skill_refs: List[str] = field(default_factory=list)
