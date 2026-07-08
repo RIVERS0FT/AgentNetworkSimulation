@@ -10,11 +10,8 @@ from fastapi.responses import FileResponse, PlainTextResponse
 
 from agent_network import state
 from agent_network.log_manager import (
-    AGENT_APPLICATION_LAYER,
-    AGENT_NETWORK_LAYER,
-    SYSTEM_LAYER,
     get_log_manager,
-    infer_log_layer,
+    infer_log_type,
     normalize_log_timestamp,
 )
 
@@ -50,8 +47,7 @@ async def query_logs(
     agent_id: Optional[str] = Query(None),
     level: Optional[str] = Query(None),
     event: Optional[str] = Query(None),
-    layer: Optional[str] = Query(None),
-    category: Optional[str] = Query(None),
+    log_type: Optional[str] = Query(None),
     keyword: Optional[str] = Query(None),
     limit: int = Query(default=100, le=1000),
 ):
@@ -59,8 +55,7 @@ async def query_logs(
         agent_id=agent_id,
         level=level,
         event=event,
-        layer=layer,
-        category=category,
+        log_type=log_type,
         keyword=keyword,
         limit=limit,
     )
@@ -89,7 +84,7 @@ async def application_logs(
     limit: int = Query(default=100, le=1000),
 ):
     entries = log_manager.query(
-        layer=AGENT_APPLICATION_LAYER,
+        log_type="application",
         trace_id=trace_id,
         agent_id=agent_id,
         task_id=task_id,
@@ -102,11 +97,13 @@ async def application_logs(
 @router.get("/network")
 async def network_logs(
     trace_id: Optional[str] = Query(None),
+    event: Optional[str] = Query(None),
     limit: int = Query(default=100, le=1000),
 ):
     entries = log_manager.query(
-        layer=AGENT_NETWORK_LAYER,
+        log_type="network",
         trace_id=trace_id,
+        event=event,
         limit=limit,
     )
     return {"total": len(entries), "entries": entries}
@@ -120,7 +117,7 @@ async def system_logs(
     limit: int = Query(default=100, le=1000),
 ):
     entries = log_manager.query(
-        layer=SYSTEM_LAYER,
+        log_type="system",
         level=level,
         event=event,
         keyword=keyword,
@@ -137,7 +134,7 @@ async def message_logs(
     limit: int = 50,
 ):
     entries = log_manager.query(
-        layer=AGENT_APPLICATION_LAYER,
+        log_type="application",
         event="agent_message",
         trace_id=trace_id,
         agent_id=agent_id,
@@ -156,9 +153,9 @@ async def token_usage_logs():
 async def export_logs(
     fmt: str = Query(default="jsonl", pattern="^(jsonl|json|csv)$"),
     limit: int = Query(default=0),
-    layer: Optional[str] = Query(None),
+    log_type: Optional[str] = Query(None),
 ):
-    content = log_manager.export(fmt=fmt, limit=limit, layer=layer)
+    content = log_manager.export(fmt=fmt, limit=limit, log_type=log_type)
     media_types = {
         "jsonl": "application/x-ndjson",
         "json": "application/json",
@@ -171,11 +168,16 @@ async def export_logs(
 async def export_logs_file(
     fmt: str = Query(default="jsonl", pattern="^(jsonl|json|csv)$"),
     limit: int = Query(default=0),
-    layer: Optional[str] = Query(None),
+    log_type: Optional[str] = Query(None),
 ):
     filename = f"agent_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt}"
     filepath = os.path.join(tempfile.gettempdir(), filename)
-    log_manager.export_file(filepath, fmt=fmt, limit=limit, layer=layer)
+    log_manager.export_file(
+        filepath,
+        fmt=fmt,
+        limit=limit,
+        log_type=log_type,
+    )
     return FileResponse(filepath, filename=filename)
 
 
@@ -195,7 +197,6 @@ async def download_managed_log(session_id: str, log_type: str):
 
 @router.get("/download/{filename:path}")
 async def download_log_file_compat(filename: str):
-    """兼容旧的 session/filename 下载路径，但仍由 LogManager 校验。"""
     parts = Path(filename).parts
     if len(parts) != 2:
         raise HTTPException(400, "Expected '<session>/<log_type or filename>'")
@@ -311,17 +312,11 @@ async def agent_log_ingest(req: Request):
             "error_message": "" if action_status != "failed" else detail,
         },
         trace_id=body.get("trace_id", details.get("trace_id", "")),
-        tick=body.get("tick", details.get("tick", 0)),
-        level="ERROR" if action_status == "failed" else "INFO",
-        component=agent_id,
-        source="agent",
-        debug={
-            "emitter": "api.logs.agent_log_ingest",
-            "legacy_agent_log_ingest": True,
-        },
     )
     if state.ws_clients:
-        asyncio.create_task(_ws_broadcast({"type": "agent_log", "data": state.agent_logs[-1]}))
+        asyncio.create_task(
+            _ws_broadcast({"type": "agent_log", "data": state.agent_logs[-1]})
+        )
     return {"status": "ok", "total_logs": len(state.agent_logs), "record": record}
 
 
@@ -331,15 +326,17 @@ async def log_ingest(req: Request):
         body = await req.json()
     except Exception:
         body = {}
+
+    log_type = infer_log_type(body)
     if (
         not state.simulation_active
-        and infer_log_layer(body) == AGENT_NETWORK_LAYER
+        and log_type == "network"
         and body.get("event") == "llm_api_packet"
     ):
         return {"status": "dropped", "reason": "simulation_inactive"}
 
     try:
-        record = log_manager.ingest(body)
+        record = log_manager.ingest(body, log_type=log_type)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -347,11 +344,18 @@ async def log_ingest(req: Request):
         token_updated = state.append_token_usage_record(record)
         await _ws_broadcast({"type": "log_entries", "data": [record]})
         if token_updated:
-            await _ws_broadcast({"type": "token_usage", "data": state.get_token_usage_snapshot()})
-    return {"status": "ok", "layer": record.get("layer"), "record": record}
+            await _ws_broadcast({
+                "type": "token_usage",
+                "data": state.get_token_usage_snapshot(),
+            })
+    return {"status": "ok", "log_type": log_type, "record": record}
 
 
 @router.get("/agent")
 async def agent_logs_get(limit: int = Query(default=200)):
-    entries = log_manager.query(event="agent_action", limit=limit)
+    entries = log_manager.query(
+        log_type="application",
+        event="agent_action",
+        limit=limit,
+    )
     return {"logs": entries, "total": len(entries)}
