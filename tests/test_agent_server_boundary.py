@@ -68,6 +68,8 @@ def test_agent_server_uses_strict_log_manager_interface():
     assert 'source="agent"' not in text
     assert 'debug={"schema_version": "application.v1"' not in text
     assert 'event=event["event"]' in text
+    assert 'decision=event.get("decision"' not in text
+    assert 'policy=event.get("policy"' not in text
 
 
 def test_agent_server_supported_backends_are_explicit_and_exclude_brain():
