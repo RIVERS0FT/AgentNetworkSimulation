@@ -8,11 +8,11 @@ from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 
 from agent_network.real_packet_store import analyze_packets, packet_stats, pcap_path, query_packets, wireshark_lines
-from agent_network.logger import get_logger
+from agent_network.log_manager import get_log_manager
 from agent_network.experiment_manifest import audit_session, build_bundle, load_manifest
 
 router = APIRouter()
-logger = get_logger()
+logger = get_log_manager()
 
 
 def _event_epoch(value: str) -> float:
