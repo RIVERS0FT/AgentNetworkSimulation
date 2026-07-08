@@ -48,7 +48,7 @@ def _application_events(session_id: str, trace_id: str, agent_id: Optional[str])
     if events:
         return events
     return logger.query(
-        layer="agent_application",
+        log_type="application",
         trace_id=trace_id,
         agent_id=agent_id,
         limit=10_000,
