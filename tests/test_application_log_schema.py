@@ -1,88 +1,139 @@
+import json
+import os
+
 import pytest
-from agent_network.logger import is_agent_message_record, is_behavior_record, SimulationLogger
+
+from agent_network.log_manager import LogManager
+
+
+REMOVED_FIELDS = {
+    "seq",
+    "session_id",
+    "tick",
+    "layer",
+    "message",
+    "category",
+    "component",
+}
+SYSTEM_ONLY_FIELDS = {"level", "source", "debug"}
+EVENT_IDENTITY_FIELDS = {
+    "event",
+    "event_id",
+    "parent_event_id",
+    "actor",
+    "trace",
+}
+
 
 @pytest.fixture
-def temp_logger(tmp_path):
-    logger = SimulationLogger(log_dir=str(tmp_path))
-    # Reset internal state to avoid bleeding between tests
-    logger._file_path = ""
-    logger._session_application_path = ""
-    logger._session_network_path = ""
-    logger._session_active = False
-    logger._log_dir = str(tmp_path)
-    
-    yield logger
-    
-    logger._close_file_handles()
+def manager(tmp_path):
+    instance = LogManager(log_dir=str(tmp_path))
+    instance.reset()
+    instance._log_dir = str(tmp_path)
+    os.makedirs(instance._log_dir, exist_ok=True)
+    yield instance
+    instance.reset()
+
 
 @pytest.mark.not_llm
-def test_emit_application_event_schema(temp_logger):
-    record = temp_logger.emit_application_event(
+def test_application_schema_field_boundary(manager):
+    record = manager.emit_application_event(
         event="test_event",
-        actor={"agent_id": "test_agent"}
+        actor={"agent_id": "test_agent"},
     )
-    
+
     assert record["event"] == "test_event"
     assert record["actor"]["agent_id"] == "test_agent"
-    assert record["layer"] == "agent_application"
-    assert record["category"] == "agent_application"
-    
-    # Check default objects are present
-    assert isinstance(record["target"], dict)
-    assert isinstance(record["task"], dict)
-    assert isinstance(record["action"], dict)
-    assert isinstance(record["content"], dict)
-    
-    # Check auto-generated IDs
-    assert "event_id" in record
+    assert EVENT_IDENTITY_FIELDS <= set(record)
+    assert not (REMOVED_FIELDS & set(record))
+    assert not (SYSTEM_ONLY_FIELDS & set(record))
     assert "trace_id" in record["trace"]
-    
-    # Should not have raw top-level trace_id to avoid duplication
     assert "trace_id" not in record
-    
     assert "timestamp" in record
 
+
 @pytest.mark.not_llm
-def test_agent_message_strips_network_fields(temp_logger):
-    temp_logger.agent_message(
+def test_network_schema_field_boundary(manager):
+    record = manager.emit_network_event(
+        event="docker_http_outbound",
+        actor={"agent_id": "agent_a"},
+        network={"direction": "outbound"},
+    )
+
+    assert EVENT_IDENTITY_FIELDS <= set(record)
+    assert record["network"]["direction"] == "outbound"
+    assert not (REMOVED_FIELDS & set(record))
+    assert not (SYSTEM_ONLY_FIELDS & set(record))
+
+
+@pytest.mark.not_llm
+def test_system_schema_and_source_component_merge(manager):
+    record = manager.emit_system_event(
+        event="debug_snapshot",
+        message="snapshot ready",
+        category="debug",
+        source="backend",
+        component="srv",
+        debug={"request_id": "r1"},
+    )
+
+    assert record["source"] == "backend.srv"
+    assert record["level"] == "INFO"
+    assert record["debug"]["event"] == "debug_snapshot"
+    assert record["debug"]["kind"] == "debug"
+    assert record["payload"]["message"] == "snapshot ready"
+    assert not (EVENT_IDENTITY_FIELDS & set(record))
+    assert not (REMOVED_FIELDS & set(record))
+
+
+@pytest.mark.not_llm
+def test_persisted_jsonl_has_no_removed_fields(manager):
+    session_id = manager.start_session("schema_test")
+    manager.emit_application_event(
+        event="act",
+        actor={"agent_id": "a1"},
+        action={"name": "move"},
+    )
+    manager.emit_network_event(
+        event="docker_http_outbound",
+        network={"direction": "outbound"},
+    )
+    manager._close_file_handles()
+
+    for filename in ("application.jsonl", "network.jsonl", "system.jsonl"):
+        path = os.path.join(manager._log_dir, session_id, filename)
+        with open(path, "r", encoding="utf-8") as stream:
+            for line in stream:
+                record = json.loads(line)
+                assert not (REMOVED_FIELDS & set(record))
+
+
+@pytest.mark.not_llm
+def test_agent_message_strips_network_and_system_fields(manager):
+    record = manager.agent_message(
         from_id="a1",
         to="a2",
         content="hello",
         latency_ms=12.5,
         src_ip="192.168.1.1",
         tcp_flags="SYN",
-        payload_len=100
+        payload_len=100,
     )
-    
-    assert len(temp_logger._entries) > 0
-    record = temp_logger._entries[-1]
-    
-    # Verify mapping
+
     assert record["action"]["duration_ms"] == 12.5
     assert record["content"]["size_bytes"] == 100
-    
-    # Verify no network fields
     assert "network" not in record
     assert "src_ip" not in record
     assert "tcp_flags" not in record
-    
-    assert record["debug"].get("legacy_network_fields_dropped") is True
+    assert not (SYSTEM_ONLY_FIELDS & set(record))
+
 
 @pytest.mark.not_llm
-def test_agent_action_compatibility(temp_logger):
-    temp_logger.agent_action("a1", "move", {"status": "ok"}, extra="data")
-    record = temp_logger._entries[-1]
-    
-    assert record["event"] == "act"
-    assert record["actor"]["agent_id"] == "a1"
-    assert record["action"]["name"] == "move"
-    assert record["content"]["kw"] == {"extra": "data"}
+def test_agent_compatibility_helpers(manager):
+    action = manager.agent_action("a1", "move", {"status": "ok"}, extra="data")
+    decision = manager.agent_decide("a1", "prompt", {"choice": "A"})
 
-@pytest.mark.not_llm
-def test_agent_decide_compatibility(temp_logger):
-    temp_logger.agent_decide("a1", "prompt", {"choice": "A"})
-    record = temp_logger._entries[-1]
-    
-    assert record["event"] == "decide"
-    assert record["actor"]["agent_id"] == "a1"
-    assert record["decision"]["raw_model_output_ref"] == "prompt"
+    assert action["event"] == "act"
+    assert action["content"]["kw"] == {"extra": "data"}
+    assert decision["event"] == "decide"
+    assert decision["decision"]["raw_model_output_ref"] == "prompt"
