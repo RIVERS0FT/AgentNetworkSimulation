@@ -15,15 +15,8 @@ import threading
 import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, IO, List, Optional
-
-
-class LogLevel(Enum):
-    INFO = 0
-    WARN = 1
-    ERROR = 2
 
 
 LOG_TYPE_TO_FILENAME = {
@@ -36,32 +29,6 @@ VISIBILITY_METADATA_FILENAME = ".log_visibility.json"
 _INTERNAL_LOG_TYPE = "__log_type"
 _INTERNAL_EVENT = "__event"
 
-APPLICATION_EVENTS = {
-    "agent_run_started",
-    "agent_run_completed",
-    "agent_run_failed",
-    "agent_message",
-    "agent_message_received",
-    "reasoning",
-    "acting",
-    "skill_use",
-    "tool_call",
-    "tool_result",
-    "tool_call_requested",
-    "tool_result_received",
-    "state_change",
-    "policy_check",
-    "application_error",
-    "llm_api_call",
-    "llm_runtime_completed",
-}
-REMOVED_APPLICATION_EVENTS = {
-    "decide",
-    "agent_decide",
-    "act",
-    "agent_action",
-    "llm_cli_call",
-}
 NETWORK_EVENTS = {
     "docker_http_inbound",
     "docker_http_outbound",
@@ -199,22 +166,6 @@ def _system_fields(version: str) -> Dict[str, Any]:
     }
 
 
-APP_FALLBACK = (
-    "target",
-    "task",
-    "conversation",
-    "action",
-    "content",
-    "decision",
-    "skill",
-    "tool",
-    "state_change",
-    "policy",
-    "result",
-    "metrics",
-    "payload",
-    "links",
-)
 APP_LAYOUTS = {
     "agent_run_started": (
         ("task", "action"),
@@ -303,23 +254,21 @@ APP_LAYOUTS = {
         ("task", "action", "payload", "result", "metrics", "links"),
     ),
 }
+APPLICATION_EVENTS = frozenset(APP_LAYOUTS)
 
 application_log_schema: Dict[str, Any] = {
     "name": "application.jsonl",
     "format": "jsonl",
     "log_type": "application",
-    "schema_version": "application.v7",
+    "schema_version": "application.v8",
     "additional_properties": False,
     "type_fields": _application_fields(),
     "event_schemas": {
-        "*": _event((), APP_FALLBACK),
-        **{
-            name: _event(
-                *layout,
-                open_target=name == "llm_api_call",
-            )
-            for name, layout in APP_LAYOUTS.items()
-        },
+        name: _event(
+            *layout,
+            open_target=name == "llm_api_call",
+        )
+        for name, layout in APP_LAYOUTS.items()
     },
 }
 
@@ -381,16 +330,7 @@ LOG_SCHEMAS = {
 
 
 def normalize_log_type(log_type: str) -> str:
-    raw = str(log_type or "").strip().lower()
-    aliases = {
-        "application": "application",
-        "application.jsonl": "application",
-        "network": "network",
-        "network.jsonl": "network",
-        "system": "system",
-        "system.jsonl": "system",
-    }
-    normalized = aliases.get(raw, raw)
+    normalized = str(log_type or "").strip().lower()
     if normalized not in LOG_SCHEMAS:
         raise ValueError(
             f"unknown log type {log_type!r}; expected application, network or system"
@@ -399,18 +339,15 @@ def normalize_log_type(log_type: str) -> str:
 
 
 def infer_log_type(record: Dict[str, Any]) -> str:
-    for field in ("log_type", _INTERNAL_LOG_TYPE):
-        value = record.get(field)
-        if value:
-            try:
-                return normalize_log_type(str(value))
-            except ValueError:
-                pass
+    if record.get("log_type"):
+        return normalize_log_type(str(record["log_type"]))
+    if record.get(_INTERNAL_LOG_TYPE):
+        return normalize_log_type(str(record[_INTERNAL_LOG_TYPE]))
 
     event = str(record.get("event", ""))
     if event in NETWORK_EVENTS:
         return "network"
-    if event in APPLICATION_EVENTS or event in REMOVED_APPLICATION_EVENTS:
+    if event in APPLICATION_EVENTS:
         return "application"
     return "system"
 
@@ -495,10 +432,12 @@ def _normalize_record_with_schema(
     event: str,
 ) -> Dict[str, Any]:
     source = dict(record)
-    event_schema = schema["event_schemas"].get(
-        event,
-        schema["event_schemas"]["*"],
-    )
+    event_schema = schema["event_schemas"].get(event)
+    if event_schema is None:
+        if schema["log_type"] == "application":
+            raise ValueError(f"unknown application event: {event}")
+        event_schema = schema["event_schemas"]["*"]
+
     fields = {
         **schema["type_fields"],
         **event_schema.get("fields", {}),
@@ -512,23 +451,9 @@ def _normalize_record_with_schema(
             else {}
         )
         trace["trace_id"] = str(
-            source.get("trace_id")
-            or trace.get("trace_id")
-            or f"trace_{uuid.uuid4().hex[:12]}"
+            trace.get("trace_id") or f"trace_{uuid.uuid4().hex[:12]}"
         )
         source["trace"] = trace
-
-    for party in ("actor", "target"):
-        if party not in fields:
-            continue
-        value = (
-            dict(source.get(party) or {})
-            if isinstance(source.get(party), dict)
-            else {}
-        )
-        if "agent_id" not in value and value.get("id"):
-            value["agent_id"] = value["id"]
-        source[party] = value
 
     normalized: Dict[str, Any] = {}
     for name, raw_spec in fields.items():
@@ -576,27 +501,6 @@ def _normalize_record_with_schema(
     return normalized
 
 
-def _assert_application_event(event: str):
-    if event in REMOVED_APPLICATION_EVENTS:
-        raise ValueError(f"application event '{event}' has been removed")
-
-
-def normalize_application_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    event = str(record.get("event") or "application_event")
-    _assert_application_event(event)
-    return _normalize_record_with_schema(record, application_log_schema, event)
-
-
-def normalize_network_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    event = str(record.get("event") or "network_event")
-    return _normalize_record_with_schema(record, network_log_schema, event)
-
-
-def normalize_system_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    event = str(record.get("event") or "system_event")
-    return _normalize_record_with_schema(record, system_log_schema, event)
-
-
 _LOG_TZ = timezone(timedelta(hours=8))
 
 
@@ -628,16 +532,8 @@ def normalize_log_timestamp(
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}"
 
 
-def _unified_source(source: str = "", component: str = "") -> str:
-    source_value = str(source or "").strip()
-    component_value = str(component or "").strip()
-    if source_value and component_value:
-        if source_value == component_value or source_value.endswith(
-            "." + component_value
-        ):
-            return source_value
-        return f"{source_value}.{component_value}"
-    return source_value or component_value or "unknown"
+def _trace(trace_id: str = "") -> Dict[str, str]:
+    return {"trace_id": str(trace_id or f"trace_{uuid.uuid4().hex[:12]}")}
 
 
 def _public_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -711,7 +607,7 @@ class LogManager:
         self.emit_system_event(
             "session_start",
             f"Session started: {scene_name}",
-            "lifecycle",
+            kind="lifecycle",
             payload={
                 "scene_name": scene_name,
                 "session_dir": self._session_dir,
@@ -784,13 +680,6 @@ class LogManager:
         except Exception as exc:
             print(f"[LogManager] write failed {path}: {exc}", file=sys.stderr)
 
-    def record(
-        self,
-        record: Dict[str, Any],
-        log_type: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        return self.emit(record, log_type=log_type)
-
     def emit(
         self,
         record: Dict[str, Any],
@@ -803,16 +692,9 @@ class LogManager:
             else infer_log_type(source_record)
         )
         event = str(source_record.get("event") or f"{resolved_type}_event")
-        if resolved_type == "application":
-            _assert_application_event(event)
         source_record["timestamp"] = normalize_log_timestamp(
             source_record.get("timestamp", "")
         )
-        if resolved_type == "system":
-            source_record["source"] = _unified_source(
-                source_record.get("source", ""),
-                source_record.get("component", ""),
-            )
 
         normalized = _normalize_record_with_schema(
             source_record,
@@ -896,13 +778,7 @@ class LogManager:
         links=None,
         trace_id="",
         parent_event_id="",
-        tick=None,
-        level="INFO",
-        component="",
-        source="agent",
-        debug=None,
     ):
-        del tick, level, component, source, debug
         return self.emit(
             {
                 "event": event,
@@ -921,7 +797,7 @@ class LogManager:
                 "metrics": metrics or {},
                 "payload": payload or {},
                 "links": links or {},
-                "trace_id": trace_id,
+                "trace": _trace(trace_id),
                 "parent_event_id": parent_event_id,
             },
             log_type="application",
@@ -940,13 +816,7 @@ class LogManager:
         links=None,
         trace_id="",
         parent_event_id="",
-        tick=None,
-        level="INFO",
-        component="network",
-        source="network",
-        debug=None,
     ):
-        del tick, level, component, source, debug
         return self.emit(
             {
                 "event": event,
@@ -958,7 +828,7 @@ class LogManager:
                 "result": result or {},
                 "metrics": metrics or {},
                 "links": links or {},
-                "trace_id": trace_id,
+                "trace": _trace(trace_id),
                 "parent_event_id": parent_event_id,
             },
             log_type="network",
@@ -968,7 +838,7 @@ class LogManager:
         self,
         event,
         message="",
-        category="system",
+        kind="system",
         actor=None,
         target=None,
         action=None,
@@ -976,21 +846,17 @@ class LogManager:
         result=None,
         metrics=None,
         trace_id="",
-        parent_event_id="",
-        tick=None,
         level="INFO",
-        component="srv",
-        source="backend",
+        source="backend.srv",
         debug=None,
     ):
-        del parent_event_id, tick
         system_payload = dict(payload or {})
         if message:
             system_payload.setdefault("message", message)
 
         system_debug = dict(debug or {})
-        if category and category != "system":
-            system_debug.setdefault("kind", category)
+        if kind and kind != "system":
+            system_debug.setdefault("kind", kind)
         context: Dict[str, Any] = {}
         if actor:
             context["actor"] = actor
@@ -1004,8 +870,8 @@ class LogManager:
         return self.emit(
             {
                 "event": event,
-                "level": level,
-                "source": _unified_source(source, component),
+                "level": str(level).upper(),
+                "source": source,
                 "debug": system_debug,
                 "action": action or {},
                 "payload": system_payload,
@@ -1019,7 +885,7 @@ class LogManager:
         self,
         event,
         message="",
-        level=LogLevel.INFO,
+        level="INFO",
         agent_id="",
         details=None,
         **kwargs,
@@ -1029,7 +895,7 @@ class LogManager:
             message,
             actor={"agent_id": agent_id} if agent_id else {},
             payload={**(details or {}), **kwargs},
-            level=level.name if isinstance(level, LogLevel) else str(level),
+            level=str(level).upper(),
         )
 
     def acting(self, agent_id, action, result=None, **kwargs):
@@ -1061,20 +927,11 @@ class LogManager:
         reasoning="",
         latency_ms=0,
         status="success",
-        src_ip="",
-        src_port=0,
-        dst_ip="",
-        dst_port=0,
-        protocol="TCP/HTTP",
-        packet_len=0,
-        header_len=0,
         payload_len=0,
-        tcp_flags="",
         channel_id="",
         message_type="relay",
         talk="",
     ):
-        del src_ip, src_port, dst_ip, dst_port, protocol, packet_len, header_len, tcp_flags
         normalized_status = (
             "failed"
             if status
@@ -1132,7 +989,7 @@ class LogManager:
         return self.emit_system_event(
             f"container_{event}",
             f"[{agent_id}] {message or event}",
-            "lifecycle",
+            kind="lifecycle",
             actor={"agent_id": agent_id},
             payload=kwargs,
         )
@@ -1160,7 +1017,7 @@ class LogManager:
             "dag_step",
             f"Round {round_num}, Step {step_id}: "
             f"[{agent_id}] {action} ({status})",
-            "debug",
+            kind="debug",
             actor={"agent_id": agent_id},
             action={"name": action, "status": status},
             payload={"step_id": step_id, "round": round_num},
@@ -1170,7 +1027,7 @@ class LogManager:
         return self.emit_system_event(
             event or "system_error",
             message,
-            "debug",
+            kind="debug",
             actor={"agent_id": agent_id} if agent_id else {},
             payload=kwargs,
             result={"status": "failed", "error_message": message},
@@ -1209,9 +1066,7 @@ class LogManager:
                 if agent_id
                 in {
                     (entry.get("actor") or {}).get("agent_id"),
-                    (entry.get("actor") or {}).get("id"),
                     (entry.get("target") or {}).get("agent_id"),
-                    (entry.get("target") or {}).get("id"),
                 }
             ]
         if event:
@@ -1533,10 +1388,8 @@ class LogManager:
         return self
 
 
-SimulationLogger = LogManager
 _log_manager = LogManager("AgentNetwork")
-get_log_manager = lambda: _log_manager
-get_logger = get_log_manager
-system_log = _log_manager.system
-agent_log = _log_manager.acting
-message_log = _log_manager.agent_message
+
+
+def get_log_manager() -> LogManager:
+    return _log_manager
