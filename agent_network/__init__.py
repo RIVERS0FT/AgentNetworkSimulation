@@ -11,3 +11,10 @@ Modules:
 """
 
 __version__ = "0.1.0"
+
+# Install the packet-oriented network.jsonl contract before callers import
+# agent_network.log_manager.  Application and system log schemas are unchanged.
+from .network_log_v4 import apply as _apply_network_log_v4
+
+_apply_network_log_v4()
+del _apply_network_log_v4
