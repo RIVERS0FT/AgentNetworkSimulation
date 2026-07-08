@@ -1,8 +1,7 @@
 """AgentNetwork 分层日志记录与文件管理。
 
 持久化日志仅包含 application.jsonl、network.jsonl、system.jsonl。
-三类日志不共享持久化字段：每种日志在自己的 type_fields 中声明 timestamp
-及本类型字段。日志类型仅作为 LogManager 内部元数据使用，不写入 JSONL。
+三类日志不共享持久化字段；日志类型只作为内存索引元数据使用。
 """
 from __future__ import annotations
 
@@ -64,7 +63,6 @@ APPLICATION_EVENTS = {
     "policy_check",
     "application_error",
     "llm_api_call",
-    "llm_cli_call",
     "llm_runtime_completed",
 }
 REMOVED_APPLICATION_EVENTS = {
@@ -72,6 +70,7 @@ REMOVED_APPLICATION_EVENTS = {
     "agent_decide",
     "act",
     "agent_action",
+    "llm_cli_call",
 }
 NETWORK_EVENTS = {
     "docker_http_inbound",
@@ -169,8 +168,6 @@ def _event(
 
 
 def _application_fields() -> Dict[str, Any]:
-    """application.jsonl 自身的顶层字段。"""
-
     return {
         "timestamp": {"type": "string", "required": True},
         "event": {"type": "string", "required": True},
@@ -190,8 +187,6 @@ def _application_fields() -> Dict[str, Any]:
 
 
 def _network_fields() -> Dict[str, Any]:
-    """network.jsonl 自身的顶层字段。"""
-
     return {
         "timestamp": {"type": "string", "required": True},
         "event": {"type": "string", "required": True},
@@ -211,8 +206,6 @@ def _network_fields() -> Dict[str, Any]:
 
 
 def _system_fields(version: str) -> Dict[str, Any]:
-    """system.jsonl 自身的顶层字段；component 已合并进 source。"""
-
     return {
         "timestamp": {"type": "string", "required": True},
         "level": {"type": "string", "required": True, "default": "INFO"},
@@ -322,19 +315,6 @@ APP_LAYOUTS = {
             "links",
         ),
     ),
-    "llm_cli_call": (
-        ("action",),
-        (
-            "target",
-            "task",
-            "action",
-            "content",
-            "payload",
-            "result",
-            "metrics",
-            "links",
-        ),
-    ),
     "llm_runtime_completed": (
         ("action", "result", "metrics"),
         ("task", "action", "payload", "result", "metrics", "links"),
@@ -345,7 +325,7 @@ application_log_schema: Dict[str, Any] = {
     "name": "application.jsonl",
     "format": "jsonl",
     "log_type": "application",
-    "schema_version": "application.v6",
+    "schema_version": "application.v7",
     "additional_properties": False,
     "type_fields": _application_fields(),
     "event_schemas": {
@@ -353,7 +333,7 @@ application_log_schema: Dict[str, Any] = {
         **{
             name: _event(
                 *layout,
-                open_target=name in {"llm_api_call", "llm_cli_call"},
+                open_target=name == "llm_api_call",
             )
             for name, layout in APP_LAYOUTS.items()
         },
@@ -451,14 +431,16 @@ def infer_log_type(record: Dict[str, Any]) -> str:
     event = str(record.get("event", ""))
     if event in NETWORK_EVENTS or category in NETWORK_CATEGORIES:
         return "network"
-    if event in APPLICATION_EVENTS or category in APPLICATION_CATEGORIES:
+    if (
+        event in APPLICATION_EVENTS
+        or event in REMOVED_APPLICATION_EVENTS
+        or category in APPLICATION_CATEGORIES
+    ):
         return "application"
     return "system"
 
 
 def infer_log_layer(record: Dict[str, Any]) -> str:
-    """旧接口兼容：返回历史 layer 名称，但不写入日志。"""
-
     return LOG_TYPE_TO_LAYER[infer_log_type(record)]
 
 
@@ -623,13 +605,14 @@ def _normalize_record_with_schema(
     return normalized
 
 
+def _assert_application_event(event: str):
+    if event in REMOVED_APPLICATION_EVENTS:
+        raise ValueError(f"application event '{event}' has been removed")
+
+
 def normalize_application_record(record: Dict[str, Any]) -> Dict[str, Any]:
     event = str(record.get("event") or "application_event")
-    if event in REMOVED_APPLICATION_EVENTS:
-        raise ValueError(
-            f"application event '{event}' has been removed; "
-            "use 'reasoning' or 'acting'"
-        )
+    _assert_application_event(event)
     return _normalize_record_with_schema(record, application_log_schema, event)
 
 
@@ -849,11 +832,8 @@ class LogManager:
             else infer_log_type(source_record)
         )
         event = str(source_record.get("event") or f"{resolved_type}_event")
-        if resolved_type == "application" and event in REMOVED_APPLICATION_EVENTS:
-            raise ValueError(
-                f"application event '{event}' has been removed; "
-                "use 'reasoning' or 'acting'"
-            )
+        if resolved_type == "application":
+            _assert_application_event(event)
         source_record["timestamp"] = normalize_log_timestamp(
             source_record.get("timestamp", "")
         )
