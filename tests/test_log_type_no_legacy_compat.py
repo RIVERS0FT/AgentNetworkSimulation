@@ -79,8 +79,29 @@ def test_log_manager_interfaces_have_no_ignored_parameters():
         "decision",
     ):
         assert name not in application_parameters
-    for name in ("tick", "level", "component", "source", "debug"):
+
+    assert set(network_parameters) == {
+        "self",
+        "context",
+        "network",
+        "raw",
+        "timestamp",
+        "log_id",
+    }
+    for name in (
+        "event",
+        "actor",
+        "target",
+        "action",
+        "payload",
+        "result",
+        "metrics",
+        "links",
+        "trace_id",
+        "parent_event_id",
+    ):
         assert name not in network_parameters
+
     for name in ("category", "parent_event_id", "tick", "component"):
         assert name not in system_parameters
     assert "kind" in system_parameters
@@ -118,9 +139,16 @@ def test_log_type_accepts_only_canonical_names():
 
 
 @pytest.mark.not_llm
-def test_log_type_inference_uses_event_not_legacy_fields():
+def test_log_type_inference_uses_packet_contract_not_legacy_fields():
     assert infer_log_type({"event": "reasoning"}) == "application"
-    assert infer_log_type({"event": "docker_http_outbound"}) == "network"
+    assert infer_log_type({"event": "packet"}) == "network"
+    assert infer_log_type({
+        "log_id": "net_01JZ123456",
+        "context": {},
+        "network": {},
+        "raw": {},
+    }) == "network"
+    assert infer_log_type({"event": "docker_http_outbound"}) == "system"
     assert infer_log_type({"event": "unknown"}) == "system"
 
     assert infer_log_type({"layer": "agent_application"}) == "system"
