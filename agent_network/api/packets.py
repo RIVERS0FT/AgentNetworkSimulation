@@ -39,8 +39,8 @@ def _application_events(session_id: str, trace_id: str, agent_id: Optional[str])
                         event = json.loads(line)
                     except ValueError:
                         continue
-                    event_trace = event.get("trace_id") or (event.get("trace") or {}).get("trace_id")
-                    event_agent = (event.get("actor") or {}).get("agent_id") or (event.get("actor") or {}).get("id")
+                    event_trace = (event.get("trace") or {}).get("trace_id")
+                    event_agent = (event.get("actor") or {}).get("agent_id")
                     if event_trace == trace_id and (not agent_id or event_agent == agent_id):
                         events.append(event)
     except (OSError, ValueError):
@@ -131,7 +131,6 @@ async def correlate(
     packet_limit: int = Query(default=10_000, ge=1, le=100_000),
 ):
     events = await asyncio.to_thread(_application_events, session_id, trace_id, agent_id)
-    events = [event for event in events if not event.get("session_id") or event.get("session_id") == session_id]
     packet_rows = await asyncio.to_thread(query_packets, session_id, agent_id, packet_limit)
     packets = [
         packet for packet in packet_rows
