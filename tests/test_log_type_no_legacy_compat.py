@@ -69,7 +69,15 @@ def test_log_manager_interfaces_have_no_ignored_parameters():
         LogManager.emit_system_event
     ).parameters
 
-    for name in ("tick", "level", "component", "source", "debug"):
+    for name in (
+        "tick",
+        "level",
+        "component",
+        "source",
+        "debug",
+        "policy",
+        "decision",
+    ):
         assert name not in application_parameters
     for name in ("tick", "level", "component", "source", "debug"):
         assert name not in network_parameters
