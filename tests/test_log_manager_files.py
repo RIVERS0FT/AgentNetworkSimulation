@@ -19,7 +19,7 @@ def manager(tmp_path):
 def test_layered_recording_without_global_log(manager):
     session_id = manager.start_session("test_scene")
     manager.emit_application_event(
-        event="act",
+        event="acting",
         actor={"agent_id": "a1"},
         action={"name": "move"},
     )
