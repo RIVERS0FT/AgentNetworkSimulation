@@ -1,21 +1,20 @@
 """统一结构化日志。
 
-application.jsonl 的字段、类型、默认值和附加字段策略统一定义在
-``agent_network.scene_def.SceneDefinition.application_log_schema`` 中；本模块
-只负责产生日志、调用该 schema 的规范化函数并按日志层路由持久化。
+application.jsonl 的字段、类型、默认值和附加字段策略统一定义在本模块的
+``application_log_schema`` 中。本模块负责产生日志、按照 schema 规范化
+应用层记录，并按日志层路由持久化。
 """
 
+import copy
 import json
 import os
 import sys
 import threading
 import uuid
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, IO, List, Optional
-
-from .scene_def import normalize_application_record
 
 
 class LogLevel(Enum):
@@ -63,6 +62,106 @@ APPLICATION_CATEGORIES = {
 NETWORK_CATEGORIES = {AGENT_NETWORK_LAYER, "network_capture"}
 
 
+application_log_schema: Dict[str, Any] = {
+    "name": "application.jsonl",
+    "format": "jsonl",
+    "schema_version": "application.v1",
+    "additional_properties": False,
+    "fields": {
+        "timestamp": {"type": "string", "required": True},
+        "seq": {"type": "integer", "required": True, "default": 0},
+        "session_id": {"type": "string", "required": True, "default": ""},
+        "level": {"type": "string", "required": True, "default": "INFO"},
+        "source": {"type": "string", "required": True, "default": "agent"},
+        "component": {"type": "string", "required": True, "default": ""},
+        "category": {
+            "type": "string",
+            "required": True,
+            "const": AGENT_APPLICATION_LAYER,
+        },
+        "layer": {
+            "type": "string",
+            "required": True,
+            "const": AGENT_APPLICATION_LAYER,
+        },
+        "event": {"type": "string", "required": True},
+        "event_id": {
+            "type": "string",
+            "required": True,
+            "generator": "application_event_id",
+        },
+        "parent_event_id": {
+            "type": "string",
+            "required": True,
+            "default": "",
+        },
+        "tick": {"type": "integer", "required": True, "default": 0},
+        "actor": {
+            "type": "object",
+            "required": True,
+            "default": {},
+            "properties": {
+                "agent_id": {"type": "string"},
+                "name": {"type": "string"},
+                "role": {"type": "string"},
+                "backend": {"type": "string"},
+            },
+        },
+        "target": {
+            "type": "object",
+            "required": True,
+            "default": {},
+            "properties": {
+                "agent_id": {"type": "string"},
+                "name": {"type": "string"},
+                "role": {"type": "string"},
+            },
+        },
+        "task": {"type": "object", "required": True, "default": {}},
+        "conversation": {"type": "object", "required": True, "default": {}},
+        "action": {"type": "object", "required": True, "default": {}},
+        "content": {"type": "object", "required": True, "default": {}},
+        "decision": {"type": "object", "required": True, "default": {}},
+        "skill": {"type": "object", "required": True, "default": {}},
+        "tool": {"type": "object", "required": True, "default": {}},
+        "state_change": {"type": "object", "required": True, "default": {}},
+        "policy": {"type": "object", "required": True, "default": {}},
+        "result": {"type": "object", "required": True, "default": {}},
+        "metrics": {"type": "object", "required": True, "default": {}},
+        "links": {
+            "type": "object",
+            "required": True,
+            "default": {
+                "network_event_ids": [],
+                "audit_event_ids": [],
+                "tool_event_ids": [],
+                "state_event_ids": [],
+                "related_trace_ids": [],
+            },
+        },
+        "trace": {
+            "type": "object",
+            "required": True,
+            "default": {},
+            "required_properties": ["trace_id"],
+        },
+        "message": {
+            "type": "string",
+            "required": True,
+            "generator": "human_summary",
+        },
+        "debug": {
+            "type": "object",
+            "required": True,
+            "default": {
+                "schema_version": "application.v1",
+                "emitter": "SimulationLogger",
+            },
+        },
+    },
+}
+
+
 def infer_log_layer(record: Dict) -> str:
     """Infer the two-layer Agent log model."""
 
@@ -95,6 +194,113 @@ def is_behavior_record(record: Dict) -> bool:
         record.get("event") in {"decide", "act", "agent_action", "agent_decide"}
         or record.get("category") == "agent_behavior"
     )
+
+
+def _is_type(value: Any, expected: str) -> bool:
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "object":
+        return isinstance(value, dict)
+    return True
+
+
+def _normalize_object(value: Any, spec: Dict[str, Any]) -> Dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    properties = spec.get("properties")
+    if not properties:
+        return dict(value)
+
+    normalized = {}
+    for name, property_spec in properties.items():
+        property_value = value.get(name)
+        if _is_type(property_value, property_spec.get("type", "")):
+            normalized[name] = property_value
+    return normalized
+
+
+def _application_message(record: Dict[str, Any]) -> str:
+    actor_id = (record.get("actor") or {}).get("agent_id", "")
+    target_id = (record.get("target") or {}).get("agent_id", "")
+    action_name = (record.get("action") or {}).get("name") or record.get("event", "")
+    if actor_id and target_id:
+        return f"{actor_id} -> {target_id}: {action_name}"
+    if actor_id:
+        return f"{actor_id}: {action_name}"
+    return str(record.get("event", ""))
+
+
+def normalize_application_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """严格按照 application_log_schema 生成应用层记录。"""
+
+    fields = application_log_schema["fields"]
+    source = dict(record)
+
+    trace = source.get("trace") if isinstance(source.get("trace"), dict) else {}
+    trace = dict(trace)
+    trace_id = source.get("trace_id") or trace.get("trace_id")
+    if not trace_id:
+        trace_id = f"trace_{uuid.uuid4().hex[:12]}"
+    trace["trace_id"] = str(trace_id)
+    source["trace"] = trace
+
+    actor = source.get("actor") if isinstance(source.get("actor"), dict) else {}
+    if "agent_id" not in actor and actor.get("id"):
+        actor = {**actor, "agent_id": actor["id"]}
+    source["actor"] = actor
+
+    target = source.get("target") if isinstance(source.get("target"), dict) else {}
+    if "agent_id" not in target and target.get("id"):
+        target = {**target, "agent_id": target["id"]}
+    source["target"] = target
+
+    normalized: Dict[str, Any] = {}
+    for name, spec in fields.items():
+        if "const" in spec:
+            normalized[name] = spec["const"]
+            continue
+
+        value = source.get(name)
+        generator = spec.get("generator")
+        if generator == "application_event_id" and not value:
+            value = f"app_{uuid.uuid4().hex[:12]}"
+        elif generator == "human_summary" and not value:
+            value = _application_message(source)
+
+        if value is None and "default" in spec:
+            value = copy.deepcopy(spec["default"])
+
+        expected_type = spec.get("type", "")
+        if expected_type == "object":
+            value = _normalize_object(value, spec)
+            defaults = spec.get("default")
+            if isinstance(defaults, dict):
+                value = {**copy.deepcopy(defaults), **value}
+        elif not _is_type(value, expected_type):
+            if "default" in spec:
+                value = copy.deepcopy(spec["default"])
+            elif spec.get("required"):
+                raise ValueError(
+                    f"application.jsonl field '{name}' must be {expected_type}"
+                )
+            else:
+                continue
+
+        normalized[name] = value
+
+    debug = normalized["debug"]
+    debug["schema_version"] = application_log_schema["schema_version"]
+    if normalized.get("event") == "agent_message":
+        debug.setdefault("legacy_network_fields_dropped", True)
+    normalized["debug"] = debug
+    return normalized
 
 
 _LOG_TZ = timezone(timedelta(hours=8))
@@ -397,37 +603,37 @@ class SimulationLogger:
         source: str = "agent",
         debug: dict | None = None,
     ) -> dict:
-        """构造并写入严格遵循 scene_def schema 的应用层事件。"""
+        """构造并写入严格遵循 logger schema 的应用层事件。"""
 
-        record = {
-            "timestamp": current_log_timestamp(),
-            "level": level,
-            "source": source,
-            "component": component or actor.get("agent_id", "unknown"),
-            "event": event,
-            "actor": actor,
-            "target": target or {},
-            "task": task or {},
-            "conversation": conversation or {},
-            "action": action or {},
-            "content": content or {},
-            "decision": decision or {},
-            "skill": skill or {},
-            "tool": tool or {},
-            "state_change": state_change or {},
-            "policy": policy or {},
-            "result": result or {},
-            "metrics": metrics or {},
-            "links": links or {},
-            "trace_id": trace_id,
-            "parent_event_id": parent_event_id,
-            "tick": tick if tick is not None else 0,
-            "debug": debug or {},
-            "seq": 0,
-            "session_id": self._session_id,
-        }
-        record = normalize_application_record(record)
-        return self.emit(record)
+        return self.emit(
+            {
+                "timestamp": current_log_timestamp(),
+                "level": level,
+                "source": source,
+                "component": component or actor.get("agent_id", "unknown"),
+                "event": event,
+                "actor": actor,
+                "target": target or {},
+                "task": task or {},
+                "conversation": conversation or {},
+                "action": action or {},
+                "content": content or {},
+                "decision": decision or {},
+                "skill": skill or {},
+                "tool": tool or {},
+                "state_change": state_change or {},
+                "policy": policy or {},
+                "result": result or {},
+                "metrics": metrics or {},
+                "links": links or {},
+                "trace_id": trace_id,
+                "parent_event_id": parent_event_id,
+                "tick": tick if tick is not None else 0,
+                "debug": debug or {},
+                "seq": 0,
+                "session_id": self._session_id,
+            }
+        )
 
     def agent_action(self, agent_id: str, action: str, result: Dict = None, **kwargs):
         return self.emit_application_event(
