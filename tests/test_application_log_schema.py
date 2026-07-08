@@ -28,6 +28,12 @@ EVENT_IDENTITY_FIELDS = {
     "actor",
     "trace",
 }
+REMOVED_BEHAVIOR_EVENTS = {
+    "decide",
+    "agent_decide",
+    "act",
+    "agent_action",
+}
 
 
 @pytest.fixture
@@ -57,6 +63,17 @@ def test_each_schema_owns_timestamp_field():
     assert application_log_schema["type_fields"] is not network_log_schema["type_fields"]
     assert application_log_schema["type_fields"] is not system_log_schema["type_fields"]
     assert network_log_schema["type_fields"] is not system_log_schema["type_fields"]
+
+
+@pytest.mark.not_llm
+def test_application_schema_uses_reasoning_and_acting_only():
+    schemas = application_log_schema["event_schemas"]
+
+    assert "reasoning" in schemas
+    assert "acting" in schemas
+    assert not (REMOVED_BEHAVIOR_EVENTS & set(schemas))
+    assert schemas["reasoning"]["required_fields"] == ["action", "decision"]
+    assert schemas["acting"]["required_fields"] == ["action"]
 
 
 @pytest.mark.not_llm
@@ -114,7 +131,7 @@ def test_system_schema_and_source_component_merge(manager):
 def test_persisted_jsonl_has_no_removed_fields(manager):
     session_id = manager.start_session("schema_test")
     manager.emit_application_event(
-        event="act",
+        event="acting",
         actor={"agent_id": "a1"},
         action={"name": "move"},
     )
@@ -154,11 +171,25 @@ def test_agent_message_strips_network_and_system_fields(manager):
 
 
 @pytest.mark.not_llm
-def test_agent_compatibility_helpers(manager):
-    action = manager.agent_action("a1", "move", {"status": "ok"}, extra="data")
-    decision = manager.agent_decide("a1", "prompt", {"choice": "A"})
+def test_reasoning_and_acting_helpers(manager):
+    action = manager.acting("a1", "move", {"status": "ok"}, extra="data")
+    reasoning = manager.reasoning("a1", "prompt", {"choice": "A"})
 
-    assert action["event"] == "act"
+    assert action["event"] == "acting"
     assert action["content"]["kw"] == {"extra": "data"}
-    assert decision["event"] == "decide"
-    assert decision["decision"]["raw_model_output_ref"] == "prompt"
+    assert reasoning["event"] == "reasoning"
+    assert reasoning["decision"]["raw_model_output_ref"] == "prompt"
+    assert not hasattr(manager, "agent_action")
+    assert not hasattr(manager, "agent_decide")
+
+
+@pytest.mark.not_llm
+@pytest.mark.parametrize("event", sorted(REMOVED_BEHAVIOR_EVENTS))
+def test_removed_behavior_events_are_rejected(manager, event):
+    with pytest.raises(ValueError, match="has been removed"):
+        manager.emit_application_event(
+            event=event,
+            actor={"agent_id": "a1"},
+            action={"name": event},
+            decision={"summary": "legacy"},
+        )
