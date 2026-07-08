@@ -1,4 +1,4 @@
-"""AgentNetwork 分层日志记录与文件管理。
+"""AgentNetwork 日志记录与文件管理。
 
 持久化日志仅包含 application.jsonl、network.jsonl、system.jsonl。
 三类日志不共享持久化字段；日志类型只作为内存索引元数据使用。
@@ -26,16 +26,6 @@ class LogLevel(Enum):
     ERROR = 2
 
 
-AGENT_APPLICATION_LAYER = "agent_application"
-AGENT_NETWORK_LAYER = "agent_network"
-SYSTEM_LAYER = "system"
-
-LOG_TYPE_TO_LAYER = {
-    "application": AGENT_APPLICATION_LAYER,
-    "network": AGENT_NETWORK_LAYER,
-    "system": SYSTEM_LAYER,
-}
-LAYER_TO_LOG_TYPE = {value: key for key, value in LOG_TYPE_TO_LAYER.items()}
 LOG_TYPE_TO_FILENAME = {
     "application": "application.jsonl",
     "network": "network.jsonl",
@@ -78,13 +68,6 @@ NETWORK_EVENTS = {
     "llm_api_packet",
     "tcpdump_packet",
 }
-APPLICATION_CATEGORIES = {
-    AGENT_APPLICATION_LAYER,
-    "agent_behavior",
-    "llm_api",
-    "communication",
-}
-NETWORK_CATEGORIES = {AGENT_NETWORK_LAYER, "network_capture"}
 
 
 def _object(
@@ -402,13 +385,10 @@ def normalize_log_type(log_type: str) -> str:
     aliases = {
         "application": "application",
         "application.jsonl": "application",
-        AGENT_APPLICATION_LAYER: "application",
         "network": "network",
         "network.jsonl": "network",
-        AGENT_NETWORK_LAYER: "network",
         "system": "system",
         "system.jsonl": "system",
-        SYSTEM_LAYER: "system",
     }
     normalized = aliases.get(raw, raw)
     if normalized not in LOG_SCHEMAS:
@@ -419,7 +399,7 @@ def normalize_log_type(log_type: str) -> str:
 
 
 def infer_log_type(record: Dict[str, Any]) -> str:
-    for field in ("log_type", _INTERNAL_LOG_TYPE, "layer"):
+    for field in ("log_type", _INTERNAL_LOG_TYPE):
         value = record.get(field)
         if value:
             try:
@@ -427,21 +407,12 @@ def infer_log_type(record: Dict[str, Any]) -> str:
             except ValueError:
                 pass
 
-    category = str(record.get("category", ""))
     event = str(record.get("event", ""))
-    if event in NETWORK_EVENTS or category in NETWORK_CATEGORIES:
+    if event in NETWORK_EVENTS:
         return "network"
-    if (
-        event in APPLICATION_EVENTS
-        or event in REMOVED_APPLICATION_EVENTS
-        or category in APPLICATION_CATEGORIES
-    ):
+    if event in APPLICATION_EVENTS or event in REMOVED_APPLICATION_EVENTS:
         return "application"
     return "system"
-
-
-def infer_log_layer(record: Dict[str, Any]) -> str:
-    return LOG_TYPE_TO_LAYER[infer_log_type(record)]
 
 
 def is_agent_application_record(record: Dict[str, Any]) -> bool:
@@ -678,7 +649,7 @@ def _public_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class LogManager:
-    """线程安全的分层日志记录、查询和文件管理器。"""
+    """线程安全的日志记录、查询和文件管理器。"""
 
     _instance: Optional["LogManager"] = None
     _instance_lock = threading.Lock()
@@ -1220,14 +1191,8 @@ class LogManager:
         trace_id=None,
         task_id=None,
         limit=50,
-        layer=None,
-        category=None,
     ) -> List[Dict[str, Any]]:
-        del category
-        selected_type = log_type or layer
-        normalized_type = (
-            normalize_log_type(selected_type) if selected_type else None
-        )
+        normalized_type = normalize_log_type(log_type) if log_type else None
         with self._entry_lock:
             results = list(self._entries)
 
@@ -1304,14 +1269,13 @@ class LogManager:
             limit=limit,
         )
 
-    def export(self, fmt="jsonl", limit=0, log_type=None, layer=None):
-        selected_type = log_type or layer
+    def export(self, fmt="jsonl", limit=0, log_type=None):
         entries = (
             self.query(
-                log_type=selected_type,
+                log_type=log_type,
                 limit=limit or self._max,
             )
-            if selected_type
+            if log_type
             else self.get_entries(limit or self._max)
         )
         if fmt == "json":
@@ -1351,7 +1315,6 @@ class LogManager:
         fmt="jsonl",
         limit=0,
         log_type=None,
-        layer=None,
     ):
         os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
         with open(filepath, "w", encoding="utf-8") as stream:
@@ -1360,7 +1323,6 @@ class LogManager:
                     fmt,
                     limit,
                     log_type=log_type,
-                    layer=layer,
                 )
             )
         return filepath
