@@ -53,10 +53,7 @@ def _send(record: dict):
 def llm_api_enabled() -> bool:
     """返回是否启用 LLM 应用层指标日志。"""
 
-    return os.environ.get(
-        "LOG_LLM_API",
-        os.environ.get("LOG_TRAFFIC", "0"),
-    ) == "1"
+    return os.environ.get("LOG_LLM_API", "0") == "1"
 
 
 def _actor(actor_id: str = "", actor_name: str = "") -> dict:
