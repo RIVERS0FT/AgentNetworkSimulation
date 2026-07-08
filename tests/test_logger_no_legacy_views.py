@@ -40,7 +40,7 @@ def test_only_current_log_files_are_generated(temp_log_manager):
         "event": "reasoning",
         "actor": {"agent_id": "agent_B"},
         "action": {},
-        "decision": {"reasoning": "I decided to wait"},
+        "content": {"text": "I decided to wait"},
         "trace": {"trace_id": "trace-reasoning"},
     }
     network_record = {
