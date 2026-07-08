@@ -3,7 +3,12 @@ import os
 
 import pytest
 
-from agent_network.log_manager import LogManager
+from agent_network.log_manager import (
+    LogManager,
+    application_log_schema,
+    network_log_schema,
+    system_log_schema,
+)
 
 
 REMOVED_FIELDS = {
@@ -33,6 +38,25 @@ def manager(tmp_path):
     os.makedirs(instance._log_dir, exist_ok=True)
     yield instance
     instance.reset()
+
+
+@pytest.mark.not_llm
+def test_each_schema_owns_timestamp_field():
+    schemas = (
+        application_log_schema,
+        network_log_schema,
+        system_log_schema,
+    )
+    for schema in schemas:
+        assert "common_fields" not in schema
+        assert schema["type_fields"]["timestamp"] == {
+            "type": "string",
+            "required": True,
+        }
+
+    assert application_log_schema["type_fields"] is not network_log_schema["type_fields"]
+    assert application_log_schema["type_fields"] is not system_log_schema["type_fields"]
+    assert network_log_schema["type_fields"] is not system_log_schema["type_fields"]
 
 
 @pytest.mark.not_llm
@@ -106,6 +130,7 @@ def test_persisted_jsonl_has_no_removed_fields(manager):
             for line in stream:
                 record = json.loads(line)
                 assert not (REMOVED_FIELDS & set(record))
+                assert "timestamp" in record
 
 
 @pytest.mark.not_llm
