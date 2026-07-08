@@ -57,6 +57,19 @@ def test_agent_server_uploads_backend_application_events_to_srv():
     assert "_ack_inbox(pending_ids)" in text
 
 
+def test_agent_server_uses_strict_log_manager_interface():
+    text = _text()
+
+    assert "from agent_network.log_manager import get_log_manager" in text
+    assert "from agent_network.logger import" not in text
+    assert "logger = get_log_manager()" in text
+    assert "tick=context.tick" not in text
+    assert "component=context.agent_id" not in text
+    assert 'source="agent"' not in text
+    assert 'debug={"schema_version": "application.v1"' not in text
+    assert 'event=event["event"]' in text
+
+
 def test_agent_server_supported_backends_are_explicit_and_exclude_brain():
     text = _text()
 
