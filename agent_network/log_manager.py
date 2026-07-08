@@ -76,11 +76,9 @@ FIELD_LIBRARY: Dict[str, Dict[str, Any]] = {
     "conversation": _object(),
     "action": _object(),
     "content": _object(),
-    "decision": _object(),
     "skill": _object(),
     "tool": _object(),
     "state_change": _object(),
-    "policy": _object(),
     "result": _object(),
     "metrics": _object(),
     "payload": _object(),
@@ -186,8 +184,6 @@ APP_LAYOUTS = {
             "conversation",
             "action",
             "content",
-            "decision",
-            "policy",
             "result",
             "links",
         ),
@@ -197,8 +193,8 @@ APP_LAYOUTS = {
         ("target", "conversation", "action", "content", "result", "links"),
     ),
     "reasoning": (
-        ("action", "decision"),
-        ("task", "action", "decision", "result", "metrics", "links"),
+        ("action",),
+        ("task", "action", "content", "result", "metrics", "links"),
     ),
     "acting": (
         ("action",),
@@ -210,11 +206,11 @@ APP_LAYOUTS = {
     ),
     "tool_call": (
         ("action", "tool"),
-        ("target", "task", "action", "tool", "policy", "result", "links"),
+        ("target", "task", "action", "tool", "result", "links"),
     ),
     "tool_call_requested": (
         ("action", "tool"),
-        ("target", "task", "action", "tool", "policy", "result", "links"),
+        ("target", "task", "action", "tool", "result", "links"),
     ),
     "tool_result": (
         ("action", "tool", "result"),
@@ -229,8 +225,8 @@ APP_LAYOUTS = {
         ("target", "task", "action", "state_change", "result", "links"),
     ),
     "policy_check": (
-        ("policy",),
-        ("target", "task", "action", "policy", "result", "links"),
+        ("result",),
+        ("target", "task", "action", "result", "links"),
     ),
     "application_error": (
         ("result",),
@@ -260,7 +256,7 @@ application_log_schema: Dict[str, Any] = {
     "name": "application.jsonl",
     "format": "jsonl",
     "log_type": "application",
-    "schema_version": "application.v8",
+    "schema_version": "application.v9",
     "additional_properties": False,
     "type_fields": _application_fields(),
     "event_schemas": {
@@ -767,11 +763,9 @@ class LogManager:
         conversation=None,
         action=None,
         content=None,
-        decision=None,
         skill=None,
         tool=None,
         state_change=None,
-        policy=None,
         result=None,
         metrics=None,
         payload=None,
@@ -788,11 +782,9 @@ class LogManager:
                 "conversation": conversation or {},
                 "action": action or {},
                 "content": content or {},
-                "decision": decision or {},
                 "skill": skill or {},
                 "tool": tool or {},
                 "state_change": state_change or {},
-                "policy": policy or {},
                 "result": result or {},
                 "metrics": metrics or {},
                 "payload": payload or {},
@@ -907,16 +899,17 @@ class LogManager:
             result=result or {},
         )
 
-    def reasoning(self, agent_id, prompt_snippet, decision=None):
+    def reasoning(self, agent_id, prompt_snippet, result=None):
         return self.emit_application_event(
             "reasoning",
             {"agent_id": agent_id},
             action={"name": "reasoning", "status": "completed"},
-            decision={
-                "decision_summary": str(decision) if decision else "",
-                "inputs_used": ["prompt_snippet"],
-                "raw_model_output_ref": prompt_snippet,
+            content={
+                "content_type": "reasoning",
+                "text": prompt_snippet,
+                "summary": str(result) if result else "",
             },
+            result=result or {},
         )
 
     def agent_message(
@@ -924,7 +917,6 @@ class LogManager:
         from_id,
         to,
         content,
-        reasoning="",
         latency_ms=0,
         status="success",
         payload_len=0,
@@ -962,16 +954,6 @@ class LogManager:
                 "size_bytes": payload_len
                 or len((content or "").encode("utf-8")),
                 "redacted": False,
-            },
-            decision={
-                "decision_summary": reasoning[:200],
-                "reasoning_visible": reasoning[:500],
-            },
-            policy={
-                "checked": True,
-                "result": "allowed",
-                "rule": "communication_matrix",
-                "reason": "",
             },
             result={
                 "status": normalized_status,
