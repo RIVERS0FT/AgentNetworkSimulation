@@ -1,8 +1,7 @@
 """统一结构化日志。
 
-application.jsonl 的字段、类型、默认值和附加字段策略统一定义在本模块的
-``application_log_schema`` 中。本模块负责产生日志、按照 schema 规范化
-应用层记录，并按日志层路由持久化。
+application.jsonl 使用“公共字段 Schema + 按 event 区分的专属 Schema”。
+本模块负责应用日志规范化、日志层识别、内存索引和 JSONL 持久化。
 """
 
 import copy
@@ -39,11 +38,14 @@ APPLICATION_EVENTS = {
     "skill_use",
     "tool_call",
     "tool_result",
+    "tool_call_requested",
+    "tool_result_received",
     "state_change",
     "policy_check",
     "application_error",
     "llm_api_call",
     "llm_cli_call",
+    "llm_runtime_completed",
 }
 
 NETWORK_EVENTS = {
@@ -62,12 +64,74 @@ APPLICATION_CATEGORIES = {
 NETWORK_CATEGORIES = {AGENT_NETWORK_LAYER, "network_capture"}
 
 
+def _object_field(
+    *,
+    required: bool = True,
+    default: Optional[Dict[str, Any]] = None,
+    properties: Optional[Dict[str, Any]] = None,
+    required_properties: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    spec: Dict[str, Any] = {
+        "type": "object",
+        "required": required,
+        "default": {} if default is None else default,
+    }
+    if properties:
+        spec["properties"] = properties
+    if required_properties:
+        spec["required_properties"] = required_properties
+    return spec
+
+
+_ACTOR_FIELD = _object_field(
+    properties={
+        "agent_id": {"type": "string"},
+        "name": {"type": "string"},
+        "role": {"type": "string"},
+        "backend": {"type": "string"},
+    }
+)
+_TARGET_FIELD = _object_field(
+    properties={
+        "agent_id": {"type": "string"},
+        "name": {"type": "string"},
+        "role": {"type": "string"},
+    }
+)
+_TASK_FIELD = _object_field()
+_CONVERSATION_FIELD = _object_field()
+_ACTION_FIELD = _object_field()
+_CONTENT_FIELD = _object_field()
+_DECISION_FIELD = _object_field()
+_SKILL_FIELD = _object_field()
+_TOOL_FIELD = _object_field()
+_STATE_CHANGE_FIELD = _object_field()
+_POLICY_FIELD = _object_field()
+_RESULT_FIELD = _object_field()
+_METRICS_FIELD = _object_field()
+
+_FALLBACK_EVENT_FIELDS = {
+    "target": _TARGET_FIELD,
+    "task": _TASK_FIELD,
+    "conversation": _CONVERSATION_FIELD,
+    "action": _ACTION_FIELD,
+    "content": _CONTENT_FIELD,
+    "decision": _DECISION_FIELD,
+    "skill": _SKILL_FIELD,
+    "tool": _TOOL_FIELD,
+    "state_change": _STATE_CHANGE_FIELD,
+    "policy": _POLICY_FIELD,
+    "result": _RESULT_FIELD,
+    "metrics": _METRICS_FIELD,
+}
+
+
 application_log_schema: Dict[str, Any] = {
     "name": "application.jsonl",
     "format": "jsonl",
-    "schema_version": "application.v1",
+    "schema_version": "application.v2",
     "additional_properties": False,
-    "fields": {
+    "common_fields": {
         "timestamp": {"type": "string", "required": True},
         "seq": {"type": "integer", "required": True, "default": 0},
         "session_id": {"type": "string", "required": True, "default": ""},
@@ -96,66 +160,236 @@ application_log_schema: Dict[str, Any] = {
             "default": "",
         },
         "tick": {"type": "integer", "required": True, "default": 0},
-        "actor": {
-            "type": "object",
-            "required": True,
-            "default": {},
-            "properties": {
-                "agent_id": {"type": "string"},
-                "name": {"type": "string"},
-                "role": {"type": "string"},
-                "backend": {"type": "string"},
-            },
-        },
-        "target": {
-            "type": "object",
-            "required": True,
-            "default": {},
-            "properties": {
-                "agent_id": {"type": "string"},
-                "name": {"type": "string"},
-                "role": {"type": "string"},
-            },
-        },
-        "task": {"type": "object", "required": True, "default": {}},
-        "conversation": {"type": "object", "required": True, "default": {}},
-        "action": {"type": "object", "required": True, "default": {}},
-        "content": {"type": "object", "required": True, "default": {}},
-        "decision": {"type": "object", "required": True, "default": {}},
-        "skill": {"type": "object", "required": True, "default": {}},
-        "tool": {"type": "object", "required": True, "default": {}},
-        "state_change": {"type": "object", "required": True, "default": {}},
-        "policy": {"type": "object", "required": True, "default": {}},
-        "result": {"type": "object", "required": True, "default": {}},
-        "metrics": {"type": "object", "required": True, "default": {}},
-        "links": {
-            "type": "object",
-            "required": True,
-            "default": {
+        "actor": _ACTOR_FIELD,
+        "links": _object_field(
+            default={
                 "network_event_ids": [],
                 "audit_event_ids": [],
                 "tool_event_ids": [],
                 "state_event_ids": [],
                 "related_trace_ids": [],
-            },
-        },
-        "trace": {
-            "type": "object",
-            "required": True,
-            "default": {},
-            "required_properties": ["trace_id"],
-        },
+            }
+        ),
+        "trace": _object_field(required_properties=["trace_id"]),
         "message": {
             "type": "string",
             "required": True,
             "generator": "human_summary",
         },
-        "debug": {
-            "type": "object",
-            "required": True,
-            "default": {
-                "schema_version": "application.v1",
+        "debug": _object_field(
+            default={
+                "schema_version": "application.v2",
                 "emitter": "SimulationLogger",
+            }
+        ),
+    },
+    "event_schemas": {
+        "*": {
+            "required_fields": [],
+            "fields": _FALLBACK_EVENT_FIELDS,
+        },
+        "agent_run_started": {
+            "required_fields": ["task", "action"],
+            "fields": {
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+            },
+        },
+        "agent_run_completed": {
+            "required_fields": ["task", "action", "result"],
+            "fields": {
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "content": _CONTENT_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "agent_run_failed": {
+            "required_fields": ["task", "action", "result"],
+            "fields": {
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "result": _RESULT_FIELD,
+            },
+        },
+        "agent_message": {
+            "required_fields": ["target", "conversation", "action", "content"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "conversation": _CONVERSATION_FIELD,
+                "action": _ACTION_FIELD,
+                "content": _CONTENT_FIELD,
+                "decision": _DECISION_FIELD,
+                "policy": _POLICY_FIELD,
+                "result": _RESULT_FIELD,
+            },
+        },
+        "agent_message_received": {
+            "required_fields": ["target", "conversation", "action", "content"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "conversation": _CONVERSATION_FIELD,
+                "action": _ACTION_FIELD,
+                "content": _CONTENT_FIELD,
+                "result": _RESULT_FIELD,
+            },
+        },
+        "decide": {
+            "required_fields": ["action", "decision"],
+            "fields": {
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "decision": _DECISION_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "agent_decide": {
+            "required_fields": ["action", "decision"],
+            "fields": {
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "decision": _DECISION_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "act": {
+            "required_fields": ["action"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "content": _CONTENT_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "agent_action": {
+            "required_fields": ["action"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "content": _CONTENT_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "skill_use": {
+            "required_fields": ["action", "skill"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "skill": _SKILL_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "tool_call": {
+            "required_fields": ["action", "tool"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "tool": _TOOL_FIELD,
+                "policy": _POLICY_FIELD,
+                "result": _RESULT_FIELD,
+            },
+        },
+        "tool_call_requested": {
+            "required_fields": ["action", "tool"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "tool": _TOOL_FIELD,
+                "policy": _POLICY_FIELD,
+                "result": _RESULT_FIELD,
+            },
+        },
+        "tool_result": {
+            "required_fields": ["action", "tool", "result"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "tool": _TOOL_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "tool_result_received": {
+            "required_fields": ["action", "tool", "result"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "tool": _TOOL_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "state_change": {
+            "required_fields": ["state_change"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "state_change": _STATE_CHANGE_FIELD,
+                "result": _RESULT_FIELD,
+            },
+        },
+        "policy_check": {
+            "required_fields": ["policy"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "policy": _POLICY_FIELD,
+                "result": _RESULT_FIELD,
+            },
+        },
+        "application_error": {
+            "required_fields": ["result"],
+            "fields": {
+                "target": _TARGET_FIELD,
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "content": _CONTENT_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "llm_api_call": {
+            "required_fields": ["action", "result"],
+            "fields": {
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "content": _CONTENT_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "llm_cli_call": {
+            "required_fields": ["action", "result"],
+            "fields": {
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "content": _CONTENT_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
+            },
+        },
+        "llm_runtime_completed": {
+            "required_fields": ["action", "result", "metrics"],
+            "fields": {
+                "task": _TASK_FIELD,
+                "action": _ACTION_FIELD,
+                "result": _RESULT_FIELD,
+                "metrics": _METRICS_FIELD,
             },
         },
     },
@@ -163,7 +397,7 @@ application_log_schema: Dict[str, Any] = {
 
 
 def infer_log_layer(record: Dict) -> str:
-    """Infer the two-layer Agent log model."""
+    """推断 Agent 日志所属层。"""
 
     layer = record.get("layer")
     if layer:
@@ -212,18 +446,36 @@ def _is_type(value: Any, expected: str) -> bool:
     return True
 
 
-def _normalize_object(value: Any, spec: Dict[str, Any]) -> Dict[str, Any]:
-    value = value if isinstance(value, dict) else {}
-    properties = spec.get("properties")
-    if not properties:
-        return dict(value)
+def _normalize_object(value: Any, spec: Dict[str, Any], field_name: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        if "default" in spec:
+            value = copy.deepcopy(spec["default"])
+        elif spec.get("required"):
+            raise ValueError(f"application.jsonl field '{field_name}' must be object")
+        else:
+            return {}
 
-    normalized = {}
-    for name, property_spec in properties.items():
-        property_value = value.get(name)
-        if _is_type(property_value, property_spec.get("type", "")):
-            normalized[name] = property_value
-    return normalized
+    properties = spec.get("properties")
+    if properties:
+        normalized = {}
+        for name, property_spec in properties.items():
+            property_value = value.get(name)
+            if _is_type(property_value, property_spec.get("type", "")):
+                normalized[name] = property_value
+        value = normalized
+    else:
+        value = dict(value)
+
+    defaults = spec.get("default")
+    if isinstance(defaults, dict):
+        value = {**copy.deepcopy(defaults), **value}
+
+    for required_name in spec.get("required_properties", []):
+        if required_name not in value:
+            raise ValueError(
+                f"application.jsonl field '{field_name}.{required_name}' is required"
+            )
+    return value
 
 
 def _application_message(record: Dict[str, Any]) -> str:
@@ -237,11 +489,21 @@ def _application_message(record: Dict[str, Any]) -> str:
     return str(record.get("event", ""))
 
 
-def normalize_application_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    """严格按照 application_log_schema 生成应用层记录。"""
+def _event_schema(event: str) -> Dict[str, Any]:
+    schemas = application_log_schema["event_schemas"]
+    return schemas.get(event, schemas["*"])
 
-    fields = application_log_schema["fields"]
+
+def normalize_application_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """按公共字段和 event 专属字段规范化一条应用层记录。"""
+
     source = dict(record)
+    event = str(source.get("event") or "")
+    selected_event_schema = _event_schema(event)
+
+    fields = dict(application_log_schema["common_fields"])
+    fields.update(selected_event_schema.get("fields", {}))
+    required_fields = set(selected_event_schema.get("required_fields", []))
 
     trace = source.get("trace") if isinstance(source.get("trace"), dict) else {}
     trace = dict(trace)
@@ -262,7 +524,11 @@ def normalize_application_record(record: Dict[str, Any]) -> Dict[str, Any]:
     source["target"] = target
 
     normalized: Dict[str, Any] = {}
-    for name, spec in fields.items():
+    for name, raw_spec in fields.items():
+        spec = dict(raw_spec)
+        if name in required_fields:
+            spec["required"] = True
+
         if "const" in spec:
             normalized[name] = spec["const"]
             continue
@@ -279,10 +545,7 @@ def normalize_application_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
         expected_type = spec.get("type", "")
         if expected_type == "object":
-            value = _normalize_object(value, spec)
-            defaults = spec.get("default")
-            if isinstance(defaults, dict):
-                value = {**copy.deepcopy(defaults), **value}
+            value = _normalize_object(value, spec, name)
         elif not _is_type(value, expected_type):
             if "default" in spec:
                 value = copy.deepcopy(spec["default"])
@@ -297,7 +560,8 @@ def normalize_application_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
     debug = normalized["debug"]
     debug["schema_version"] = application_log_schema["schema_version"]
-    if normalized.get("event") == "agent_message":
+    debug["event_schema"] = event if event in application_log_schema["event_schemas"] else "*"
+    if event == "agent_message":
         debug.setdefault("legacy_network_fields_dropped", True)
     normalized["debug"] = debug
     return normalized
@@ -603,7 +867,7 @@ class SimulationLogger:
         source: str = "agent",
         debug: dict | None = None,
     ) -> dict:
-        """构造并写入严格遵循 logger schema 的应用层事件。"""
+        """构造并写入符合公共 Schema 和 event 专属 Schema 的应用层事件。"""
 
         return self.emit(
             {
@@ -611,6 +875,8 @@ class SimulationLogger:
                 "level": level,
                 "source": source,
                 "component": component or actor.get("agent_id", "unknown"),
+                "category": AGENT_APPLICATION_LAYER,
+                "layer": AGENT_APPLICATION_LAYER,
                 "event": event,
                 "actor": actor,
                 "target": target or {},
@@ -726,7 +992,7 @@ class SimulationLogger:
             },
             trace_id=talk or "",
             debug={
-                "schema_version": "application.v1",
+                "schema_version": "application.v2",
                 "emitter": "SimulationLogger.agent_message",
                 "duration_source": "message_bus_relay_timer",
                 "duration_scope": "bus_receive_to_target_message_response",
@@ -827,13 +1093,9 @@ class SimulationLogger:
         if event:
             results = [entry for entry in results if entry.get("event") == event]
         if layer:
-            results = [
-                entry for entry in results if infer_log_layer(entry) == layer
-            ]
+            results = [entry for entry in results if infer_log_layer(entry) == layer]
         if category:
-            results = [
-                entry for entry in results if entry.get("category") == category
-            ]
+            results = [entry for entry in results if entry.get("category") == category]
         if trace_id:
             results = [
                 entry
@@ -848,9 +1110,7 @@ class SimulationLogger:
                 if (entry.get("task") or {}).get("task_id") == task_id
             ]
         if level:
-            results = [
-                entry for entry in results if entry.get("level") == level.upper()
-            ]
+            results = [entry for entry in results if entry.get("level") == level.upper()]
         if keyword:
             lowered = keyword.lower()
             results = [
