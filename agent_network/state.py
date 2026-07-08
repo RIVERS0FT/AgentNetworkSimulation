@@ -97,7 +97,7 @@ def get_token_usage_snapshot() -> Dict[str, Any]:
         }
 
 def _extract_token_usage_delta(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if record.get("event") not in {"llm_api_call", "llm_cli_call"}:
+    if record.get("event") != "llm_api_call":
         return None
     payload = record.get("payload") or {}
     target = record.get("target") or {}
