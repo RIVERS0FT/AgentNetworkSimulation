@@ -17,7 +17,7 @@ def mock_logs():
 
     manager.emit_application_event(
         event="agent_message",
-        actor={"agent_id": "agent_A"},
+        agent_id="agent_A",
         target={"agent_id": "agent_B"},
         conversation={},
         action={"name": "send_message"},
@@ -25,18 +25,18 @@ def mock_logs():
     )
     manager.emit_application_event(
         event="reasoning",
-        actor={"agent_id": "agent_B"},
+        agent_id="agent_B",
         action={"name": "reasoning"},
         content={"summary": "reasoning 1"},
     )
     manager.emit_application_event(
         event="acting",
-        actor={"agent_id": "agent_B"},
+        agent_id="agent_B",
         action={"name": "acting"},
     )
     manager.emit_application_event(
         event="policy_check",
-        actor={"agent_id": "agent_C"},
+        agent_id="agent_C",
         result={"status": "allowed"},
     )
 
@@ -51,6 +51,8 @@ def test_messages_api_view(mock_logs):
     data = response.json()
     assert data["total"] == 1
     assert data["entries"][0]["event"] == "agent_message"
+    assert data["entries"][0]["agent_id"] == "agent_A"
+    assert "actor" not in data["entries"][0]
 
 
 @pytest.mark.not_llm
@@ -64,6 +66,21 @@ def test_application_api_view(mock_logs):
     assert "acting" in events
     assert "agent_message" in events
     assert "policy_check" in events
+    assert all("agent_id" in entry for entry in data["entries"])
+    assert all("actor" not in entry for entry in data["entries"])
+
+
+@pytest.mark.not_llm
+def test_application_api_filters_top_level_agent_id(mock_logs):
+    response = client.get("/api/logs/application", params={"agent_id": "agent_B"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 3
+    assert all(
+        entry.get("agent_id") == "agent_B"
+        or (entry.get("target") or {}).get("agent_id") == "agent_B"
+        for entry in data["entries"]
+    )
 
 
 @pytest.mark.not_llm
@@ -80,6 +97,7 @@ def test_agent_view_returns_acting_events(mock_logs):
     data = response.json()
     assert data["total"] == 1
     assert data["logs"][0]["event"] == "acting"
+    assert data["logs"][0]["agent_id"] == "agent_B"
 
 
 @pytest.mark.not_llm
@@ -107,10 +125,19 @@ def test_agent_log_ingest_always_emits_traceable_tool_event():
     assert response.status_code == 200
     record = manager.get_entries(1)[0]
     assert record["event"] == "tool_result"
+    assert record["agent_id"] == "planner"
     assert record["trace_id"] == "trace-1"
     assert record["tool"]["name"] == "write_plan"
     assert record["action"]["duration_ms"] == 12.5
-    for removed in ("trace", "links", "event_id", "parent_event_id", "policy", "decision"):
+    for removed in (
+        "actor",
+        "trace",
+        "links",
+        "event_id",
+        "parent_event_id",
+        "policy",
+        "decision",
+    ):
         assert removed not in record
 
 
@@ -150,7 +177,7 @@ def test_ingest_rejects_invalid_explicit_log_type():
         json={
             "log_type": "application.jsonl",
             "event": "acting",
-            "actor": {"agent_id": "planner"},
+            "agent_id": "planner",
             "action": {"name": "plan"},
             "trace_id": "trace-1",
         },
