@@ -19,6 +19,7 @@
         max_tokens=512,
         messages_count=1,
         component="ag-b1",
+        agent_id="planner",
     )
 """
 
@@ -54,15 +55,6 @@ def llm_api_enabled() -> bool:
     """返回是否启用 LLM 应用层指标日志。"""
 
     return os.environ.get("LOG_LLM_API", "0") == "1"
-
-
-def _actor(actor_id: str = "", actor_name: str = "") -> dict:
-    if not actor_id:
-        return {}
-    actor = {"agent_id": actor_id}
-    if actor_name:
-        actor["name"] = actor_name
-    return actor
 
 
 def _usage_number(usage: Dict[str, Any], key: str):
@@ -103,8 +95,7 @@ def log_llm_call(
     max_tokens: int = 0,
     messages_count: int = 0,
     component: str = "unknown",
-    actor_id: str = "",
-    actor_name: str = "",
+    agent_id: str = "",
     usage: Optional[Dict[str, Any]] = None,
     error: str = "",
 ):
@@ -168,7 +159,7 @@ def log_llm_call(
     record = {
         "timestamp": _now_iso(),
         "event": "llm_api_call",
-        "actor": _actor(actor_id, actor_name),
+        "agent_id": str(agent_id or component or "unknown"),
         "target": {
             "provider": provider,
             "model": model,
@@ -212,8 +203,7 @@ class LLMCallTracker:
         prompt_chars: int = 0,
         messages_count: int = 0,
         max_tokens: int = 0,
-        actor_id: str = "",
-        actor_name: str = "",
+        agent_id: str = "",
     ):
         self.provider = provider
         self.model = model
@@ -221,8 +211,7 @@ class LLMCallTracker:
         self.path = path
         self.host = host
         self.component = component
-        self.actor_id = actor_id
-        self.actor_name = actor_name
+        self.agent_id = agent_id
         self.prompt_chars = prompt_chars
         self.messages_count = messages_count
         self.max_tokens = max_tokens
@@ -247,8 +236,7 @@ class LLMCallTracker:
                 max_tokens=self.max_tokens,
                 messages_count=self.messages_count,
                 component=self.component,
-                actor_id=self.actor_id,
-                actor_name=self.actor_name,
+                agent_id=self.agent_id,
                 error=f"{exc_type.__name__}: {exc_val}",
             )
         return False
@@ -273,7 +261,6 @@ class LLMCallTracker:
             max_tokens=self.max_tokens,
             messages_count=self.messages_count,
             component=self.component,
-            actor_id=self.actor_id,
-            actor_name=self.actor_name,
+            agent_id=self.agent_id,
             usage=usage,
         )
