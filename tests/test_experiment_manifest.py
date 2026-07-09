@@ -47,7 +47,7 @@ def test_experiment_manifest_redacts_secrets_and_quality_verifies_hashes(tmp_pat
     application_dir.mkdir(parents=True)
     (application_dir / "application.jsonl").write_text(json.dumps({
         "trace_id": "trace-1",
-        "actor": {"agent_id": "planner"},
+        "agent_id": "planner",
     }) + "\n", encoding="utf-8")
     experiment_manifest.finalize_manifest("session-1", status="complete", stop_reason="hard_limit")
 
@@ -58,6 +58,7 @@ def test_experiment_manifest_redacts_secrets_and_quality_verifies_hashes(tmp_pat
     assert manifest["seed"] == 1234
     assert manifest["scene"]["sha256"]
     assert quality["passed"] is True
+    assert quality["application_events"]["by_agent"] == {"planner": 1}
     assert quality["captures"][0]["checks"]["sha256_matches"] is True
 
     from agent_network import real_packet_store
@@ -76,14 +77,14 @@ def test_experiment_manifest_redacts_secrets_and_quality_verifies_hashes(tmp_pat
         assert "SHA256SUMS.json" in names
 
 
-def test_application_audit_ignores_nested_trace_and_legacy_actor_fields(tmp_path, monkeypatch):
+def test_application_audit_ignores_nested_trace_and_actor_fields(tmp_path, monkeypatch):
     log_root = tmp_path / "logs"
     application_dir = log_root / "session-legacy"
     application_dir.mkdir(parents=True)
     (application_dir / "application.jsonl").write_text(
         json.dumps({
             "trace": {"trace_id": "trace-legacy"},
-            "actor": {"id": "planner"},
+            "actor": {"agent_id": "planner"},
         }) + "\n",
         encoding="utf-8",
     )
@@ -96,6 +97,29 @@ def test_application_audit_ignores_nested_trace_and_legacy_actor_fields(tmp_path
 
     assert total == 0
     assert by_agent == {}
+
+
+def test_application_audit_counts_source_and_target_agents(tmp_path, monkeypatch):
+    log_root = tmp_path / "logs"
+    application_dir = log_root / "session-agents"
+    application_dir.mkdir(parents=True)
+    (application_dir / "application.jsonl").write_text(
+        json.dumps({
+            "trace_id": "trace-agents",
+            "agent_id": "planner",
+            "target": {"agent_id": "developer"},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(experiment_manifest, "LOG_ROOT", log_root)
+
+    total, by_agent = experiment_manifest._application_counts(
+        "session-agents",
+        "trace-agents",
+    )
+
+    assert total == 1
+    assert by_agent == {"planner": 1, "developer": 1}
 
 
 def test_audit_rejects_session_path_traversal(tmp_path, monkeypatch):
