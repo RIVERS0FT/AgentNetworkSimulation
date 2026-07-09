@@ -14,8 +14,6 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-
-
 def _skill_context(agent_context: AgentContext) -> list[dict]:
     scene_key = agent_context.scene_key or os.environ.get("AGENT_SCENE_KEY", "default")
     scenes_root = os.environ.get("AGENT_SCENES_ROOT", "/app/scenes")
@@ -64,7 +62,7 @@ def _completed_event(agent_context: AgentContext, output_text: str, backend_name
     return {
         "event": "agent_run_completed",
         "trace_id": agent_context.trace_id,
-        "actor": {"agent_id": agent_context.agent_id, "name": agent_context.agent_name, "role": agent_context.role, "backend": backend_name},
+        "agent_id": agent_context.agent_id,
         "task": {"goal": agent_context.task, "status": "completed"},
         "action": {"type": "agent_run", "name": f"{backend_name}_run", "status": "success"},
         "content": {"content_type": "final_message", "text": output_text, "summary": output_text[:200], "size_bytes": len(output_text.encode("utf-8"))},
@@ -125,7 +123,7 @@ class OpenCLAWAdapter(BackendAdapter):
             runtime_event = {
                 "event": "llm_runtime_completed",
                 "trace_id": agent_context.trace_id,
-                "actor": {"agent_id": agent_context.agent_id, "backend": "openclaw-sdk"},
+                "agent_id": agent_context.agent_id,
                 "action": {
                     "type": "llm_call",
                     "name": "openclaw_agent_execute",
