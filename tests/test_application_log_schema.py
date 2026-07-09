@@ -22,15 +22,18 @@ REMOVED_FIELDS = {
     "component",
     "policy",
     "decision",
-}
-SYSTEM_ONLY_FIELDS = {"level", "source", "debug"}
-EVENT_IDENTITY_FIELDS = {
-    "event",
+    "links",
+    "trace",
     "event_id",
     "parent_event_id",
-    "actor",
-    "trace",
 }
+APPLICATION_IDENTITY_FIELDS = {
+    "timestamp",
+    "event",
+    "trace_id",
+    "actor",
+}
+SYSTEM_ONLY_FIELDS = {"level", "source", "debug"}
 NETWORK_TOP_LEVEL_FIELDS = {
     "timestamp",
     "log_id",
@@ -118,7 +121,9 @@ def test_each_schema_owns_timestamp_field():
 def test_application_schema_is_strict_and_uses_one_event_source():
     schemas = application_log_schema["event_schemas"]
 
-    assert application_log_schema["schema_version"] == "application.v9"
+    assert application_log_schema["schema_version"] == "application.v10"
+    assert set(application_log_schema["type_fields"]) == APPLICATION_IDENTITY_FIELDS
+    assert application_log_schema["type_fields"]["trace_id"]["generator"] == "trace_id"
     assert "*" not in schemas
     assert set(schemas) == set(APPLICATION_EVENTS)
     assert "reasoning" in schemas
@@ -131,6 +136,7 @@ def test_application_schema_is_strict_and_uses_one_event_source():
     for event_schema in schemas.values():
         assert "policy" not in event_schema["fields"]
         assert "decision" not in event_schema["fields"]
+        assert "links" not in event_schema["fields"]
 
 
 @pytest.mark.not_llm
@@ -139,16 +145,27 @@ def test_application_schema_field_boundary(manager):
         event="acting",
         actor={"agent_id": "test_agent"},
         action={"name": "test_action"},
+        trace_id="trace-test",
     )
 
     assert record["event"] == "acting"
     assert record["actor"]["agent_id"] == "test_agent"
-    assert EVENT_IDENTITY_FIELDS <= set(record)
+    assert record["trace_id"] == "trace-test"
+    assert APPLICATION_IDENTITY_FIELDS <= set(record)
     assert not (REMOVED_FIELDS & set(record))
     assert not (SYSTEM_ONLY_FIELDS & set(record))
-    assert "trace_id" in record["trace"]
-    assert "trace_id" not in record
-    assert "timestamp" in record
+
+
+@pytest.mark.not_llm
+def test_application_trace_id_is_generated(manager):
+    record = manager.emit_application_event(
+        event="acting",
+        actor={"agent_id": "test_agent"},
+        action={"name": "test_action"},
+    )
+
+    assert record["trace_id"].startswith("trace_")
+    assert "trace" not in record
 
 
 @pytest.mark.not_llm
@@ -170,7 +187,7 @@ def test_network_schema_field_boundary(manager):
     assert record["context"] == NETWORK_CONTEXT
     assert record["network"] == NETWORK_LAYERS
     assert record["raw"] == NETWORK_RAW
-    assert not (EVENT_IDENTITY_FIELDS & set(record))
+    assert not ({"event", "actor", "trace_id"} & set(record))
     assert not (SYSTEM_ONLY_FIELDS & set(record))
 
 
@@ -189,17 +206,18 @@ def test_system_schema_uses_final_source_and_kind(manager):
     assert record["debug"]["event"] == "debug_snapshot"
     assert record["debug"]["kind"] == "debug"
     assert record["payload"]["message"] == "snapshot ready"
-    assert not (EVENT_IDENTITY_FIELDS & set(record))
+    assert not ({"event_id", "parent_event_id", "actor", "trace", "trace_id"} & set(record))
     assert not (REMOVED_FIELDS & set(record))
 
 
 @pytest.mark.not_llm
-def test_persisted_jsonl_has_no_removed_fields(manager):
+def test_persisted_jsonl_has_no_removed_application_fields(manager):
     session_id = manager.start_session("schema_test")
     manager.emit_application_event(
         event="acting",
         actor={"agent_id": "a1"},
         action={"name": "move"},
+        trace_id="trace-application",
     )
     manager.emit_network_event(
         context=NETWORK_CONTEXT,
@@ -208,15 +226,16 @@ def test_persisted_jsonl_has_no_removed_fields(manager):
     )
     manager._close_file_handles()
 
-    for filename in ("application.jsonl", "network.jsonl", "system.jsonl"):
-        path = os.path.join(manager._log_dir, session_id, filename)
-        with open(path, "r", encoding="utf-8") as stream:
-            for line in stream:
-                record = json.loads(line)
-                assert not (REMOVED_FIELDS & set(record))
-                assert "timestamp" in record
-                if filename == "network.jsonl":
-                    assert set(record) == NETWORK_TOP_LEVEL_FIELDS
+    application_path = os.path.join(manager._log_dir, session_id, "application.jsonl")
+    with open(application_path, "r", encoding="utf-8") as stream:
+        record = json.loads(next(stream))
+    assert record["trace_id"] == "trace-application"
+    assert not (REMOVED_FIELDS & set(record))
+
+    network_path = os.path.join(manager._log_dir, session_id, "network.jsonl")
+    with open(network_path, "r", encoding="utf-8") as stream:
+        network_record = json.loads(next(stream))
+    assert set(network_record) == NETWORK_TOP_LEVEL_FIELDS
 
 
 @pytest.mark.not_llm
@@ -227,13 +246,14 @@ def test_agent_message_uses_application_fields_only(manager):
         content="hello",
         latency_ms=12.5,
         payload_len=100,
+        talk="trace-message",
     )
 
     assert record["action"]["duration_ms"] == 12.5
     assert record["content"]["size_bytes"] == 100
+    assert record["trace_id"] == "trace-message"
     assert "network" not in record
-    assert "policy" not in record
-    assert "decision" not in record
+    assert not (REMOVED_FIELDS & set(record))
     assert not (SYSTEM_ONLY_FIELDS & set(record))
 
 
