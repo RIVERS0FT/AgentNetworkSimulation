@@ -54,6 +54,7 @@ def test_network_schema_is_integrated_into_log_manager():
     assert not (package / "_log_manager_core.py").exists()
     assert not (package / "network_log_v4.py").exists()
     assert '"schema_version": "network.v4"' in log_manager_text
+    assert '"schema_version": "application.v11"' in log_manager_text
     assert "NETWORK_CONTEXT_FIELDS" in log_manager_text
     assert "NETWORK_RAW_FIELDS" in log_manager_text
     assert "_log_manager_core" not in log_manager_text
@@ -74,7 +75,7 @@ def test_repository_uses_log_manager_import_directly():
 
 
 @pytest.mark.not_llm
-def test_log_manager_interfaces_have_no_removed_application_parameters():
+def test_log_manager_interfaces_have_top_level_application_agent_id():
     application_parameters = inspect.signature(
         LogManager.emit_application_event
     ).parameters
@@ -86,6 +87,7 @@ def test_log_manager_interfaces_have_no_removed_application_parameters():
     ).parameters
 
     for name in (
+        "actor",
         "tick",
         "level",
         "component",
@@ -98,6 +100,7 @@ def test_log_manager_interfaces_have_no_removed_application_parameters():
         "event_id",
     ):
         assert name not in application_parameters
+    assert "agent_id" in application_parameters
     assert "trace_id" in application_parameters
 
     assert set(network_parameters) == {
@@ -111,6 +114,7 @@ def test_log_manager_interfaces_have_no_removed_application_parameters():
     for name in (
         "event",
         "actor",
+        "agent_id",
         "target",
         "action",
         "payload",
@@ -124,6 +128,7 @@ def test_log_manager_interfaces_have_no_removed_application_parameters():
 
     for name in ("category", "parent_event_id", "tick", "component"):
         assert name not in system_parameters
+    assert "actor" in system_parameters
     assert "kind" in system_parameters
     assert "source" in system_parameters
 
