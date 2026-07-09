@@ -64,11 +64,13 @@ def test_mock_claude_adapter_returns_application_event_without_real_llm(monkeypa
 
     result = ClaudeCodeAdapter().run_agent_task(_context())
 
+    event = result.application_events[0]
     assert result.status == "completed"
     assert result.final_message.startswith("[MOCK_LLM]")
-    assert result.application_events
-    assert result.application_events[0]["event"] == "agent_run_completed"
-    assert result.application_events[0]["actor"]["backend"] == "claude-code"
+    assert event["event"] == "agent_run_completed"
+    assert event["agent_id"] == "agent_a"
+    assert event["metrics"]["backend"] == "claude-code"
+    assert "actor" not in event
 
 
 def test_mock_openclaw_adapter_returns_application_event_without_real_llm(monkeypatch):
@@ -76,11 +78,13 @@ def test_mock_openclaw_adapter_returns_application_event_without_real_llm(monkey
 
     result = OpenCLAWAdapter().run_agent_task(_context())
 
+    event = result.application_events[0]
     assert result.status == "completed"
     assert result.final_message.startswith("[MOCK_LLM]")
-    assert result.application_events
-    assert result.application_events[0]["event"] == "agent_run_completed"
-    assert result.application_events[0]["actor"]["backend"] == "openclaw"
+    assert event["event"] == "agent_run_completed"
+    assert event["agent_id"] == "agent_a"
+    assert event["metrics"]["backend"] == "openclaw"
+    assert "actor" not in event
 
 
 def test_claude_tool_blocks_become_traceable_application_events():
@@ -103,12 +107,16 @@ def test_claude_tool_blocks_become_traceable_application_events():
 
     assert use_event["event"] == "tool_call_requested"
     assert use_event["trace_id"] == "trace-test"
+    assert use_event["agent_id"] == "agent_a"
     assert use_event["tool"]["tool_call_id"] == "tool-1"
     assert result_event["event"] == "tool_result_received"
     assert result_event["trace_id"] == "trace-test"
+    assert result_event["agent_id"] == "agent_a"
     assert result_event["tool"]["tool_call_id"] == "tool-1"
     assert "links" not in use_event
     assert "links" not in result_event
+    assert "actor" not in use_event
+    assert "actor" not in result_event
 
 
 def test_claude_result_message_becomes_llm_runtime_event():
@@ -126,5 +134,7 @@ def test_claude_result_message_becomes_llm_runtime_event():
 
     assert event["event"] == "llm_runtime_completed"
     assert event["trace_id"] == "trace-test"
+    assert event["agent_id"] == "agent_a"
     assert event["metrics"]["duration_ms"] == 1250
     assert event["metrics"]["usage"]["input_tokens"] == 10
+    assert "actor" not in event
