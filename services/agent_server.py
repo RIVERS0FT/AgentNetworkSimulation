@@ -218,9 +218,7 @@ async def run_agent(req: RunRequest):
             result=event.get("result", {}),
             metrics=event.get("metrics", {}),
             payload=event.get("payload", {}),
-            links=event.get("links", {}),
             trace_id=event.get("trace_id", context.trace_id),
-            parent_event_id=event.get("parent_event_id", ""),
         )
         _safe_post_json(f"{SERVER_URL}/api/logs/ingest", record, timeout=2)
 
