@@ -46,7 +46,7 @@ def test_experiment_manifest_redacts_secrets_and_quality_verifies_hashes(tmp_pat
     application_dir = log_root / "session-1"
     application_dir.mkdir(parents=True)
     (application_dir / "application.jsonl").write_text(json.dumps({
-        "trace": {"trace_id": "trace-1"},
+        "trace_id": "trace-1",
         "actor": {"agent_id": "planner"},
     }) + "\n", encoding="utf-8")
     experiment_manifest.finalize_manifest("session-1", status="complete", stop_reason="hard_limit")
@@ -76,13 +76,13 @@ def test_experiment_manifest_redacts_secrets_and_quality_verifies_hashes(tmp_pat
         assert "SHA256SUMS.json" in names
 
 
-def test_application_audit_ignores_legacy_trace_and_actor_fields(tmp_path, monkeypatch):
+def test_application_audit_ignores_nested_trace_and_legacy_actor_fields(tmp_path, monkeypatch):
     log_root = tmp_path / "logs"
     application_dir = log_root / "session-legacy"
     application_dir.mkdir(parents=True)
     (application_dir / "application.jsonl").write_text(
         json.dumps({
-            "trace_id": "trace-legacy",
+            "trace": {"trace_id": "trace-legacy"},
             "actor": {"id": "planner"},
         }) + "\n",
         encoding="utf-8",
