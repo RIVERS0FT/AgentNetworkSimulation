@@ -1,10 +1,10 @@
+import asyncio
 import json
 import logging
 import os
-import asyncio
 import time
-from .base import BackendAdapter, AgentContext, AgentRunResult
-from agent_network.skill_md_loader import load_scene_skill_registry
+
+from .base import AgentContext, AgentRunResult, BackendAdapter
 
 try:
     from openclaw_sdk import OpenClawClient
@@ -14,12 +14,19 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def _skill_context(agent_context: AgentContext) -> list[dict]:
-    scene_key = agent_context.scene_key or os.environ.get("AGENT_SCENE_KEY", "default")
+def _skill_access(agent_context: AgentContext) -> dict:
+    scene_key = (
+        agent_context.scene_key
+        or os.environ.get("AGENT_SCENE_KEY", "default")
+    )
     scenes_root = os.environ.get("AGENT_SCENES_ROOT", "/app/scenes")
-    registry = load_scene_skill_registry(scene_key=scene_key, scenes_root=scenes_root, skill_refs=agent_context.skill_refs)
-    specs = registry.context_specs()
-    return specs
+    return {
+        "scene_key": scene_key,
+        "skills_root": os.path.join(scenes_root, scene_key, "skills"),
+        "allowed_refs": list(agent_context.skill_refs or []),
+        "package_entrypoint": "<skill_ref>/SKILL.md",
+        "single_file_entrypoint": "<skill_ref>.md",
+    }
 
 
 def _build_task_payload(agent_context: AgentContext) -> str:
@@ -35,7 +42,7 @@ def _build_task_payload(agent_context: AgentContext) -> str:
         },
         "messages": agent_context.messages,
         "skill_refs": agent_context.skill_refs,
-        "skill_context": _skill_context(agent_context),
+        "skill_access": _skill_access(agent_context),
         "allowed_tools": agent_context.allowed_tools,
         "permissions": agent_context.permissions,
         "state_snapshot": agent_context.state_snapshot,
@@ -54,29 +61,58 @@ def _system_prompt(agent_context: AgentContext) -> str:
         f"Role: {agent_context.role}\n"
         f"Core Goal: {agent_context.core_goal}\n"
         f"Trace ID: {agent_context.trace_id}\n"
-        "AgentNetwork uses direct Agent-to-Agent HTTP messaging. Skill.md content is SOP/context."
+        "AgentNetwork uses direct Agent-to-Agent HTTP messaging. "
+        "Skills are source packages already placed in the current scene directory. "
+        "Only Skill names listed in skill_refs are available to this Agent. "
+        "Before using a Skill, use the backend's local file capabilities to read "
+        "the package SKILL.md entrypoint, or the matching single Markdown file. "
+        "Follow relative references inside the same Skill package when needed. "
+        "Do not infer Skill instructions from its name and do not read other Skills."
     )
 
 
-def _completed_event(agent_context: AgentContext, output_text: str, backend_name: str) -> dict:
+def _completed_event(
+    agent_context: AgentContext,
+    output_text: str,
+    backend_name: str,
+) -> dict:
     return {
         "event": "agent_run_completed",
         "trace_id": agent_context.trace_id,
         "agent_id": agent_context.agent_id,
         "task": {"goal": agent_context.task, "status": "completed"},
-        "action": {"type": "agent_run", "name": f"{backend_name}_run", "status": "success"},
-        "content": {"content_type": "final_message", "text": output_text, "summary": output_text[:200], "size_bytes": len(output_text.encode("utf-8"))},
+        "action": {
+            "type": "agent_run",
+            "name": f"{backend_name}_run",
+            "status": "success",
+        },
+        "content": {
+            "content_type": "final_message",
+            "text": output_text,
+            "summary": output_text[:200],
+            "size_bytes": len(output_text.encode("utf-8")),
+        },
         "result": {"status": "success", "message": "agent run completed"},
         "metrics": {"backend": backend_name},
     }
 
 
 def _openclaw_agent_id(agent_context: AgentContext) -> str:
-    return os.environ.get("OPENCLAW_AGENT_ID") or os.environ.get("OPENCLAW_DEFAULT_AGENT_ID") or agent_context.agent_id
+    return (
+        os.environ.get("OPENCLAW_AGENT_ID")
+        or os.environ.get("OPENCLAW_DEFAULT_AGENT_ID")
+        or agent_context.agent_id
+    )
 
 
 def _openclaw_session_name(agent_context: AgentContext) -> str:
-    return os.environ.get("OPENCLAW_SESSION_NAME") or agent_context.trace_id or "main"
+    prefix = os.environ.get("OPENCLAW_SESSION_PREFIX", "").strip()
+    logical_session = (
+        f"{agent_context.agent_id}:{agent_context.trace_id}"
+        if agent_context.trace_id
+        else f"{agent_context.agent_id}:tick-{agent_context.tick}"
+    )
+    return f"{prefix}:{logical_session}" if prefix else logical_session
 
 
 def _extract_openclaw_text(result) -> str:
@@ -90,25 +126,63 @@ def _extract_openclaw_text(result) -> str:
 
 
 class OpenCLAWAdapter(BackendAdapter):
-    def run_agent_task(self, agent_context: AgentContext) -> AgentRunResult:
+    def run_agent_task(
+        self,
+        agent_context: AgentContext,
+    ) -> AgentRunResult:
         if os.environ.get("MOCK_LLM") == "1":
             output_text = "[MOCK_LLM] Dummy response from OpenCLAW"
-            return AgentRunResult(trace_id=agent_context.trace_id, agent_id=agent_context.agent_id, status="completed", final_message=output_text, application_events=[_completed_event(agent_context, output_text, "openclaw")])
+            return AgentRunResult(
+                trace_id=agent_context.trace_id,
+                agent_id=agent_context.agent_id,
+                status="completed",
+                final_message=output_text,
+                application_events=[
+                    _completed_event(
+                        agent_context,
+                        output_text,
+                        "openclaw",
+                    )
+                ],
+            )
 
         system_prompt = _system_prompt(agent_context)
         current_task = _build_task_payload(agent_context)
-        prompt = f"{system_prompt}\n\nAgentNetwork task payload:\n{current_task}"
+        prompt = (
+            f"{system_prompt}\n\n"
+            f"AgentNetwork task payload:\n{current_task}"
+        )
 
         if not OpenClawClient:
-            return AgentRunResult(trace_id=agent_context.trace_id, agent_id=agent_context.agent_id, status="error", final_message="", error="openclaw-sdk is not installed or not importable.")
+            return AgentRunResult(
+                trace_id=agent_context.trace_id,
+                agent_id=agent_context.agent_id,
+                status="error",
+                final_message="",
+                error=(
+                    "openclaw-sdk is not installed or not importable."
+                ),
+            )
 
         try:
             started = time.monotonic()
+
             async def _run():
-                gateway_url = os.environ.get("OPENCLAW_GATEWAY_WS_URL", "")
-                logger.info("Connecting to OpenCLAW gateway: %s", gateway_url or "SDK default")
+                gateway_url = os.environ.get(
+                    "OPENCLAW_GATEWAY_WS_URL",
+                    "",
+                )
+                logger.info(
+                    "Connecting to OpenCLAW gateway: %s",
+                    gateway_url or "SDK default",
+                )
                 async with OpenClawClient.connect() as client:
-                    agent = client.get_agent(_openclaw_agent_id(agent_context), session_name=_openclaw_session_name(agent_context))
+                    agent = client.get_agent(
+                        _openclaw_agent_id(agent_context),
+                        session_name=_openclaw_session_name(
+                            agent_context
+                        ),
+                    )
                     return await agent.execute(prompt)
 
             loop = asyncio.new_event_loop()
@@ -119,7 +193,10 @@ class OpenCLAWAdapter(BackendAdapter):
                 loop.close()
 
             output_text = _extract_openclaw_text(response)
-            duration_ms = round((time.monotonic() - started) * 1000, 1)
+            duration_ms = round(
+                (time.monotonic() - started) * 1000,
+                1,
+            )
             runtime_event = {
                 "event": "llm_runtime_completed",
                 "trace_id": agent_context.trace_id,
@@ -133,10 +210,34 @@ class OpenCLAWAdapter(BackendAdapter):
                 "result": {"status": "success"},
                 "metrics": {
                     "duration_ms": duration_ms,
-                    "session_id": _openclaw_session_name(agent_context),
-                    "gateway_url": os.environ.get("OPENCLAW_GATEWAY_WS_URL", ""),
+                    "session_id": _openclaw_session_name(
+                        agent_context
+                    ),
+                    "gateway_url": os.environ.get(
+                        "OPENCLAW_GATEWAY_WS_URL",
+                        "",
+                    ),
                 },
             }
-            return AgentRunResult(trace_id=agent_context.trace_id, agent_id=agent_context.agent_id, status="completed", final_message=output_text, application_events=[runtime_event, _completed_event(agent_context, output_text, "openclaw-sdk")])
+            return AgentRunResult(
+                trace_id=agent_context.trace_id,
+                agent_id=agent_context.agent_id,
+                status="completed",
+                final_message=output_text,
+                application_events=[
+                    runtime_event,
+                    _completed_event(
+                        agent_context,
+                        output_text,
+                        "openclaw-sdk",
+                    ),
+                ],
+            )
         except Exception as e:
-            return AgentRunResult(trace_id=agent_context.trace_id, agent_id=agent_context.agent_id, status="error", final_message="", error=f"OpenCLAW SDK Error: {str(e)}")
+            return AgentRunResult(
+                trace_id=agent_context.trace_id,
+                agent_id=agent_context.agent_id,
+                status="error",
+                final_message="",
+                error=f"OpenCLAW SDK Error: {str(e)}",
+            )
