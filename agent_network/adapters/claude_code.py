@@ -31,6 +31,7 @@ def _skill_context(agent_context: AgentContext) -> list[dict]:
     return specs
 
 
+
 def _build_task_payload(agent_context: AgentContext) -> str:
     payload = {
         "task": agent_context.task,
@@ -57,6 +58,7 @@ def _build_task_payload(agent_context: AgentContext) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+
 def _system_prompt(agent_context: AgentContext) -> str:
     return (
         f"You are {agent_context.agent_name} ({agent_context.agent_id}).\n"
@@ -65,6 +67,7 @@ def _system_prompt(agent_context: AgentContext) -> str:
         f"Trace ID: {agent_context.trace_id}\n"
         "AgentNetwork uses direct Agent-to-Agent HTTP messaging. Call only exposed MCP tools."
     )
+
 
 
 def _completed_event(agent_context: AgentContext, output_text: str, backend_name: str) -> dict:
@@ -78,6 +81,7 @@ def _completed_event(agent_context: AgentContext, output_text: str, backend_name
         "result": {"status": "success", "message": "agent run completed"},
         "metrics": {"backend": backend_name},
     }
+
 
 
 def _claude_mcp_server(agent_context: AgentContext) -> dict:
@@ -99,10 +103,12 @@ def _claude_mcp_server(agent_context: AgentContext) -> dict:
     }
 
 
+
 def _claude_allowed_tools(agent_context: AgentContext) -> list[str]:
     tools = list(agent_context.allowed_tools or [])
     tools.extend([f"mcp__agent_tools__{tool}" for tool in (agent_context.allowed_tools or [])])
     return _unique(tools)
+
 
 
 def _extract_text_from_message(message) -> list[str]:
@@ -123,6 +129,7 @@ def _extract_text_from_message(message) -> list[str]:
     return parts
 
 
+
 def _bounded_value(value, max_chars: int = 64 * 1024):
     """Keep SDK evidence serializable without allowing unbounded log records."""
     try:
@@ -135,6 +142,7 @@ def _bounded_value(value, max_chars: int = 64 * 1024):
         except Exception:
             return encoded
     return {"truncated": True, "original_chars": len(encoded), "preview": encoded[:max_chars]}
+
 
 
 def _tool_events_from_message(message, agent_context: AgentContext) -> list[dict]:
@@ -158,7 +166,6 @@ def _tool_events_from_message(message, agent_context: AgentContext) -> list[dict
                     "status": "requested",
                 },
                 "result": {"status": "requested"},
-                "links": {"tool_call_id": str(tool_call_id)},
             })
             continue
 
@@ -176,9 +183,9 @@ def _tool_events_from_message(message, agent_context: AgentContext) -> list[dict
                     "status": "failed" if is_error else "success",
                 },
                 "result": {"status": "failed" if is_error else "success"},
-                "links": {"tool_call_id": str(tool_call_id)},
             })
     return events
+
 
 
 def _runtime_event_from_message(message, agent_context: AgentContext) -> list[dict]:
@@ -210,6 +217,7 @@ def _runtime_event_from_message(message, agent_context: AgentContext) -> list[di
             "session_id": str(getattr(message, "session_id", "") or ""),
         },
     }]
+
 
 
 class ClaudeCodeAdapter(BackendAdapter):
