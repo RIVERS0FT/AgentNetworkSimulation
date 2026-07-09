@@ -29,19 +29,19 @@ def test_only_current_log_files_are_generated(temp_log_manager):
 
     communication_record = {
         "event": "agent_message",
+        "trace_id": "trace-message",
         "actor": {"agent_id": "agent_A"},
         "target": {"agent_id": "agent_B"},
         "conversation": {},
         "action": {},
         "content": {"text": "Hello"},
-        "trace": {"trace_id": "trace-message"},
     }
     behavior_record = {
         "event": "reasoning",
+        "trace_id": "trace-reasoning",
         "actor": {"agent_id": "agent_B"},
         "action": {},
         "content": {"text": "I decided to wait"},
-        "trace": {"trace_id": "trace-reasoning"},
     }
     network_record = {
         "timestamp": "2026-07-08T12:30:15.123456Z",
