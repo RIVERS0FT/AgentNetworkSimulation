@@ -12,7 +12,7 @@ from agent_network.log_manager import (
 def test_llm_cli_event_and_logger_are_removed(tmp_path):
     assert "llm_cli_call" not in APPLICATION_EVENTS
     assert "llm_cli_call" not in application_log_schema["event_schemas"]
-    assert application_log_schema["schema_version"] == "application.v9"
+    assert application_log_schema["schema_version"] == "application.v10"
     assert not hasattr(llm_metrics, "log_llm_cli")
 
     manager = LogManager(log_dir=str(tmp_path))
@@ -46,7 +46,7 @@ def test_token_usage_ignores_non_api_llm_events():
     state.reset_token_usage_state("test")
     assert state.append_token_usage_record({
         "event": "llm_runtime_completed",
-        "event_id": "runtime_1",
+        "trace_id": "trace-runtime-1",
         "payload": {"input_tokens": 10, "output_tokens": 5},
     }) is False
     assert state.get_token_usage_snapshot()["totals"]["events"] == 0
