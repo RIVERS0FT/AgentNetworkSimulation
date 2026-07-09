@@ -22,14 +22,12 @@ def _unique(items: list[str]) -> list[str]:
     return list(dict.fromkeys([item for item in items if item]))
 
 
-
 def _skill_context(agent_context: AgentContext) -> list[dict]:
     scene_key = agent_context.scene_key or os.environ.get("AGENT_SCENE_KEY", "default")
     scenes_root = os.environ.get("AGENT_SCENES_ROOT", "/app/scenes")
     registry = load_scene_skill_registry(scene_key=scene_key, scenes_root=scenes_root, skill_refs=agent_context.skill_refs)
     specs = registry.context_specs()
     return specs
-
 
 
 def _build_task_payload(agent_context: AgentContext) -> str:
@@ -58,7 +56,6 @@ def _build_task_payload(agent_context: AgentContext) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-
 def _system_prompt(agent_context: AgentContext) -> str:
     return (
         f"You are {agent_context.agent_name} ({agent_context.agent_id}).\n"
@@ -69,19 +66,17 @@ def _system_prompt(agent_context: AgentContext) -> str:
     )
 
 
-
 def _completed_event(agent_context: AgentContext, output_text: str, backend_name: str) -> dict:
     return {
         "event": "agent_run_completed",
         "trace_id": agent_context.trace_id,
-        "actor": {"agent_id": agent_context.agent_id, "name": agent_context.agent_name, "role": agent_context.role, "backend": backend_name},
+        "agent_id": agent_context.agent_id,
         "task": {"goal": agent_context.task, "status": "completed"},
         "action": {"type": "agent_run", "name": f"{backend_name}_run", "status": "success"},
         "content": {"content_type": "final_message", "text": output_text, "summary": output_text[:200], "size_bytes": len(output_text.encode("utf-8"))},
         "result": {"status": "success", "message": "agent run completed"},
         "metrics": {"backend": backend_name},
     }
-
 
 
 def _claude_mcp_server(agent_context: AgentContext) -> dict:
@@ -103,12 +98,10 @@ def _claude_mcp_server(agent_context: AgentContext) -> dict:
     }
 
 
-
 def _claude_allowed_tools(agent_context: AgentContext) -> list[str]:
     tools = list(agent_context.allowed_tools or [])
     tools.extend([f"mcp__agent_tools__{tool}" for tool in (agent_context.allowed_tools or [])])
     return _unique(tools)
-
 
 
 def _extract_text_from_message(message) -> list[str]:
@@ -129,7 +122,6 @@ def _extract_text_from_message(message) -> list[str]:
     return parts
 
 
-
 def _bounded_value(value, max_chars: int = 64 * 1024):
     """Keep SDK evidence serializable without allowing unbounded log records."""
     try:
@@ -144,7 +136,6 @@ def _bounded_value(value, max_chars: int = 64 * 1024):
     return {"truncated": True, "original_chars": len(encoded), "preview": encoded[:max_chars]}
 
 
-
 def _tool_events_from_message(message, agent_context: AgentContext) -> list[dict]:
     """Extract backend tool intent/result blocks without coupling to SDK versions."""
     events = []
@@ -157,7 +148,7 @@ def _tool_events_from_message(message, agent_context: AgentContext) -> list[dict
             events.append({
                 "event": "tool_call_requested",
                 "trace_id": agent_context.trace_id,
-                "actor": {"agent_id": agent_context.agent_id, "backend": "claude-agent-sdk"},
+                "agent_id": agent_context.agent_id,
                 "action": {"type": "tool_call", "name": tool_name, "status": "requested"},
                 "tool": {
                     "name": tool_name,
@@ -175,7 +166,7 @@ def _tool_events_from_message(message, agent_context: AgentContext) -> list[dict
             events.append({
                 "event": "tool_result_received",
                 "trace_id": agent_context.trace_id,
-                "actor": {"agent_id": agent_context.agent_id, "backend": "claude-agent-sdk"},
+                "agent_id": agent_context.agent_id,
                 "action": {"type": "tool_result", "name": "tool_result", "status": "failed" if is_error else "success"},
                 "tool": {
                     "tool_call_id": str(tool_call_id),
@@ -187,7 +178,6 @@ def _tool_events_from_message(message, agent_context: AgentContext) -> list[dict
     return events
 
 
-
 def _runtime_event_from_message(message, agent_context: AgentContext) -> list[dict]:
     class_name = message.__class__.__name__.lower()
     if "resultmessage" not in class_name and not hasattr(message, "duration_ms"):
@@ -197,7 +187,7 @@ def _runtime_event_from_message(message, agent_context: AgentContext) -> list[di
     return [{
         "event": "llm_runtime_completed",
         "trace_id": agent_context.trace_id,
-        "actor": {"agent_id": agent_context.agent_id, "backend": "claude-agent-sdk"},
+        "agent_id": agent_context.agent_id,
         "action": {
             "type": "llm_call",
             "name": "claude_agent_query",
@@ -217,7 +207,6 @@ def _runtime_event_from_message(message, agent_context: AgentContext) -> list[di
             "session_id": str(getattr(message, "session_id", "") or ""),
         },
     }]
-
 
 
 class ClaudeCodeAdapter(BackendAdapter):
