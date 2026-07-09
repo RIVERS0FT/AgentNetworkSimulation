@@ -177,14 +177,14 @@ def append_token_usage_record(record: Dict[str, Any]) -> bool:
     if not delta:
         return False
 
-    actor = (record.get("actor") or {}).get("agent_id", "")
+    agent_id = str(record.get("agent_id") or "")
     target = record.get("target") or {}
     payload = record.get("payload") or {}
     key = "|".join([
         record.get("timestamp") or "",
         record.get("event") or "",
         record.get("trace_id") or "",
-        actor,
+        agent_id,
         str(target.get("provider") or ""),
         str(target.get("model") or ""),
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -219,6 +219,7 @@ def append_token_usage_record(record: Dict[str, Any]) -> bool:
             "key": key,
             "timestamp": record.get("timestamp") or datetime.now().isoformat(timespec="milliseconds"),
             "trace_id": record.get("trace_id") or "",
+            "agent_id": agent_id,
             "hit": totals["hit"],
             "miss": totals["miss"],
             "prompt": totals["prompt"],
@@ -233,7 +234,6 @@ def append_token_usage_record(record: Dict[str, Any]) -> bool:
             "delta_provider_total": delta.get("provider_total"),
             "total_mismatch": delta.get("total_mismatch", False),
             "estimated": delta["estimated"],
-            "actor": actor,
             "provider": target.get("provider", ""),
             "model": target.get("model", ""),
         }
