@@ -5,8 +5,7 @@ from typing import Optional
 
 import requests
 
-from .base import BackendAdapter, AgentContext, AgentRunResult
-from agent_network.skill_md_loader import load_scene_skill_registry
+from .base import AgentContext, AgentRunResult, BackendAdapter
 
 
 def _first_env(*names: str) -> str:
@@ -21,7 +20,10 @@ def _provider() -> str:
     raw = _first_env("LLM_PROVIDER").lower()
     if raw:
         return raw
-    if _first_env("ANTHROPIC_API_KEY") and not _first_env("LLM_API_BASE", "OPENAI_API_BASE"):
+    if _first_env("ANTHROPIC_API_KEY") and not _first_env(
+        "LLM_API_BASE",
+        "OPENAI_API_BASE",
+    ):
         return "anthropic"
     return "openai"
 
@@ -43,7 +45,10 @@ def _anthropic_base_url() -> Optional[str]:
 
 
 def _openai_base_url() -> str:
-    return (_first_env("LLM_API_BASE", "OPENAI_API_BASE") or "https://api.deepseek.com/v1").rstrip("/")
+    return (
+        _first_env("LLM_API_BASE", "OPENAI_API_BASE")
+        or "https://api.deepseek.com/v1"
+    ).rstrip("/")
 
 
 def _extract_anthropic_text(response) -> str:
@@ -55,7 +60,10 @@ def _extract_anthropic_text(response) -> str:
     return "\n".join(parts).strip()
 
 
-def _call_anthropic(system_prompt: str, user_payload: str) -> tuple[str, dict]:
+def _call_anthropic(
+    system_prompt: str,
+    user_payload: str,
+) -> tuple[str, dict]:
     api_key = _first_env("ANTHROPIC_API_KEY", "LLM_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -65,7 +73,9 @@ def _call_anthropic(system_prompt: str, user_payload: str) -> tuple[str, dict]:
     try:
         from anthropic import Anthropic
     except Exception as exc:  # pragma: no cover - dependency error path
-        raise RuntimeError("anthropic package is not installed in this Agent image.") from exc
+        raise RuntimeError(
+            "anthropic package is not installed in this Agent image."
+        ) from exc
 
     kwargs = {"api_key": api_key}
     base_url = _anthropic_base_url()
@@ -87,12 +97,20 @@ def _call_anthropic(system_prompt: str, user_payload: str) -> tuple[str, dict]:
     return text or str(response), usage_data
 
 
-def _call_openai_compatible(system_prompt: str, user_payload: str) -> tuple[str, dict]:
-    api_key = _first_env("LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+def _call_openai_compatible(
+    system_prompt: str,
+    user_payload: str,
+) -> tuple[str, dict]:
+    api_key = _first_env(
+        "LLM_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+    )
     if not api_key:
         raise RuntimeError(
-            "Real LLM mode requires LLM_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY. "
-            "Set MOCK_LLM=1 only when you intentionally want a mock run."
+            "Real LLM mode requires LLM_API_KEY, OPENAI_API_KEY, "
+            "or ANTHROPIC_API_KEY. Set MOCK_LLM=1 only when you "
+            "intentionally want a mock run."
         )
     url = f"{_openai_base_url()}/chat/completions"
     resp = requests.post(
@@ -107,26 +125,43 @@ def _call_openai_compatible(system_prompt: str, user_payload: str) -> tuple[str,
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_payload},
             ],
-            "temperature": float(_first_env("LLM_TEMPERATURE") or 0.2),
+            "temperature": float(
+                _first_env("LLM_TEMPERATURE") or 0.2
+            ),
             "max_tokens": _max_tokens(),
         },
-        timeout=float(_first_env("LLM_TIMEOUT_SECONDS") or 120),
+        timeout=float(
+            _first_env("LLM_TIMEOUT_SECONDS") or 120
+        ),
     )
     resp.raise_for_status()
     data = resp.json()
     try:
-        return data["choices"][0]["message"]["content"] or "", data.get("usage") or {}
+        return (
+            data["choices"][0]["message"]["content"] or "",
+            data.get("usage") or {},
+        )
     except Exception as exc:
-        raise RuntimeError(f"Unexpected OpenAI-compatible response shape: {data}") from exc
+        raise RuntimeError(
+            f"Unexpected OpenAI-compatible response shape: {data}"
+        ) from exc
 
 
-def _completed_event(agent_context: AgentContext, output_text: str, backend_name: str) -> dict:
+def _completed_event(
+    agent_context: AgentContext,
+    output_text: str,
+    backend_name: str,
+) -> dict:
     return {
         "event": "agent_run_completed",
         "trace_id": agent_context.trace_id,
         "agent_id": agent_context.agent_id,
         "task": {"goal": agent_context.task, "status": "completed"},
-        "action": {"type": "agent_run", "name": f"{backend_name}_run", "status": "success"},
+        "action": {
+            "type": "agent_run",
+            "name": f"{backend_name}_run",
+            "status": "success",
+        },
         "content": {
             "content_type": "final_message",
             "text": output_text,
@@ -134,24 +169,38 @@ def _completed_event(agent_context: AgentContext, output_text: str, backend_name
             "size_bytes": len(output_text.encode("utf-8")),
         },
         "result": {"status": "success", "message": "agent run completed"},
-        "metrics": {"backend": backend_name, "provider": _provider(), "model": _model()},
+        "metrics": {
+            "backend": backend_name,
+            "provider": _provider(),
+            "model": _model(),
+        },
     }
 
 
-def run_direct_llm(agent_context: AgentContext, backend_name: str, system_prompt: str, user_payload: str) -> AgentRunResult:
-    """Run a real LLM call without requiring a framework-specific agent SDK.
-
-    This backend does not expose MCP tools. Use AGENT_BACKEND=direct_llm only
-    when you intentionally want a plain model call instead of OpenCLAW / Claude.
-    """
+def run_direct_llm(
+    agent_context: AgentContext,
+    backend_name: str,
+    system_prompt: str,
+    user_payload: str,
+) -> AgentRunResult:
+    """Run a real LLM call without framework tools or local file access."""
     try:
         started = time.monotonic()
         provider = _provider()
         if provider in {"anthropic", "claude"}:
-            output_text, usage = _call_anthropic(system_prompt, user_payload)
+            output_text, usage = _call_anthropic(
+                system_prompt,
+                user_payload,
+            )
         else:
-            output_text, usage = _call_openai_compatible(system_prompt, user_payload)
-        duration_ms = round((time.monotonic() - started) * 1000, 1)
+            output_text, usage = _call_openai_compatible(
+                system_prompt,
+                user_payload,
+            )
+        duration_ms = round(
+            (time.monotonic() - started) * 1000,
+            1,
+        )
         llm_event = {
             "event": "llm_runtime_completed",
             "trace_id": agent_context.trace_id,
@@ -175,7 +224,14 @@ def run_direct_llm(agent_context: AgentContext, backend_name: str, system_prompt
             agent_id=agent_context.agent_id,
             status="completed",
             final_message=output_text,
-            application_events=[llm_event, _completed_event(agent_context, output_text, backend_name)],
+            application_events=[
+                llm_event,
+                _completed_event(
+                    agent_context,
+                    output_text,
+                    backend_name,
+                ),
+            ],
             tool_events=[],
             state_changes=[],
             outbound_messages=[],
@@ -193,26 +249,15 @@ def run_direct_llm(agent_context: AgentContext, backend_name: str, system_prompt
         )
 
 
-def _skill_context(agent_context: AgentContext) -> list[dict]:
-    scene_key = agent_context.scene_key or os.environ.get("AGENT_SCENE_KEY", "default")
-    scenes_root = os.environ.get("AGENT_SCENES_ROOT", "/app/scenes")
-    registry = load_scene_skill_registry(
-        scene_key=scene_key,
-        scenes_root=scenes_root,
-        skill_refs=agent_context.skill_refs,
-    )
-    specs = registry.context_specs()
-    return specs
-
-
 def _system_prompt(agent_context: AgentContext) -> str:
     return (
         f"You are {agent_context.agent_name} ({agent_context.agent_id}).\n"
         f"Role: {agent_context.role}\n"
         f"Core Goal: {agent_context.core_goal}\n"
         f"Trace ID: {agent_context.trace_id}\n"
-        "This is the explicit direct_llm backend. No OpenCLAW Gateway, SDK, "
-        "agent runtime, or MCP tool integration is available in this mode."
+        "This is the explicit direct_llm backend. No OpenCLAW Gateway, "
+        "agent runtime, MCP tools, or local Skill file access is available "
+        "in this mode."
     )
 
 
@@ -229,7 +274,6 @@ def _build_task_payload(agent_context: AgentContext) -> str:
         },
         "messages": agent_context.messages,
         "skill_refs": agent_context.skill_refs,
-        "skill_context": _skill_context(agent_context),
         "allowed_tools": agent_context.allowed_tools,
         "permissions": agent_context.permissions,
         "state_snapshot": agent_context.state_snapshot,
@@ -240,7 +284,23 @@ def _build_task_payload(agent_context: AgentContext) -> str:
 
 
 class DirectLLMAdapter(BackendAdapter):
-    def run_agent_task(self, agent_context: AgentContext) -> AgentRunResult:
+    def run_agent_task(
+        self,
+        agent_context: AgentContext,
+    ) -> AgentRunResult:
+        if agent_context.skill_refs:
+            return AgentRunResult(
+                trace_id=agent_context.trace_id,
+                agent_id=agent_context.agent_id,
+                status="error",
+                final_message="",
+                error=(
+                    "direct_llm cannot use skill_refs because it has no "
+                    "local file or MCP tool access. Use claude-code or "
+                    "openclaw for Skill-enabled Agents."
+                ),
+            )
+
         if os.environ.get("MOCK_LLM") == "1":
             output_text = "[MOCK_LLM] Dummy response from direct_llm"
             return AgentRunResult(
@@ -248,7 +308,13 @@ class DirectLLMAdapter(BackendAdapter):
                 agent_id=agent_context.agent_id,
                 status="completed",
                 final_message=output_text,
-                application_events=[_completed_event(agent_context, output_text, "direct_llm")],
+                application_events=[
+                    _completed_event(
+                        agent_context,
+                        output_text,
+                        "direct_llm",
+                    )
+                ],
                 tool_events=[],
                 state_changes=[],
                 outbound_messages=[],
