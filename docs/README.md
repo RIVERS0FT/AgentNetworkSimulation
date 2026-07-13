@@ -12,6 +12,7 @@
 | [仿真编排与容器运行时设计.md](仿真编排与容器运行时设计.md) | setup/launch、轮次调度、容器池、终止与失败处理 |
 | [通信与网络仿真设计.md](通信与网络仿真设计.md) | DirectBus、通信矩阵、Linux `tc`、真实抓包 |
 | [日志与实验数据设计.md](日志与实验数据设计.md) | `application.jsonl`、`network.jsonl`、`system.jsonl`、PCAP、实验清单与质量审计 |
+| [AgentTrafficCapture.md](AgentTrafficCapture.md) | Agent runtime 真实抓包、分析 API 与端到端验收 |
 | [AgentRuntimeBoundary.md](AgentRuntimeBoundary.md) | Skill 包、Tool、MCP 与后端适配器边界 |
 | [OpenCLAWDeployment.md](OpenCLAWDeployment.md) | OpenCLAW 严格部署与验收 |
 | [开发文档.md](开发文档.md) | 代码模块、API、开发与验证流程 |

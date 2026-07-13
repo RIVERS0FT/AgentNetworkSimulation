@@ -1,105 +1,104 @@
-# Agent runtime traffic capture
+# Agent 运行流量采集与验收
 
-The source of truth for network traffic is the PCAP written inside each Agent
-container network namespace. Application JSONL events provide semantic context;
-scene `traffic_log` arrays are synthetic model data and must not be mixed with
-observed packet totals.
+## 1. 事实来源
 
-## Capture scope
+网络流量的权威来源是每个 Agent 容器网络命名空间内写出的 PCAP。`application.jsonl` 提供应用语义，场景或模型返回的合成流量字段不得混入真实 packet 统计。
 
-By default, the capture excludes the `srv` address, so `/run`, capture control,
-and log-ingest traffic do not pollute Agent runtime measurements. It retains
-Agent-to-Agent, LLM, MCP, DNS, and response packets. Set
-`AGENT_CAPTURE_INCLUDE_CONTROL_PLANE=1` only for control-plane debugging.
+默认抓包排除 `srv` 地址，因此 `/run`、抓包控制和日志回传不会污染 Agent runtime 测量；Agent-to-Agent、LLM、MCP、DNS 及响应流量保留。仅在控制面调试时设置：
 
-Each session contains:
-
-```text
-data/pcap/<session_id>/<logical_agent_id>.pcap
-data/pcap/<session_id>/<logical_agent_id>.manifest.json
-data/pcap/<session_id>/experiment.manifest.json
+```bash
+AGENT_CAPTURE_INCLUDE_CONTROL_PLANE=1
 ```
 
-The manifest maps the logical Agent to its container ID, container IP, backend,
-trace ID, capture filter, timestamps, and final file size.
+## 2. Session 产物
 
-The experiment manifest records the explicit/generated simulation seed, scene
-file hashes, Agent image IDs, sanitized LLM configuration and its fingerprint,
-network profiles, capture lifecycle, and stop reason. Each completed PCAP is
-SHA-256 hashed. A quality audit fails on missing captures, missing runtime
-identity, hash mismatch, empty capture, or missing trace-matched application
-events.
+```text
+data/pcap/<session_id>/
+  <logical_agent_id>.pcap
+  <logical_agent_id>.manifest.json
+  experiment.manifest.json
+```
 
-The scheduler delivers each initial goal once. Later rounds wake only Agents
-with pending inbox messages; successfully processed inbox snapshots are
-acknowledged by message ID, while concurrently arriving messages remain queued.
-This prevents artificial repeated LLM traffic from replaying the same goal or
-the same inbox on every round.
+capture manifest 映射逻辑 Agent 与容器 ID、容器 IP、后端、trace、过滤器、网络 profile、时间、状态、文件大小和 SHA-256。
 
-Direct Agent messages retain source, target, channel, and trace metadata. Both
-the sender's MCP tool execution and the receiver's message receipt are written
-as application-layer evidence under the same trace.
+experiment manifest 记录 seed、scene 文件哈希、Agent 镜像身份、脱敏 LLM 配置、scheduler、网络配置、抓包生命周期和停止原因。
 
-`PCAP_MAX_BYTES` defaults to 1 GiB per Agent. If tcpdump exits or this limit is
-reached, capture health fails and the simulation stops with
-`stop_reason=capture_incomplete`; incomplete sessions are never reported as
-fully captured runs.
+## 3. 抓包生命周期
 
-## Optional network conditions
+1. `srv` 完成容器分配和网络 profile 配置；
+2. 调用每个 Agent `/capture/start`；
+3. 所有 Agent 抓包成功后才进入轮次执行；
+4. 每轮后检查 `/capture/status`；
+5. 结束时调用 `/capture/stop`，写入最终 manifest 和 SHA-256；
+6. 执行 session quality audit。
 
-An edge can opt into real Linux `tc`/`netem` conditions:
+`PCAP_MAX_BYTES` 默认每 Agent 1 GiB。tcpdump 异常退出或超过限制时，抓包健康失败，仿真以 `capture_incomplete` 或启动失败结束。
+
+## 4. 消息与应用证据
+
+初始任务只在第一轮投递。后续轮次只唤醒有 inbox 消息的 Agent；成功处理的 inbox snapshot 按内部消息 ID 确认，执行期间新到消息继续留在队列。
+
+Agent 直连消息保留 source、target、channel 和 trace。发送端 MCP Tool 事件与接收端 `agent_message_received` 都写入 application 日志，并使用同一 trace。
+
+## 5. 可选网络条件
+
+当前 topology 边直接携带网络参数：
 
 ```json
 {
-  "source": "PLANNER",
-  "target": "RF_ENGINEER",
-  "bidirectional": true,
-  "network": {
-    "delay_ms": 20,
-    "jitter_ms": 5,
-    "loss_pct": 0.5,
-    "rate_mbit": 100
-  }
+  "endpoint_a": "planner",
+  "endpoint_b": "rf_engineer",
+  "channel_id": "planner-rf",
+  "delay_ms": 20,
+  "jitter_ms": 5,
+  "loss_pct": 0.5,
+  "rate_mbit": 100
 }
 ```
 
-Delay and loss apply to outbound packets. `bidirectional: true` applies the same
-profile in both directions; therefore the approximate RTT contains both one-way
-delays. A requested profile that cannot be installed fails the simulation rather
-than silently producing traffic under different conditions.
+控制面会为两端分别配置出站 profile，因此该无向边形成近似对称链路。任一请求 profile 无法安装时，实验失败，不静默在不同网络条件下继续。
 
-## Analysis API
+## 6. 分析 API
 
-- `GET /api/packets/?session_id=...&agent_id=...`: newest structured packets.
-- `GET /api/packets/stats?session_id=...`: exact PCAP record and byte counts.
-- `GET /api/packets/analysis?session_id=...`: bounded summary by protocol,
-  direction, traffic class, and endpoint.
-- `GET /api/packets/experiment?session_id=...`: immutable experiment inputs,
-  seed, scene hashes, runtime identities, and capture lifecycle.
-- `GET /api/packets/quality?session_id=...`: capture coverage, identity,
-  application-event coverage, and optional SHA-256 verification.
-- `GET /api/packets/bundle?session_id=...`: offline analysis ZIP containing
-  original PCAPs, manifests, application/network/global JSONL, quality report,
-  bounded structured packet JSONL, analysis summary, and `SHA256SUMS.json`.
-- `GET /api/packets/download?session_id=...&agent_id=...`: original PCAP.
-- `GET /api/packets/correlate?session_id=...&trace_id=...`: explicitly
-  labelled temporal-window correlation between application events and packets.
+- `GET /api/packets/?session_id=...&agent_id=...`：最新结构化 packet；
+- `GET /api/packets/stats?session_id=...`：PCAP record 和 byte 统计；
+- `GET /api/packets/analysis?session_id=...`：协议、方向、traffic class、端点和 flow 摘要；
+- `GET /api/packets/experiment?session_id=...`：实验 manifest；
+- `GET /api/packets/quality?session_id=...`：覆盖率、运行身份、应用事件和 SHA-256 审计；
+- `GET /api/packets/bundle?session_id=...`：离线分析 ZIP；
+- `GET /api/packets/download?session_id=...&agent_id=...`：原始 PCAP；
+- `GET /api/packets/correlate?session_id=...&trace_id=...`：应用事件与 packet 的时间窗口推断。
 
-Decoded PCAP records use UTC epoch timestamps. Correlation is an inference and
-is reported as such; it is not presented as protocol-level causal proof.
+解码使用 UTC epoch 时间。关联结果不是协议级因果证明。
 
-Aggregate counts use `per_agent_observations`: the same Agent-to-Agent packet is
-visible in both endpoint PCAPs and is deliberately not presented as a unique
-network-wide packet count.
+同一个 Agent-to-Agent packet 可能在两端 PCAP 中各观察一次；聚合统计使用 `per_agent_observations` 语义，不把它伪装成全网唯一 packet 数。
 
-## End-to-end acceptance
+## 7. Bundle 内容
 
-With Docker services running, execute:
+离线 bundle 可包含：
+
+- 原始 PCAP 和 capture manifests；
+- experiment manifest；
+- `application.jsonl`、`network.jsonl`、`system.jsonl`；
+- `quality.json`；
+- `analysis.json`；
+- `packets.sample.jsonl`；
+- `SHA256SUMS.json`。
+
+## 8. 端到端验收
+
+Docker 服务运行后执行：
 
 ```bash
 python scripts/verify_agent_traffic.py --scene ap_deployment --seed 1234
 ```
 
-The command exits non-zero unless the simulation completes and the session
-passes Agent coverage, runtime identity, non-empty capture, application-event,
-and SHA-256 gates. Its output includes the offline bundle URL.
+命令只有在仿真完成，且 Agent 覆盖、运行身份、非空 PCAP、application event 和 SHA-256 检查通过时才返回成功。
+
+## 9. 设计约束
+
+- 禁止恢复模拟 PacketRecorder 写入；
+- 禁止把合成流量字段计入真实 packet 总量；
+- 抓包不完整的 session 不得报告为完整实验；
+- 网络统计必须注明观察口径；
+- 跨层关联必须保留“时间窗口推断”说明。

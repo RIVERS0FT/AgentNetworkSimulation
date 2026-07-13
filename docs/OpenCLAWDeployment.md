@@ -134,12 +134,16 @@ PY
 ### Agent HTTP 状态
 
 ```bash
-curl -fsS http://localhost:8000/status | python3 -m json.tool
+docker compose exec -T ag-o1 python3 - <<'PY'
+import json
+import urllib.request
+
+with urllib.request.urlopen("http://127.0.0.1:8000/status", timeout=3) as response:
+    print(json.dumps(json.load(response), ensure_ascii=False, indent=2))
+PY
 ```
 
-当直接从宿主机访问预置 `ag-o1` 时，需要为该容器显式发布端口；正常仿真由 `srv` 在 Docker 网络内访问 Agent `/status` 和 `/run`。
-
-状态 JSON 中应包含：
+正常仿真由 `srv` 在 Docker 网络内访问 Agent `/status` 和 `/run`。状态 JSON 中应包含：
 
 ```json
 {
