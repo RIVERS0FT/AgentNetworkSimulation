@@ -1,76 +1,67 @@
 # OpenCLAW 后端部署与验收
 
-目标：`AGENT_BACKEND=openclaw` 必须代表容器里真实运行 OpenCLAW Gateway 与 `openclaw-sdk`。OpenCLAW 缺失、Gateway 起不来、SDK 不可导入，都应失败；不能静默退化成 direct LLM。
+## 1. 严格运行语义
 
-## 运行模式
+`AGENT_BACKEND=openclaw` 表示容器内必须真实运行 OpenCLAW Gateway 和 `openclaw-sdk`。SDK 不可导入、Gateway 无法启动或端口未就绪时，Agent runtime 必须失败，不能静默退化为 direct LLM。
 
-默认 `ag-o1` 使用 self-contained OpenCLAW 模式：
+只想直接调用模型时，应显式选择独立的 `direct_llm` 模式；当前场景加载器不接受它作为场景 Agent 后端。
+
+## 2. 容器内启动链路
 
 ```text
 ag-o1 container
-  -> start-openclaw-agent.sh
-    -> validate openclaw-sdk import
-    -> start local OpenCLAW gateway
-    -> wait for gateway port
-    -> start services/agent_server.py
-      -> AGENT_BACKEND=openclaw
-      -> OpenCLAWAdapter
+  -> /app/start-openclaw-agent.sh
+     -> 校验 openclaw-sdk
+     -> 启动本地 OpenCLAW Gateway
+     -> 等待 Gateway 端口
+     -> 启动 services/agent_server.py
+        -> OpenCLAWAdapter
+        -> OpenClawClient.connect()
 ```
 
-如果确实不想跑 OpenCLAW，只想直接调用模型，请显式设置：
+Agent-to-Agent 消息使用 DirectBus 直连目标容器，不依赖 message bus 服务。
 
-```yaml
-AGENT_BACKEND: direct_llm
-```
+## 3. 构建前置条件
 
-不要把 direct LLM 当作 OpenCLAW fallback 使用。
+### Gateway npm 包
 
-## 构建前置条件
-
-### 1. Gateway npm 包
-
-Compose 默认传入：
+Compose 默认：
 
 ```bash
 OPENCLAW_GATEWAY_NPM_PACKAGE=openclaw@latest
 ```
 
-如果真实包名不同，启动前覆盖它：
+若真实包名不同：
 
 ```bash
 export OPENCLAW_GATEWAY_NPM_PACKAGE='<real-openclaw-gateway-package>'
 ```
 
-如果包安装后没有提供 `openclaw gateway` 命令，设置：
+若安装后没有 `openclaw gateway` 命令，显式设置：
 
 ```bash
-export OPENCLAW_GATEWAY_CMD='<real gateway start command --host 127.0.0.1 --port 18789>'
+export OPENCLAW_GATEWAY_CMD='<gateway start command --host 127.0.0.1 --port 18789>'
 ```
 
-### 2. openclaw-sdk wheel
+### Python SDK wheel
 
-构建镜像前必须存在：
+构建前必须存在：
 
 ```text
 vendor/python/openclaw_sdk-*.whl
 ```
 
-缺少该 wheel 时，`docker compose build ag-o1` 会直接失败。
+缺少 wheel 时镜像构建应直接失败。
 
-## 启动
+## 4. 启动
 
 ```bash
 docker compose build ag-o1
-docker compose up -d bus srv ag-o1
-```
-
-查看日志：
-
-```bash
+docker compose up -d srv ag-o1
 docker compose logs -f ag-o1
 ```
 
-期望看到：
+期望日志：
 
 ```text
 [openclaw-agent] openclaw-sdk import ok
@@ -79,31 +70,27 @@ docker compose logs -f ag-o1
 [openclaw-agent] starting AgentNetwork server...
 ```
 
-## 一键验收
+## 5. 一键验收
 
 ```bash
 chmod +x scripts/check-openclaw-runtime.sh
 ./scripts/check-openclaw-runtime.sh ag-o1
 ```
 
-通过时应看到：
+通过标记：
 
 ```text
 [check-openclaw] OK: strict OpenCLAW runtime checks passed.
 ```
 
-## 手动验收命令
+## 6. 手动验收
 
-### 1. 确认容器状态
+### 容器与后端
 
 ```bash
 docker compose ps ag-o1
-```
-
-### 2. 确认 backend 是 OpenCLAW 且严格模式开启
-
-```bash
-docker compose exec -T ag-o1 sh -lc 'echo AGENT_BACKEND=$AGENT_BACKEND; echo AGENT_STRICT_BACKEND_SDK=$AGENT_STRICT_BACKEND_SDK'
+docker compose exec -T ag-o1 sh -lc \
+  'echo AGENT_BACKEND=$AGENT_BACKEND; echo AGENT_STRICT_BACKEND_SDK=$AGENT_STRICT_BACKEND_SDK'
 ```
 
 期望：
@@ -113,41 +100,50 @@ AGENT_BACKEND=openclaw
 AGENT_STRICT_BACKEND_SDK=1
 ```
 
-### 3. 确认 Gateway 命令存在
+### Gateway 命令
 
 ```bash
-docker compose exec -T ag-o1 sh -lc 'command -v openclaw || echo "$OPENCLAW_GATEWAY_CMD"'
+docker compose exec -T ag-o1 sh -lc \
+  'command -v openclaw || echo "$OPENCLAW_GATEWAY_CMD"'
 ```
 
-### 4. 确认 openclaw-sdk 可导入
+### SDK 导入
 
 ```bash
 docker compose exec -T ag-o1 python3 - <<'PY'
 from openclaw_sdk import OpenClawClient
-print('openclaw_sdk import ok')
+print("openclaw_sdk import ok")
 print(OpenClawClient)
 PY
 ```
 
-### 5. 确认 Gateway 端口开放
+### Gateway 端口
 
 ```bash
 docker compose exec -T ag-o1 python3 - <<'PY'
-import os, socket
-host = os.environ.get('OPENCLAW_GATEWAY_HOST', '127.0.0.1')
-port = int(os.environ.get('OPENCLAW_GATEWAY_PORT', '18789'))
+import os
+import socket
+
+host = os.environ.get("OPENCLAW_GATEWAY_HOST", "127.0.0.1")
+port = int(os.environ.get("OPENCLAW_GATEWAY_PORT", "18789"))
 with socket.create_connection((host, port), timeout=3):
-    print(f'gateway port open: {host}:{port}')
+    print(f"gateway port open: {host}:{port}")
 PY
 ```
 
-### 6. 确认 Agent HTTP 状态
+### Agent HTTP 状态
 
 ```bash
-curl -fsS http://localhost:8000/status | python3 -m json.tool
+docker compose exec -T ag-o1 python3 - <<'PY'
+import json
+import urllib.request
+
+with urllib.request.urlopen("http://127.0.0.1:8000/status", timeout=3) as response:
+    print(json.dumps(json.load(response), ensure_ascii=False, indent=2))
+PY
 ```
 
-期望 JSON 中有：
+正常仿真由 `srv` 在 Docker 网络内访问 Agent `/status` 和 `/run`。状态 JSON 中应包含：
 
 ```json
 {
@@ -155,57 +151,35 @@ curl -fsS http://localhost:8000/status | python3 -m json.tool
 }
 ```
 
-### 7. 确认没有 fallback 日志
+### 禁止 fallback
 
 ```bash
-! docker compose logs --no-color ag-o1 | grep -Ei 'openclaw-direct-llm|direct_llm|fallback'
+! docker compose logs --no-color ag-o1 \
+  | grep -Ei 'openclaw-direct-llm|direct_llm|fallback'
 ```
 
-如果该命令返回 0，说明没有发现 direct LLM / fallback 标记。
+## 7. Session 与 Skill
 
-## 常见失败
+- OpenCLAW Agent ID 优先使用 `OPENCLAW_AGENT_ID` 或 `OPENCLAW_DEFAULT_AGENT_ID`，否则使用逻辑 Agent ID。
+- session 名由 `OPENCLAW_SESSION_PREFIX`、逻辑 Agent ID 和 trace ID 组成，避免复用容器时串话。
+- `scenes/` 以只读方式挂载到 `/app/scenes`。
+- 后端只能读取 `/run` 中 `skill_refs` 允许的 Skill；目录型 Skill 入口为 `SKILL.md`，单文件入口为 `<skill_ref>.md`。
+- Adapter 只传递 Skill 访问范围，不读取或注入 Skill 正文。
 
-### 缺 Gateway npm 包
+## 8. 常见失败
 
-构建失败，提示：
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 构建提示 Gateway 包缺失 | `OPENCLAW_GATEWAY_NPM_PACKAGE` 无效 | 设置真实 npm 包后重建 |
+| 构建提示 SDK wheel 缺失 | `vendor/python/` 无兼容 wheel | 放入匹配 Python 版本的 wheel |
+| 启动提示无 Gateway 命令 | npm 包未提供 CLI | 设置 `OPENCLAW_GATEWAY_CMD` |
+| Gateway 未在超时内就绪 | 命令、端口、API key 或依赖错误 | 查看 `docker compose logs ag-o1` |
+| Adapter 返回 SDK 不可导入 | 镜像构建或 wheel 错误 | 重新构建并执行手动导入检查 |
+| 不同逻辑 Agent 串 session | session 前缀或 trace 传递错误 | 检查 `OPENCLAW_SESSION_PREFIX` 与 `/run` trace |
 
-```text
-OPENCLAW_GATEWAY_NPM_PACKAGE is required
-```
+## 9. 设计约束
 
-修复：
-
-```bash
-export OPENCLAW_GATEWAY_NPM_PACKAGE='<real-openclaw-gateway-package>'
-docker compose build ag-o1
-```
-
-### 缺 openclaw-sdk wheel
-
-构建失败，提示：
-
-```text
-openclaw-sdk wheel is required in vendor/python/
-```
-
-修复：把兼容当前 Python 版本的 `openclaw_sdk-*.whl` 放入 `vendor/python/` 后重新构建。
-
-### Gateway 命令不存在
-
-运行失败，提示：
-
-```text
-OPENCLAW_START_GATEWAY=1 but no OpenCLAW gateway command was found
-```
-
-修复：确认 npm 包确实安装了 `openclaw` CLI，或设置 `OPENCLAW_GATEWAY_CMD`。
-
-### Gateway 端口未开放
-
-运行失败，提示：
-
-```text
-OpenCLAW gateway did not become ready before timeout
-```
-
-修复：查看 `docker compose logs ag-o1` 中 Gateway 的实际错误，确认端口、依赖、API key 和启动命令。
+- OpenCLAW 缺失必须显式失败。
+- 不增加自动 direct LLM fallback。
+- 不恢复中心消息总线依赖。
+- 修改 Gateway、SDK、session 或 Skill 访问方式时，同步更新 `AgentRuntimeBoundary.md` 和本文件。
