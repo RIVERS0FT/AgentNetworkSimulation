@@ -1,20 +1,16 @@
-# Agent 运行边界：Skill 包 / Tool / MCP
-
-本文档固定当前项目的职责边界，避免控制面或 Adapter 重新承担 Skill 内容解析与执行工作。
+# Agent 运行边界：Skill 包、Tool、MCP 与后端
 
 ## 1. 核心结论
 
-- `srv` 是仿真控制面，只负责场景解析、Agent 编排、容器分配、通信矩阵下发和日志聚合。
-- `bus` 是通信面，只负责 Agent 注册、消息转发和通信权限强制校验。
-- 剧本管理员负责提前把可运行的 Skill 文件或 Skill 包放入对应剧本的 `skills/` 目录。
-- 场景中的 `skill_refs` 是当前 Agent 可以读取的 Skill 范围。
-- Agent 后端负责主动读取 Skill 入口及其引用的模板、规则和辅助文件。
-- Skill 是 SOP、模板与上下文，不直接注册成可执行 Tool。
-- 原子 Tool 来自场景目录内的 `tools.py`，由容器内 MCP server 按 `allowed_tools` 暴露。
+- `srv` 只负责场景解析、编排、容器分配、上下文下发和日志聚合。
+- Skill 是由剧本管理员预先放入 `scenes/<scene>/skills/` 的源文件包。
+- `skill_refs` 是当前逻辑 Agent 可以读取的 Skill allowlist。
+- Agent 后端必须主动读取 Skill 入口及其引用的模板、规则和辅助文件。
+- Skill 不是可执行 Tool，不注册成函数。
+- 场景原子 Tool 来自 `tools.py`，由容器内 MCP server 按 `allowed_tools` 暴露。
+- Agent 间通信使用 MCP 的 `send_message` / `broadcast`，底层为 DirectBus 直连 HTTP。
 
-## 2. Skill 目录形态
-
-剧本目录支持以下两种 Skill 形态。
+## 2. Skill 形态
 
 单文件 Skill：
 
@@ -26,109 +22,108 @@ scenes/<scene>/skills/<skill_ref>.md
 
 ```text
 scenes/<scene>/skills/<skill_ref>/
-  ├─ SKILL.md
-  ├─ templates/
-  ├─ docs/
-  └─ other runtime files
+  SKILL.md
+  templates/
+  docs/
+  other runtime files
 ```
 
-目录型 Skill 使用 `SKILL.md` 作为入口。Agent 根据入口内容决定是否继续读取包内其他文件。
+目录型 Skill 的入口固定为 `SKILL.md`。Agent 读取入口后，按入口中的相对引用决定是否继续读取包内文件。
 
-## 3. 正确链路
+## 3. 正确运行链路
 
 ```text
 srv
-  ├─ 读取 meta_and_roles.json / instances_and_skills.json / network_topology.json
-  ├─ 为 Agent 分配可复用运行容器
-  ├─ 向 bus 注册 agent_id -> container_url
-  ├─ 向 bus 下发 comm_matrix
-  └─ 向 Agent /run 注入 scene_key、skill_refs、allowed_tools、任务和消息
+  -> 读取 scene 配置中的 skill_refs / tool_refs
+  -> 分配后端容器
+  -> /run 下发 scene_key、skill_refs、allowed_tools、任务、消息、目录和通信矩阵
 
 Agent 容器
-  ├─ Adapter 将 scene_key、skill_refs 和任务上下文交给后端
-  ├─ Claude Code 通过容器内 Skill MCP 查询和读取允许的 Skill
-  ├─ OpenCLAW 根据 skill_refs 和剧本 Skill 路径使用后端本地文件能力读取 Skill
-  ├─ Agent 首先读取目录型 Skill 的 SKILL.md 或单文件 Skill
-  ├─ Agent 根据入口说明继续读取模板、规则或其他包内文件
-  ├─ MCP server 从当前场景 tools.py 注册允许的原子 Tool
-  └─ Agent 后端自主决定 Skill 文件读取顺序和使用方式
-
-bus
-  ├─ 保存 agent_id 路由表
-  ├─ 保存通信权限矩阵
-  └─ 在 /relay 处强制校验 from_id -> to 是否允许通信
+  -> Adapter 把统一上下文交给真实后端
+  -> Claude Code 通过 skill_mcp_server 查询和读取允许的 Skill
+  -> OpenCLAW 使用后端本地文件能力读取允许的 Skill
+  -> MCP server 从当前 scene 的 tools.py 注册允许的原子 Tool
+  -> send_message / broadcast 通过 DirectBus 直连目标 /message
 ```
 
-## 4. `srv` 不应该做什么
+## 4. `srv` 的边界
 
-`srv` 不应该：
+`srv` 可以：
 
-- 读取 `SKILL.md` 或单文件 Skill 正文；
-- 遍历 Skill 包并解析模板或规则；
-- 把 Skill 正文或解析后的 `skill_context` 下发给 Agent；
-- import 场景 `tools.py` 来执行 Tool；
-- 把 Skill 包装成可执行函数；
-- 根据 Skill 内容自动扩大 Agent 的 Tool 权限；
-- 绕过 MCP 直接执行 `ToolRegistry.execute()`。
+- 读取 `skill_refs`、`tool_refs`；
+- 传递 `scene_key`、`skill_refs`、`allowed_tools`；
+- 展示 Agent 配置；
+- 管理容器、轮次和日志。
 
-允许保留的 `srv` 行为：
+`srv` 不得：
 
-- 从剧本配置读取 `skill_refs` 和 `tool_refs`；
-- 把 `scene_key`、`skill_refs` 和 `allowed_tools` 传给 Agent 容器；
-- 为前端展示 Agent 配置的 Skill 名称；
-- 管理容器分配、释放和复用。
+- 读取 Skill 正文或遍历 Skill 包；
+- 生成或注入 `skill_context`；
+- import 场景 `tools.py`；
+- 执行 `ToolRegistry.execute()`；
+- 把 Skill 包装成 Tool；
+- 根据 Skill 内容扩大 Tool 权限。
 
 ## 5. Adapter 的边界
 
-Adapter 负责连接具体 Agent 后端，但不负责理解 Skill。
+Adapter 负责把 `AgentContext` 映射到具体后端，并把后端结果转换为 `AgentRunResult`。
 
-Adapter 可以传递：
+Adapter 可以传递身份、任务、消息、Skill/Tool allowlist、目录、通信矩阵、状态、trace 和 seed；但不负责理解 Skill 业务语义，也不得绕过 allowlist。
 
-- 当前任务和消息；
-- Agent 身份与角色；
-- `scene_key`；
-- `skill_refs`；
-- `allowed_tools`；
-- 通信目录、通信矩阵和运行状态。
+### Claude Code
 
-Adapter 不再：
+- 启动 `agent_network.skill_mcp_server`；
+- 暴露 `list_available_skills`、`list_skill_files`、`read_skill_file`；
+- 同一个 MCP 同时注册 allowlist 内的场景 Tool 和系统通信 Tool；
+- 系统提示要求先读取 Skill 入口，不根据名称猜测内容。
 
-- 调用 Skill Markdown Loader 生成上下文；
-- 读取 Skill 正文；
-- 解析 Skill 元数据；
-- 生成或注入 `skill_context`。
+### OpenCLAW
 
-## 6. Skill 文件访问边界
+- 将当前 scene 的只读 Skill 路径和 `allowed_refs` 传给后端；
+- 使用后端本地文件能力读取源文件；
+- session 名由逻辑 Agent ID 与 trace ID 隔离；
+- SDK 或 Gateway 缺失时失败，不静默退化为 direct LLM。
 
-Claude Code 使用容器内 MCP 提供的 Skill 文件访问能力：
+### Direct LLM
 
-- 查看当前 Agent 允许的 Skill；
-- 查看目录型 Skill 包内的文件；
-- 读取 Skill 入口或指定包内文件。
+`direct_llm` 没有本地文件或 MCP Tool 能力，因此不能承载配置了 `skill_refs` 的 Agent。当前 scene loader 也不接受它作为场景后端。
 
-Skill 文件访问必须同时满足：
+## 6. Skill 文件安全
 
-- Skill 属于当前 `scene_key`；
-- Skill 名称存在于当前 Agent 的 `skill_refs`；
-- 文件路径位于对应 Skill 文件或 Skill 包内部；
-- 不允许绝对路径、父目录跳转或符号链接逃逸。
+Skill 访问必须同时满足：
+
+- `scene_key` 和 `skill_ref` 都是单段相对名称；
+- Skill 在当前 Agent 的 `skill_refs` 中；
+- 单文件 Skill 只能读取自身入口；
+- 包内文件必须位于 package root 内；
+- 拒绝绝对路径、`..` 和解析后的路径逃逸；
+- 单文件读取上限为 512 KiB；
+- `scenes/` 在运行容器中只读挂载。
 
 ## 7. Skill 与 Tool 权限分离
 
-- `skill_refs` 控制 Agent 可以读取哪些 Skill。
-- `allowed_tools` 控制 Agent 可以调用哪些原子 Tool。
-- `SKILL.md` 中提到某个 Tool，不代表该 Tool 自动获得执行权限。
-- Skill 文件读取能力不执行 Skill 内容，只向 Agent 返回允许读取的源文件。
+- `skill_refs` 控制“能读什么”。
+- `allowed_tools` 控制“能执行什么”。
+- Skill 文档提到 Tool，不自动授予执行权限。
+- Tool allowlist 之外的场景 Tool 不注册到 MCP。
+- `send_message` 和 `broadcast` 是平台系统原子 Tool，仍受通信矩阵约束。
 
 ## 8. 容器复用
 
-Agent 容器是可重复使用的后端运行槽位，不是固定业务 Agent。
+容器是可重复使用的后端槽位，不是固定业务 Agent：
 
-- Claude Code 的 Skill MCP 在每次任务中按本次 `scene_key` 和 `skill_refs` 启动。
-- OpenCLAW Session 使用逻辑 Agent ID 与 Trace ID 隔离，不使用固定共享 Session。
-- Skill 正文不保存在 Adapter 全局状态中。
-- 容器重新分配前继续执行现有 `/reset`，清理 inbox、事件、抓包和网络模拟状态。
+- 每次 `/run` 使用请求中的逻辑 Agent 身份；
+- Claude Skill MCP 按本次 scene 和 allowlist 启动；
+- OpenCLAW session 按逻辑 Agent 与 trace 隔离；
+- Adapter 不缓存 Skill 正文；
+- 重分配前 `/reset` 清理 inbox、事件、PCAP 和网络仿真状态。
 
-## 9. direct_llm 边界
+## 9. 禁止回退的旧设计
 
-`direct_llm` 没有本地文件或 MCP Tool 能力，因此不能用于配置了 `skill_refs` 的 Agent。需要使用 Skill 的 Agent应选择 Claude Code 或具备本地文件能力的 OpenCLAW 后端。
+以下做法已移除，不应重新引入：
+
+- `srv` 解析 Skill Markdown；
+- Adapter 把完整 Skill 正文注入 `skill_context`；
+- Skill 名称直接注册为 Tool；
+- 通过中心 message bus relay 发送 Agent 消息；
+- OpenCLAW/Claude SDK 缺失时静默 fallback。
