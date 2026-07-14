@@ -12,7 +12,8 @@
 | [剧本管理设计.md](剧本管理设计.md) | 剧本上传、查询、下载、删除、预览的 SR、AR、模块、接口、逻辑模型和时序设计 |
 | [剧本管理数据模型.md](剧本管理数据模型.md) | 剧本管理类、结构体、枚举及其具体字段、关系和当前实现映射 |
 | [剧本管理类操作设计.md](剧本管理类操作设计.md) | 剧本资源、批量处理任务和归档资源类的领域函数、状态迁移与带函数类图 |
-| [仿真编排与容器运行时设计.md](仿真编排与容器运行时设计.md) | setup/launch、轮次调度、容器池、终止与失败处理 |
+| [仿真编排与容器运行时设计.md](仿真编排与容器运行时设计.md) | setup/launch、事件驱动调度、持续时间控制、容器池、资源限制、终止与失败处理 |
+| [ADR-019-持续时间约束的事件驱动仿真.md](ADR-019-持续时间约束的事件驱动仿真.md) | 禁止恢复固定执行计数调度的权威设计决策 |
 | [通信与网络仿真设计.md](通信与网络仿真设计.md) | DirectBus、通信矩阵、Linux `tc`、真实抓包 |
 | [日志与实验数据设计.md](日志与实验数据设计.md) | `application.jsonl`、`network.jsonl`、`system.jsonl`、PCAP、实验清单与质量审计 |
 | [AgentTrafficCapture.md](AgentTrafficCapture.md) | Agent runtime 真实抓包、分析 API 与端到端验收 |
@@ -26,7 +27,7 @@
 - 控制面：`services/server.py`
 - 仿真编排：`agent_network/api/simulations.py`
 - Agent 容器运行时：`services/agent_server.py`
-- 容器分配与轮次执行：`agent_network/agent_management.py`
+- 容器分配与 Agent 执行：`agent_network/agent_management.py`
 - Agent 直连通信：`agent_network/comm.py`
 - Tool MCP：`agent_network/mcp_server.py`
 - Skill 源文件 MCP：`agent_network/skill_mcp_server.py`
