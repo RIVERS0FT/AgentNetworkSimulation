@@ -36,7 +36,7 @@ scenes/<scene>/skills/<skill_ref>/
 srv
   -> 读取 scene 配置中的 skill_refs / tool_refs
   -> 分配后端容器
-  -> /run 下发 scene_key、skill_refs、allowed_tools、任务、消息、目录和通信矩阵
+  -> 事件到达后通过 /run 下发 scene_key、skill_refs、allowed_tools、任务、消息、目录和通信矩阵
 
 Agent 容器
   -> Adapter 把统一上下文交给真实后端
@@ -53,7 +53,7 @@ Agent 容器
 - 读取 `skill_refs`、`tool_refs`；
 - 传递 `scene_key`、`skill_refs`、`allowed_tools`；
 - 展示 Agent 配置；
-- 管理容器、轮次和日志。
+- 管理容器、事件调度和日志。
 
 `srv` 不得：
 
@@ -69,6 +69,8 @@ Agent 容器
 Adapter 负责把 `AgentContext` 映射到具体后端，并把后端结果转换为 `AgentRunResult`。
 
 Adapter 可以传递身份、任务、消息、Skill/Tool allowlist、目录、通信矩阵、状态、trace 和 seed；但不负责理解 Skill 业务语义，也不得绕过 allowlist。
+
+目标 `AgentContext` 不携带固定执行批次编号、调度循环编号或 tick。调度状态由控制面的 `SimulationRun` 和事件队列维护，不泄漏给后端 SDK。
 
 ### Claude Code
 
@@ -118,6 +120,8 @@ Skill 访问必须同时满足：
 - Adapter 不缓存 Skill 正文；
 - 重分配前 `/reset` 清理 inbox、事件、PCAP 和网络仿真状态。
 
+同一逻辑 Agent 默认只允许一个事件处理任务处于执行中；不同 Agent 的 `/run` 可以在仿真资源限制范围内并行。
+
 ## 9. 禁止回退的旧设计
 
 以下做法已移除，不应重新引入：
@@ -126,4 +130,5 @@ Skill 访问必须同时满足：
 - Adapter 把完整 Skill 正文注入 `skill_context`；
 - Skill 名称直接注册为 Tool；
 - 通过中心 message bus relay 发送 Agent 消息；
-- OpenCLAW/Claude SDK 缺失时静默 fallback。
+- OpenCLAW/Claude SDK 缺失时静默 fallback；
+- 向 Adapter 或后端暴露固定执行批次编号、调度循环编号或 tick。
