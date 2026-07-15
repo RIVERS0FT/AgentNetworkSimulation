@@ -45,6 +45,7 @@
 - 抓包外部 API：`agent_network/api/captures.py`
 - 日志模式、写入与实时索引：`agent_network/log_manager.py`
 - 日志批量管理与会话可见性：`agent_network/log_batch.py`
+- 日志批量能力安装适配：`agent_network/log_batch_install.py`
 - 日志批量外部 API：`agent_network/api/log_batches.py`
 - PCAP 内部解码分析：`agent_network/real_packet_store.py`
 - 网络仿真：`agent_network/network_emulation.py`
