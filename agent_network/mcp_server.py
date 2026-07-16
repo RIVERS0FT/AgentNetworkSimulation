@@ -10,7 +10,8 @@ import requests
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
-from agent_network.comm import DirectBus
+from agent_network.comm_management import CommManager
+from agent_network.task_management import TaskManager
 
 mcp = FastMCP("agent-network-mcp")
 
@@ -23,10 +24,22 @@ _TOOL_REGISTRY = None
 _SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:8000")
 _AGENT_DIRECTORY = {}
 _COMM_MATRIX = {}
-_COMM = DirectBus()
+_COMM = CommManager()
 _TRACE_ID = ""
 
-ATOMIC_TOOL_NAMES = {"send_message", "broadcast"}
+ATOMIC_TOOL_NAMES = {"send_message", "delegate_task"}
+
+
+def _task_db_path(agent_id: str) -> str:
+    storage_agent_id = os.environ.get("AGENT_ID", agent_id).lower()
+    return os.environ.get(
+        "TASK_DB_PATH",
+        os.path.join(
+            os.environ.get("DATA_DIR", "/app/data" if os.path.isdir("/app") else "data"),
+            "tasks",
+            f"{storage_agent_id}.db",
+        ),
+    )
 
 
 def _now_iso() -> str:
@@ -54,7 +67,7 @@ def _log_agent(event: str, detail: str, **kw):
         "detail": detail,
         "timestamp": _now_iso(),
         "from_agent": effective_id,
-        "to_agent": target if action_type in ("send_message", "broadcast") else "",
+        "to_agent": target if action_type == "send_message" else "",
         "action": target if action_type == "skill" else action_type,
         "action_status": kw.get("status", "success"),
         "trace_id": _TRACE_ID,
@@ -87,7 +100,13 @@ def setup_runtime(
         str(k).lower(): [str(item).lower() for item in (v or [])]
         for k, v in (comm_matrix or {}).items()
     }
-    _COMM = DirectBus(agent_directory=_AGENT_DIRECTORY, comm_matrix=_COMM_MATRIX)
+    _COMM = CommManager(
+        agent_id=_AGENT_ID,
+        agent_name=_AGENT_NAME,
+        agent_directory=_AGENT_DIRECTORY,
+        comm_matrix=_COMM_MATRIX,
+        task_manager=TaskManager(_task_db_path(_AGENT_ID)),
+    )
     _TRACE_ID = trace_id
     random.seed(f"{simulation_seed}:{_AGENT_ID}")
 
@@ -104,8 +123,18 @@ def _register_atomic_tools():
     ) -> str:
         start_time = time.time()
         _log_agent("tool_call", "Tool call start: send_message", tool_name="send_message", arguments={"target": target, "content": content}, status="running")
-        ok = asyncio.run(asyncio.to_thread(_COMM.send, _AGENT_ID, _AGENT_NAME, target, content, "", _TRACE_ID))
-        status = "success" if ok else "failed"
+        result = asyncio.run(
+            asyncio.to_thread(
+                _COMM.send_message,
+                _AGENT_ID,
+                _AGENT_NAME,
+                target,
+                content,
+                "",
+                _TRACE_ID,
+            )
+        )
+        status = result.status
         _log_agent(
             "tool_result",
             f"send_message -> {target}",
@@ -116,25 +145,58 @@ def _register_atomic_tools():
             status=status,
             duration_ms=round((time.time() - start_time) * 1000, 1),
         )
-        return json.dumps({"status": status, "target": target, "mode": "direct"}, ensure_ascii=False)
+        return json.dumps(
+            {**result.to_dict(), "mode": "a2a"},
+            ensure_ascii=False,
+        )
 
     @mcp.tool()
-    def broadcast(content: str = Field(description="Message content to broadcast")) -> str:
+    def delegate_task(
+        target: str = Field(description="Exact target agent_id"),
+        goal: str = Field(description="Task goal"),
+        input_data: str = Field(
+            description="Optional JSON object passed to the task", default="{}"
+        ),
+    ) -> str:
         start_time = time.time()
-        _log_agent("tool_call", "Tool call start: broadcast", tool_name="broadcast", arguments={"content": content}, status="running")
-        ok = asyncio.run(asyncio.to_thread(_COMM.broadcast, _AGENT_ID, _AGENT_NAME, content, set(), "", _TRACE_ID))
-        status = "success" if ok else "failed"
+        try:
+            parsed_input = json.loads(input_data) if input_data else {}
+        except Exception:
+            parsed_input = {}
+        _log_agent(
+            "tool_call",
+            "Tool call start: delegate_task",
+            tool_name="delegate_task",
+            arguments={"target": target, "goal": goal, "input": parsed_input},
+            status="running",
+        )
+        result = asyncio.run(
+            asyncio.to_thread(
+                _COMM.delegate_task,
+                _AGENT_ID,
+                _AGENT_NAME,
+                target,
+                goal,
+                parsed_input,
+                "",
+                _TRACE_ID,
+            )
+        )
         _log_agent(
             "tool_result",
-            "broadcast",
+            f"delegate_task -> {target}",
             action_type="tool_result",
-            tool_name="broadcast",
-            target="broadcast",
-            content=content,
-            status=status,
+            tool_name="delegate_task",
+            target=target,
+            content=goal,
+            status=result.status,
             duration_ms=round((time.time() - start_time) * 1000, 1),
+            a2a_task_id=result.task_id,
         )
-        return json.dumps({"status": status, "target": "broadcast", "mode": "direct"}, ensure_ascii=False)
+        return json.dumps(
+            {**result.to_dict(), "mode": "a2a", "operation": "delegate_task"},
+            ensure_ascii=False,
+        )
 
 
 def _load_tool_registry():

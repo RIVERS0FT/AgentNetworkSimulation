@@ -19,7 +19,7 @@ ag-o1 container
         -> OpenClawClient.connect()
 ```
 
-Agent-to-Agent 消息使用 DirectBus 直连目标容器，不依赖 message bus 服务。
+Agent-to-Agent 消息由 CommManager 使用 A2A 1.0 点对点发送到目标容器，不依赖 message bus 服务，也不提供广播。
 
 ## 3. 构建前置条件
 

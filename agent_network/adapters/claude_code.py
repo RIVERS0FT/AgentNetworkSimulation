@@ -53,7 +53,7 @@ def _build_task_payload(agent_context: AgentContext) -> str:
         "tick": agent_context.tick,
         "agent_directory": agent_context.agent_directory,
         "comm_matrix": agent_context.comm_matrix,
-        "network_mode": "direct",
+        "network_mode": "a2a",
         "simulation_seed": agent_context.simulation_seed,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -65,7 +65,7 @@ def _system_prompt(agent_context: AgentContext) -> str:
         f"Role: {agent_context.role}\n"
         f"Core Goal: {agent_context.core_goal}\n"
         f"Trace ID: {agent_context.trace_id}\n"
-        "AgentNetwork uses direct Agent-to-Agent HTTP messaging. "
+        "AgentNetwork uses point-to-point A2A 1.0 Agent messaging. "
         "Skills are source packages stored in the current scene. "
         "Use list_available_skills to discover only the Skills allowed for this Agent. "
         "Before using a Skill, read its SKILL.md with read_skill_file. "

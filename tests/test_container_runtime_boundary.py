@@ -129,7 +129,7 @@ def test_run_all_posts_structured_context_without_local_agent_execution(monkeypa
     assert posted["json"]["skill_refs"] == ["planning"]
     assert posted["json"]["allowed_tools"] == [
         "send_message",
-        "broadcast",
+        "delegate_task",
         "write_plan",
     ]
     assert posted["json"]["core_goal"] == "Coordinate"

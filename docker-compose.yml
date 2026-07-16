@@ -41,7 +41,7 @@ x-claude-env: &claude-env
   AGENT_BACKEND: claude-code
   AGENT_STRICT_BACKEND_SDK: ${AGENT_STRICT_BACKEND_SDK:-1}
   SERVER_URL: http://srv:8000
-  AGENT_COMM_MODE: direct
+  AGENT_COMM_MODE: a2a
   LOG_DOCKER_HTTP: "0"
 
 x-openclaw-env: &openclaw-env
@@ -50,7 +50,7 @@ x-openclaw-env: &openclaw-env
   AGENT_BACKEND: openclaw
   AGENT_STRICT_BACKEND_SDK: ${AGENT_STRICT_BACKEND_SDK:-1}
   SERVER_URL: http://srv:8000
-  AGENT_COMM_MODE: direct
+  AGENT_COMM_MODE: a2a
   LOG_DOCKER_HTTP: "0"
   OPENCLAW_START_GATEWAY: ${OPENCLAW_START_GATEWAY:-1}
   OPENCLAW_GATEWAY_HOST: ${OPENCLAW_GATEWAY_HOST:-127.0.0.1}
@@ -72,6 +72,7 @@ x-claude: &claude
     - ./agent_network:/app/agent_network
     - ./scenes:/app/scenes:ro
     - ./data/pcap:/app/data/pcap
+    - ./data/tasks:/app/data/tasks
   restart: unless-stopped
   networks: [an]
 
@@ -88,6 +89,7 @@ x-openclaw: &openclaw
     - ./agent_network:/app/agent_network
     - ./scenes:/app/scenes:ro
     - ./data/pcap:/app/data/pcap
+    - ./data/tasks:/app/data/tasks
   restart: unless-stopped
   networks: [an]
 
@@ -110,7 +112,7 @@ services:
       <<: *common-llm-env
       TZ: Asia/Shanghai
       SERVER_PORT: "8000"
-      AGENT_COMM_MODE: direct
+      AGENT_COMM_MODE: a2a
       LOG_DOCKER_HTTP: "0"
       AGENT_PCAP_HOST_PATH: /app/data/pcap
     restart: unless-stopped

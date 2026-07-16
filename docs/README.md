@@ -22,7 +22,9 @@
 | [ADR-021-统一抓包生命周期入口.md](ADR-021-统一抓包生命周期入口.md) | 禁止恢复分散抓包控制、模拟网络事实和非幂等网络日志投影的权威决策 |
 | [统一日志管理设计.md](统一日志管理设计.md) | LogManager 批量下载、删除、解析、文件可见性和会话可见性统一设计 |
 | [ADR-023-LogManager统一批量管理与会话可见性.md](ADR-023-LogManager统一批量管理与会话可见性.md) | 固定唯一 LogManager、批量结果和父子可见性门控规则 |
-| [通信与网络仿真设计.md](通信与网络仿真设计.md) | DirectBus、通信矩阵、Linux `tc`、真实抓包 |
+| [通信与网络仿真设计.md](通信与网络仿真设计.md) | A2A CommManager、通信矩阵、Linux `tc`、真实抓包 |
+| [ADR-024-CommManager统一A2A通信与禁止广播.md](ADR-024-CommManager统一A2A通信与禁止广播.md) | 固定统一 A2A 管理入口、点对点通信、禁止广播、顺序多目标发送和防回退规则 |
+| [ADR-025-Agent任务下发与A2A回调.md](ADR-025-Agent任务下发与A2A回调.md) | 固定 Agent/仿真编排任务下发、持久化状态机、Push 回调认证、查询与取消规则 |
 | [日志与实验数据设计.md](日志与实验数据设计.md) | `application.jsonl`、`network.jsonl`、`system.jsonl`、PCAP、实验清单与质量审计 |
 | [AgentTrafficCapture.md](AgentTrafficCapture.md) | Agent runtime 真实抓包、分析 API 与端到端验收 |
 | [AgentRuntimeBoundary.md](AgentRuntimeBoundary.md) | Skill 包、Tool、MCP 与后端适配器边界 |
@@ -38,7 +40,9 @@
 - 单剧本存储与解析：`agent_network/scene_storage.py`
 - Agent 容器运行时：`services/agent_server.py`
 - 容器分配与 Agent 执行：`agent_network/agent_management.py`
-- Agent 直连通信：`agent_network/comm.py`
+- Agent 统一 A2A 通信：`agent_network/comm_management/comm_manager.py`
+- Agent Task 生命周期与回调：`agent_network/task_management/`
+- 旧通信导入兼容：`agent_network/comm.py`
 - Tool MCP：`agent_network/mcp_server.py`
 - Skill 源文件 MCP：`agent_network/skill_mcp_server.py`
 - 统一文件管理基础设施：`agent_network/file_management/`
@@ -58,3 +62,4 @@
 2. 早期开发阶段不保留无需求的兼容层；删除旧设计时，同时删除对应文档表述。
 3. 影响职责边界、日志模式、通信链路、运行时协议或持久化格式的变更，必须更新本目录。
 4. `scenes/` 中的文档只在明确修改场景编写规范时更新。
+5. Agent 通信入口、协议、权限或目标选择变化时更新 ADR-024；Task 生命周期、回调或持久化变化时更新 ADR-025，并同步通信测试。

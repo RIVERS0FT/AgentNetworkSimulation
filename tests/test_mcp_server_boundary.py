@@ -30,9 +30,10 @@ def test_atomic_mcp_tools_exclude_wait(monkeypatch):
 
     mcp_server._register_atomic_tools()
 
-    assert set(fake_mcp.tools.keys()) == {"send_message", "broadcast"}
+    assert set(fake_mcp.tools.keys()) == {"send_message", "delegate_task"}
     assert "wait" not in fake_mcp.tools
-    assert mcp_server.ATOMIC_TOOL_NAMES == {"send_message", "broadcast"}
+    assert "broadcast" not in fake_mcp.tools
+    assert mcp_server.ATOMIC_TOOL_NAMES == {"send_message", "delegate_task"}
 
 
 def test_scene_tool_registration_exposes_toolregistry_entries_as_atomic_tools(monkeypatch):

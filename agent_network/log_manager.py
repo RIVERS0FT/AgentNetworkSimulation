@@ -852,7 +852,7 @@ class LogManager:
         status="success",
         payload_len=0,
         channel_id="",
-        message_type="relay",
+        message_type="a2a",
         talk="",
     ):
         normalized_status = (
@@ -870,7 +870,6 @@ class LogManager:
                 "message_id": f"msg_{uuid.uuid4().hex[:12]}",
                 "message_type": message_type,
                 "channel_id": channel_id,
-                "broadcast": message_type == "broadcast",
             },
             action={
                 "type": "send_message",

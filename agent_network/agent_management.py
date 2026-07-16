@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Set
 import requests
 
 
-SYSTEM_TOOLS = ("send_message", "broadcast")
+SYSTEM_TOOLS = ("send_message", "delegate_task")
 
 
 @dataclass
@@ -82,7 +82,7 @@ class Agent:
             payload={"action": task, **kwargs},
         )
         if self.comm and target and target_id != self.agent_id:
-            self.comm.send(self.agent_id, self.name, target_id, task)
+            self.comm.send_message(self.agent_id, self.name, target_id, task)
         else:
             self.task_queue.append(message)
         return message
@@ -217,7 +217,7 @@ class ContainerAgent:
 
 
 class ContainerRuntime:
-    """Container scheduling and round execution for direct network mode."""
+    """Container scheduling and round execution for A2A network mode."""
 
     BACKEND_CONFIG = {
         "claude-code": {
@@ -312,6 +312,11 @@ class ContainerRuntime:
                 or os.path.join(root, "data", "pcap"),
                 "rw",
             ),
+            "/app/data/tasks": (
+                os.environ.get("AGENT_TASK_HOST_PATH")
+                or os.path.join(root, "data", "tasks"),
+                "rw",
+            ),
         }
 
         mounted_sources = {}
@@ -371,7 +376,7 @@ class ContainerRuntime:
                 "AGENT_BACKEND": backend,
                 "PORT": str(self.INTERNAL_PORT),
                 "SERVER_URL": os.environ.get("SERVER_URL", "http://srv:8000"),
-                "AGENT_COMM_MODE": "direct",
+                "AGENT_COMM_MODE": "a2a",
                 "LOG_FULL_PCAP": os.environ.get("LOG_FULL_PCAP", "1"),
                 "AGENT_CAPTURE_INCLUDE_CONTROL_PLANE": os.environ.get(
                     "AGENT_CAPTURE_INCLUDE_CONTROL_PLANE", "0"
@@ -546,14 +551,16 @@ class ContainerRuntime:
                             f"{assignment.url}/status", timeout=3
                         )
                         status_response.raise_for_status()
-                        inbox_size = status_response.json().get("inbox_size", 0)
+                        status_body = status_response.json()
+                        inbox_size = status_body.get("inbox_size", 0)
+                        pending_tasks = status_body.get("pending_tasks", 0)
                     except Exception as exc:
                         self._set_status(assignment, "error")
                         return {
                             "agent_id": assignment.agent_id,
                             "error": f"inbox_status_unavailable: {exc}",
                         }
-                    if inbox_size <= 0:
+                    if inbox_size <= 0 and pending_tasks <= 0:
                         self._set_status(assignment, "idle")
                         return {
                             "agent_id": assignment.agent_id,

@@ -299,9 +299,9 @@ def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
     state.agent_logs.clear()
     logger.reset()
 
-    from agent_network.comm import DirectBus
+    from agent_network.comm_management import CommManager
 
-    direct_bus = DirectBus()
+    comm_manager = CommManager()
     for definition in scene_def.agents:
         agent = Agent(
             agent_id=definition.agent_id,
@@ -312,7 +312,7 @@ def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
             skill_refs=definition.skill_refs,
             allowed_tools=definition.allowed_tools,
         )
-        agent.set_comm(direct_bus)
+        agent.set_comm(comm_manager)
         agent.pending_task_descs = definition.tasks
         AgentRegistry.register(agent)
         agent.start()
@@ -327,7 +327,7 @@ def _setup_scene(scene_def: SceneDefinition) -> Dict[str, Any]:
         "topology": scene_def.topology,
         "scene_key": scene_def.scene_key,
         "scene_title": scene_def.title,
-        "network_mode": "direct",
+        "network_mode": "a2a",
         "seed": _pending_seed,
     }
 
@@ -403,6 +403,36 @@ def _launch_containers(
         if endpoint_a and endpoint_b:
             _comm_matrix.setdefault(endpoint_a, set()).add(endpoint_b)
             _comm_matrix.setdefault(endpoint_b, set()).add(endpoint_a)
+
+    for agent in AgentRegistry.list_all():
+        if agent.comm:
+            agent.comm.update_directory(agent_directory, _comm_matrix)
+
+    serialized_matrix = {
+        source: sorted(targets)
+        for source, targets in _comm_matrix.items()
+    }
+    for assignment, _ in created_cas:
+        try:
+            response = requests_module.post(
+                f"{assignment.url}/communication/configure",
+                json={
+                    "agent_id": assignment.agent_id,
+                    "agent_name": assignment.name,
+                    "agent_role": assignment.role,
+                    "agent_directory": agent_directory,
+                    "comm_matrix": serialized_matrix,
+                },
+                timeout=3,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            assign_errors.append(
+                {
+                    "agent_id": assignment.agent_id,
+                    "error": f"communication configuration failed: {exc}",
+                }
+            )
 
     logger.start_session(scene_def.scene_key)
     session_id = getattr(logger, "_session_id", "")
@@ -606,7 +636,7 @@ def _launch_containers(
                 "trace_id": talk_id,
                 "tick": state.current_turn,
                 "simulation_seed": _pending_seed,
-                "network_mode": "direct",
+                "network_mode": "a2a",
             }
             round_result = runtime.run_round(context)
             results_log.append(round_result)
@@ -738,7 +768,7 @@ def _launch_containers(
             },
         },
         "agent_directory": agent_directory,
-        "network_mode": "direct",
+        "network_mode": "a2a",
         "network_emulation": network_emulation,
         "network_clear": network_clear,
         "assign_errors": assign_errors,

@@ -2,7 +2,7 @@
 """Deprecated message bus service.
 
 The Agent message data plane has been removed. Agents now communicate directly
-through Agent-to-Agent HTTP using DirectBus. This service is kept only as a
+through point-to-point A2A HTTP using CommManager. This service is kept only as a
 minimal compatibility stub for deployments that still start it accidentally.
 """
 
@@ -15,7 +15,7 @@ app = FastAPI(title="Deprecated AgentNetwork Message Bus")
 
 @app.get("/health")
 async def health():
-    return {"status": "deprecated", "data_plane": "removed", "network_mode": "direct"}
+    return {"status": "deprecated", "data_plane": "removed", "network_mode": "a2a"}
 
 
 @app.get("/agents")
@@ -25,12 +25,12 @@ async def list_agents():
 
 @app.post("/register")
 async def register_agent(agent_id: str, url: str, name: str = ""):
-    return {"status": "ignored", "reason": "DirectBus uses srv-provided agent_directory", "agent_id": agent_id, "url": url, "name": name}
+    return {"status": "ignored", "reason": "CommManager uses srv-provided agent_directory", "agent_id": agent_id, "url": url, "name": name}
 
 
 @app.post("/relay")
 async def relay_removed():
-    raise HTTPException(status_code=410, detail="message bus relay data plane removed; use direct Agent-to-Agent communication")
+    raise HTTPException(status_code=410, detail="message bus relay data plane removed; use point-to-point A2A communication")
 
 
 @app.get("/packets")

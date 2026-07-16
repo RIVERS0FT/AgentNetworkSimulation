@@ -730,7 +730,7 @@ function fitViewportToAgents() {
 }
 
 // ============== Communication Trajectories ==============
-// Each message (send_message / broadcast success) produces one trajectory.
+// Each successful point-to-point send_message produces one trajectory.
 const _trajectories = [];
 const TRAJECTORY_DURATION = 2200;   // travel time (ms)
 const TRAJECTORY_FADE = 500;        // fade-out after arrival (ms)
@@ -740,7 +740,7 @@ const MAX_TRAJECTORIES = 80;
 // Per-edge message counter for parallel-offset (cycling 0..4)
 const _edgeMsgIdx = {};
 
-function pushCommEvent(fromId, toId, isBroadcast) {
+function pushCommEvent(fromId, toId) {
   const key = fromId + '→' + toId;
   _edgeMsgIdx[key] = ((_edgeMsgIdx[key] || 0) + 1) % 5;
   _trajectories.push({
@@ -748,7 +748,6 @@ function pushCommEvent(fromId, toId, isBroadcast) {
     to: toId,
     startTime: performance.now(),
     offsetIndex: _edgeMsgIdx[key],
-    isBroadcast: !!isBroadcast,
   });
   // Trim old events when over capacity
   const now = performance.now();
@@ -968,7 +967,7 @@ function drawOneTrajectory(traj, fromScr, toScr, now) {
   const headX = fromScr.sx + dx * progress + nx * off;
   const headY = fromScr.sy + dy * progress + ny * off;
 
-  const packetColor = traj.isBroadcast ? '255,191,90' : '56,213,255';
+  const packetColor = '56,213,255';
 
   // ── High-energy packet trail ──
   const tailAlpha = fadeOut * 0.9;
@@ -997,7 +996,7 @@ function drawOneTrajectory(traj, fromScr, toScr, now) {
   // ── Head (bright dot) ──
   ctx.fillStyle = `rgba(${packetColor},${fadeOut.toFixed(3)})`;
   ctx.beginPath();
-  ctx.arc(headX, headY, traj.isBroadcast ? 4.2 : 3.6, 0, Math.PI * 2);
+  ctx.arc(headX, headY, 3.6, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = `rgba(255,255,255,${(fadeOut * 0.8).toFixed(3)})`;
   ctx.beginPath();
@@ -1560,21 +1559,7 @@ if (msg.type === 'agent_log' && msg.data) {
     const action = l.action || l.event || '?';
     if (status === 'success' && from !== '?' && to) {
       if (action === 'send_message') {
-        pushCommEvent(from.toLowerCase(), to.toLowerCase(), false);
-      } else if (action === 'broadcast') {
-        if (to === '0.0.0.0') {
-          for (const rel of _topology) {
-            const rf = String(rel.endpoint_a || '').toLowerCase();
-            const rt = String(rel.endpoint_b || '').toLowerCase();
-            if (rf === from.toLowerCase()) {
-              pushCommEvent(from.toLowerCase(), rt, true);
-            } else if (rt === from.toLowerCase()) {
-              pushCommEvent(from.toLowerCase(), rf, true);
-            }
-          }
-        } else {
-          pushCommEvent(from.toLowerCase(), to.toLowerCase(), true);
-        }
+        pushCommEvent(from.toLowerCase(), to.toLowerCase());
       }
     }
     return;

@@ -97,3 +97,20 @@ def test_agent_server_exposes_only_skill_refs_contract():
     assert "allowed_skills" not in text
     assert "_skill_names_from_legacy" not in text
     assert "skills: List[Dict" not in text
+
+
+def test_agent_server_exposes_a2a_routes_and_no_direct_bus():
+    text = _text()
+
+    assert '@app.get("/.well-known/agent-card.json")' in text
+    assert '@app.post("/a2a/v1/message:send")' in text
+    assert '@app.get("/a2a/v1/tasks")' in text
+    assert '@app.get("/a2a/v1/tasks/{task_id}")' in text
+    assert '@app.post("/a2a/v1/tasks/{task_id}:cancel")' in text
+    assert '@app.post("/a2a/v1/task-events")' in text
+    assert 'pushNotificationConfigs' in text
+    assert "task_manager.claim_next" in text
+    assert "callback_dispatcher.dispatch_status" in text
+    assert "from agent_network.comm_management import" in text
+    assert "DirectBus" not in text
+    assert '"communication_mode": "a2a"' in text

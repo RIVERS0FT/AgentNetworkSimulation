@@ -59,7 +59,7 @@ async def system_stats():
             "total_tokens": totals.get("total", 0),
             "provider_total": totals.get("provider_total", 0),
         },
-        "network_mode": "direct",
+        "network_mode": "a2a",
     }
 
 

@@ -5,6 +5,7 @@ import os
 import sys
 import json
 import asyncio
+import secrets
 import threading
 import uuid
 from datetime import datetime
@@ -12,13 +13,19 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import uvicorn
 import requests
 
 from agent_network.log_manager import get_log_manager
-from agent_network.comm import DirectBus
+from agent_network.comm_management import (
+    A2A_PROTOCOL_VERSION,
+    CommManager,
+    CommunicationError,
+)
+from agent_network.task_management import CallbackDispatcher, TaskManager
 from agent_network.full_packet_capture import capture_status, start_full_capture, stop_full_capture
 from agent_network.network_emulation import clear_network_emulation, configure_network_emulation
 from agent_network.adapters.base import AgentContext
@@ -47,8 +54,23 @@ if BACKEND not in SUPPORTED_BACKENDS:
 
 API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("LLM_API_KEY", "")
 MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
+TASK_DB_PATH = os.environ.get(
+    "TASK_DB_PATH",
+    os.path.join(
+        os.environ.get("DATA_DIR", "/app/data" if os.path.isdir("/app") else "data"),
+        "tasks",
+        f"{AGENT_ID.lower()}.db",
+    ),
+)
 
-comm = DirectBus()
+task_manager = TaskManager(TASK_DB_PATH)
+comm = CommManager(
+    agent_id=AGENT_ID,
+    agent_name=AGENT_NAME,
+    agent_role=AGENT_ROLE,
+    task_manager=task_manager,
+)
+callback_dispatcher = CallbackDispatcher(task_manager)
 logger = get_log_manager()
 backend_label = {"openclaw": "OpenCLAW", "claude-code": "Claude Code", "direct_llm": "Direct LLM"}.get(BACKEND, BACKEND)
 app = FastAPI(title=f"Agent {AGENT_NAME} ({backend_label})")
@@ -91,6 +113,9 @@ def _append_inbox(
             inbox.pop(0)
 
 
+comm.set_inbox_handler(_append_inbox)
+
+
 def _clear_inbox():
     with _inbox_lock:
         inbox.clear()
@@ -125,7 +150,7 @@ def _log_agent(event: str, detail: str, **kw):
         "detail": detail,
         "timestamp": _now_iso(),
         "from_agent": AGENT_ID,
-        "to_agent": target if action_type in ("send_message", "broadcast") else "",
+        "to_agent": target if action_type == "send_message" else "",
         "action": action_type,
         "action_status": kw.get("status", "success"),
         "details": {k: v for k, v in kw.items() if k not in ("action_type", "target")},
@@ -163,6 +188,14 @@ class RunRequest(BaseModel):
     simulation_seed: int = 0
 
 
+class CommunicationConfig(BaseModel):
+    agent_id: str
+    agent_name: str = ""
+    agent_role: str = ""
+    agent_directory: Dict[str, str] = {}
+    comm_matrix: Dict[str, List[str]] = {}
+
+
 def _make_adapter():
     if BACKEND == "claude-code":
         return ClaudeCodeAdapter()
@@ -174,16 +207,32 @@ def _make_adapter():
 @app.post("/run")
 async def run_agent(req: RunRequest):
     """The full ReAct loop is delegated to the selected backend adapter."""
+    comm.set_identity(
+        req.agent_id or AGENT_ID,
+        req.agent_name or AGENT_NAME,
+        req.role or AGENT_ROLE,
+    )
     comm.update_directory(req.agent_directory, req.comm_matrix)
+    delegated_record = None
+    effective_task = req.task
+    effective_trace_id = req.trace_id
+    if not effective_task:
+        delegated_record = task_manager.claim_next(
+            (req.agent_id or comm.agent_id or AGENT_ID).lower()
+        )
+        if delegated_record:
+            effective_task = delegated_record["goal"]
+            effective_trace_id = delegated_record.get("trace_id") or req.trace_id
+            callback_dispatcher.dispatch_status(delegated_record["task"])
     pending_messages, pending_ids = _snapshot_inbox()
     effective_messages = req.messages or pending_messages
     context = AgentContext(
-        trace_id=req.trace_id,
+        trace_id=effective_trace_id,
         agent_id=(req.agent_id or AGENT_ID).lower(),
         agent_name=req.agent_name or AGENT_NAME,
         role=req.role or AGENT_ROLE,
         core_goal=req.core_goal or AGENT_CORE_GOAL,
-        task=req.task,
+        task=effective_task,
         messages=effective_messages,
         skill_refs=req.skill_refs,
         allowed_tools=req.allowed_tools,
@@ -199,7 +248,17 @@ async def run_agent(req: RunRequest):
     )
 
     adapter = _make_adapter()
-    result = await asyncio.to_thread(adapter.run_agent_task, context)
+    try:
+        result = await asyncio.to_thread(adapter.run_agent_task, context)
+    except Exception as exc:
+        if delegated_record:
+            task = task_manager.transition(
+                delegated_record["task_id"],
+                "TASK_STATE_FAILED",
+                status_message=str(exc),
+            )
+            callback_dispatcher.dispatch_status(task)
+        raise
     if not req.messages and result.status != "error" and not result.error:
         _ack_inbox(pending_ids)
 
@@ -233,6 +292,36 @@ async def run_agent(req: RunRequest):
         )
         _safe_post_json(f"{SERVER_URL}/api/logs/ingest", record, timeout=2)
 
+    if delegated_record:
+        task_id = delegated_record["task_id"]
+        if result.status == "error" or result.error:
+            task = task_manager.transition(
+                task_id,
+                "TASK_STATE_FAILED",
+                status_message=result.error or "Agent task failed",
+            )
+            callback_dispatcher.dispatch_status(task)
+        else:
+            artifact = {
+                "artifactId": str(uuid.uuid4()),
+                "name": "agent-task-result",
+                "description": "Final result produced by the delegated Agent task",
+                "parts": [
+                    {
+                        "text": result.final_message or "",
+                        "mediaType": "text/plain",
+                    }
+                ],
+            }
+            task = task_manager.transition(
+                task_id,
+                "TASK_STATE_COMPLETED",
+                artifacts=[artifact],
+                status_message="Agent task completed",
+            )
+            callback_dispatcher.dispatch_artifacts(task)
+            callback_dispatcher.dispatch_status(task)
+
     return result.__dict__
 
 
@@ -247,11 +336,226 @@ async def status():
         "inbox_size": _inbox_size(),
         "has_llm": bool(API_KEY),
         "core_goal": AGENT_CORE_GOAL or None,
+        "communication_mode": "a2a",
+        "pending_tasks": task_manager.count_pending(comm.agent_id or AGENT_ID.lower()),
     }
+
+
+@app.post("/communication/configure")
+async def configure_communication(config: CommunicationConfig):
+    """Control-plane initialization before any Agent starts sending."""
+    comm.set_identity(config.agent_id, config.agent_name, config.agent_role)
+    comm.update_directory(config.agent_directory, config.comm_matrix)
+    return {
+        "status": "configured",
+        "agent_id": config.agent_id.lower(),
+        "mode": "a2a",
+    }
+
+
+def _a2a_error(exc: CommunicationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        media_type="application/a2a+json",
+        content={
+            "error": {
+                "code": exc.status_code,
+                "status": exc.code,
+                "message": exc.message,
+            }
+        },
+    )
+
+
+def _check_a2a_version(request: Request) -> CommunicationError | None:
+    version = request.headers.get("A2A-Version", "")
+    if version != A2A_PROTOCOL_VERSION:
+        return CommunicationError(
+            "VERSION_NOT_SUPPORTED",
+            f"A2A-Version must be {A2A_PROTOCOL_VERSION}",
+            400,
+        )
+    return None
+
+
+@app.get("/.well-known/agent-card.json")
+async def get_agent_card(request: Request):
+    return JSONResponse(
+        content=comm.agent_card(str(request.base_url).rstrip("/")),
+        media_type="application/json",
+    )
+
+
+@app.post("/a2a/v1/message:send")
+async def a2a_send_message(request: Request):
+    version_error = _check_a2a_version(request)
+    if version_error:
+        return _a2a_error(version_error)
+    try:
+        body = await request.json()
+        response = comm.receive_message(body)
+    except CommunicationError as exc:
+        return _a2a_error(exc)
+    except Exception as exc:
+        return _a2a_error(
+            CommunicationError("INVALID_REQUEST", str(exc), 400)
+        )
+
+    task = response["task"]
+    metadata = task.get("metadata") or {}
+    _safe_post_json(f"{SERVER_URL}/api/logs/agent", {
+        "agent_id": metadata.get("targetAgentId") or AGENT_ID,
+        "agent_name": comm.agent_name,
+        "event": "agent_message_received",
+        "detail": f"A2A message received from {metadata.get('fromAgentId', '')}",
+        "timestamp": _now_iso(),
+        "from_agent": metadata.get("fromAgentId", ""),
+        "to_agent": metadata.get("targetAgentId") or AGENT_ID,
+        "action": "receive_message",
+        "action_status": "success",
+        "trace_id": metadata.get("traceId", ""),
+        "details": {
+            "a2a_task_id": task.get("id", ""),
+            "context_id": task.get("contextId", ""),
+            "protocol_version": A2A_PROTOCOL_VERSION,
+            "message_type": "a2a",
+        },
+    }, timeout=2)
+    return JSONResponse(content=response, media_type="application/a2a+json")
+
+
+@app.get("/a2a/v1/tasks/{task_id}")
+async def a2a_get_task(task_id: str, request: Request):
+    version_error = _check_a2a_version(request)
+    if version_error:
+        return _a2a_error(version_error)
+    try:
+        task = comm.get_task(task_id)
+    except CommunicationError as exc:
+        return _a2a_error(exc)
+    return JSONResponse(content=task, media_type="application/a2a+json")
+
+
+@app.get("/a2a/v1/tasks")
+async def a2a_list_tasks(request: Request):
+    version_error = _check_a2a_version(request)
+    if version_error:
+        return _a2a_error(version_error)
+    query = request.query_params
+    try:
+        response = comm.list_tasks(
+            context_id=query.get("contextId", ""),
+            status=query.get("status", ""),
+            page_size=int(query.get("pageSize", "50")),
+            include_artifacts=query.get("includeArtifacts", "false").lower()
+            == "true",
+        )
+    except ValueError:
+        return _a2a_error(
+            CommunicationError("INVALID_REQUEST", "pageSize must be an integer")
+        )
+    return JSONResponse(content=response, media_type="application/a2a+json")
+
+
+@app.post("/a2a/v1/tasks/{task_id}:cancel")
+async def a2a_cancel_task(task_id: str, request: Request):
+    version_error = _check_a2a_version(request)
+    if version_error:
+        return _a2a_error(version_error)
+    try:
+        task = comm.cancel_task(task_id)
+    except CommunicationError as exc:
+        return _a2a_error(exc)
+    callback_dispatcher.dispatch_status(task)
+    return JSONResponse(content=task, media_type="application/a2a+json")
+
+
+@app.post("/a2a/v1/task-events")
+async def a2a_task_event(request: Request):
+    version_error = _check_a2a_version(request)
+    if version_error:
+        return _a2a_error(version_error)
+    try:
+        body = await request.json()
+        event = body.get("statusUpdate") or body.get("artifactUpdate") or {}
+        task_id = str(event.get("taskId") or "")
+        config = task_manager.callback_config(task_id)
+        expected = str(config.get("token") or "")
+        received = request.headers.get("X-A2A-Notification-Token", "")
+        if expected and not secrets.compare_digest(received, expected):
+            raise CommunicationError(
+                "CALLBACK_AUTH_FAILED", "invalid callback token", 401
+            )
+        task = comm.receive_task_event(body)
+    except CommunicationError as exc:
+        return _a2a_error(exc)
+    except Exception as exc:
+        return _a2a_error(CommunicationError("INVALID_CALLBACK", str(exc), 400))
+    return JSONResponse(
+        content={"received": True, "task": task},
+        media_type="application/a2a+json",
+    )
+
+
+@app.post("/a2a/v1/tasks/{task_id}/pushNotificationConfigs")
+async def create_push_config(task_id: str, request: Request):
+    version_error = _check_a2a_version(request)
+    if version_error:
+        return _a2a_error(version_error)
+    try:
+        config = task_manager.set_callback_config(task_id, await request.json())
+    except Exception as exc:
+        return _a2a_error(CommunicationError("INVALID_REQUEST", str(exc), 400))
+    return JSONResponse(content=config, media_type="application/a2a+json")
+
+
+@app.get("/a2a/v1/tasks/{task_id}/pushNotificationConfigs")
+async def list_push_configs(task_id: str, request: Request):
+    version_error = _check_a2a_version(request)
+    if version_error:
+        return _a2a_error(version_error)
+    try:
+        config = task_manager.callback_config(task_id)
+    except Exception as exc:
+        return _a2a_error(CommunicationError("TASK_NOT_FOUND", str(exc), 404))
+    return JSONResponse(
+        content={"configs": [config] if config else [], "nextPageToken": ""},
+        media_type="application/a2a+json",
+    )
+
+
+@app.get("/a2a/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}")
+async def get_push_config(task_id: str, config_id: str, request: Request):
+    version_error = _check_a2a_version(request)
+    if version_error:
+        return _a2a_error(version_error)
+    config = task_manager.callback_config(task_id)
+    if not config or config.get("id") != config_id:
+        return _a2a_error(
+            CommunicationError("PUSH_NOTIFICATION_CONFIG_NOT_FOUND", "config not found", 404)
+        )
+    return JSONResponse(content=config, media_type="application/a2a+json")
+
+
+@app.delete("/a2a/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}")
+async def delete_push_config(task_id: str, config_id: str, request: Request):
+    version_error = _check_a2a_version(request)
+    if version_error:
+        return _a2a_error(version_error)
+    try:
+        task_manager.delete_callback_config(task_id, config_id)
+    except Exception as exc:
+        return _a2a_error(CommunicationError("PUSH_NOTIFICATION_CONFIG_NOT_FOUND", str(exc), 404))
+    return JSONResponse(content={}, media_type="application/a2a+json")
 
 
 @app.post("/message")
 async def receive_message(msg: MessageIn, request: Request = None):
+    if (msg.type or "").lower() == "broadcast":
+        return JSONResponse(
+            status_code=400,
+            content={"error": "broadcast communication is not supported"},
+        )
     _append_inbox(msg.from_id, msg.content, msg.type or "direct", msg.channel_id, msg.talk)
     target_id = msg.to or AGENT_ID
     _safe_post_json(f"{SERVER_URL}/api/logs/agent", {
@@ -369,6 +673,7 @@ async def reset_state():
     turn = 0
     _event_queue = []
     _clear_inbox()
+    comm.clear_tasks()
     return {"status": "reset", "brain_cleared": False}
 
 

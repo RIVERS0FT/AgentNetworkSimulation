@@ -5,18 +5,22 @@ import base64
 import binascii
 import os
 import random
+import secrets
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from agent_network import state
+from agent_network.agent_management import AgentRegistry
 from agent_network.api import simulations as orchestration
 from agent_network.capture_management import CaptureConfig, CaptureState, get_capture_coordinator
+from agent_network.comm_management import A2A_MEDIA_TYPE, CommManager
 from agent_network.file_management import FileManagerError, ResourceNotFoundError, ResourceNotReadyError
 from agent_network.scene_manager import SceneManager
 from agent_network.scene_storage import get_scene_storage
+from agent_network.task_management import TaskManager, TaskManagerError
 
 router = APIRouter()
 scene_storage = get_scene_storage()
@@ -29,6 +33,16 @@ def _scene_is_occupied(scene_key: str) -> bool:
 scene_manager = SceneManager(scene_storage, occupancy_checker=_scene_is_occupied)
 captures = get_capture_coordinator()
 _active_capture_id = ""
+_task_db_path = os.environ.get(
+    "ORCHESTRATOR_TASK_DB_PATH",
+    os.path.join(os.environ.get("DATA_DIR", "data"), "tasks", "orchestrator.db"),
+)
+simulation_tasks = TaskManager(_task_db_path)
+simulation_comm = CommManager(
+    agent_id="srv",
+    agent_name="Simulation Orchestrator",
+    task_manager=simulation_tasks,
+)
 
 
 class SimulationRunRequest(BaseModel):
@@ -50,12 +64,45 @@ class SceneKeyBatchRequest(BaseModel):
     scene_keys: list[str] = Field(default_factory=list)
 
 
+class AgentTaskRequest(BaseModel):
+    goal: str
+    input: dict = Field(default_factory=dict)
+    context_id: str = ""
+    parent_task_id: str = ""
+    idempotency_key: str = ""
+    trace_id: str = ""
+
+
 def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, ResourceNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, (ResourceNotReadyError, RuntimeError)):
         return HTTPException(status_code=409, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
+
+
+def _agent_directory() -> dict[str, str]:
+    return {
+        agent.agent_id.lower(): agent.container_url
+        for agent in AgentRegistry.list_all()
+        if agent.container_url
+    }
+
+
+def _require_simulation(simulation_id: str) -> None:
+    active_id = str(getattr(orchestration.logger, "_session_id", "") or "")
+    if active_id and simulation_id != active_id:
+        raise HTTPException(status_code=404, detail="simulation not found")
+
+
+def _require_simulation_task(simulation_id: str, task_id: str) -> dict:
+    try:
+        record = simulation_tasks.get_record(task_id)
+    except TaskManagerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if record.get("simulation_id") != simulation_id:
+        raise HTTPException(status_code=404, detail="task not found in simulation")
+    return record
 
 
 def _capture_adapter(
@@ -182,6 +229,122 @@ async def launch_simulation():
 async def stop_simulation():
     state.simulation_stop_requested = True
     return {"status": "stop_requested"}
+
+
+@router.post("/simulations/{simulation_id}/agents/{agent_id}/tasks")
+async def delegate_simulation_task(
+    simulation_id: str,
+    agent_id: str,
+    req: AgentTaskRequest,
+):
+    """Delegate one durable A2A task from the orchestrator to one Agent."""
+    _require_simulation(simulation_id)
+    directory = _agent_directory()
+    target_id = agent_id.lower()
+    if target_id not in directory:
+        raise HTTPException(status_code=404, detail="target Agent is not running")
+    simulation_comm.update_directory(directory)
+    callback_base = os.environ.get(
+        "A2A_CALLBACK_BASE_URL",
+        os.environ.get("SERVER_URL", "http://srv:8000"),
+    ).rstrip("/")
+    result = await asyncio.to_thread(
+        simulation_comm.delegate_task,
+        "srv",
+        "Simulation Orchestrator",
+        target_id,
+        req.goal,
+        req.input,
+        req.context_id,
+        req.trace_id,
+        simulation_id,
+        req.parent_task_id,
+        req.idempotency_key,
+        f"{callback_base}/api/simulations/{simulation_id}/task-events",
+        secrets.token_urlsafe(32),
+    )
+    if not result.ok:
+        raise HTTPException(status_code=502, detail=result.error)
+    orchestration.logger.system(
+        "simulation_task_delegated",
+        agent_id="srv",
+        details={
+            "simulation_id": simulation_id,
+            "task_id": result.task_id,
+            "target_agent_id": target_id,
+            "trace_id": req.trace_id,
+        },
+    )
+    return JSONResponse(
+        status_code=202,
+        media_type=A2A_MEDIA_TYPE,
+        content=result.to_dict(),
+    )
+
+
+@router.get("/simulations/{simulation_id}/tasks/{task_id}")
+async def get_simulation_task(simulation_id: str, task_id: str):
+    _require_simulation(simulation_id)
+    return _require_simulation_task(simulation_id, task_id)["task"]
+
+
+@router.get("/simulations/{simulation_id}/tasks")
+async def list_simulation_tasks(
+    simulation_id: str,
+    status: str = Query(default=""),
+    page_size: int = Query(default=50, ge=1, le=100),
+):
+    _require_simulation(simulation_id)
+    return simulation_tasks.list_tasks(
+        simulation_id=simulation_id,
+        status=status,
+        page_size=page_size,
+        include_artifacts=True,
+    )
+
+
+@router.post("/simulations/{simulation_id}/tasks/{task_id}:cancel")
+async def cancel_simulation_task(simulation_id: str, task_id: str):
+    _require_simulation(simulation_id)
+    _require_simulation_task(simulation_id, task_id)
+    simulation_comm.update_directory(_agent_directory())
+    try:
+        task = await asyncio.to_thread(simulation_comm.cancel_remote_task, task_id)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(content=task, media_type=A2A_MEDIA_TYPE)
+
+
+@router.post("/simulations/{simulation_id}/task-events")
+async def receive_simulation_task_event(simulation_id: str, request: Request):
+    """Receive authenticated A2A push callbacks from an assigned Agent."""
+    try:
+        payload = await request.json()
+        event = payload.get("statusUpdate") or payload.get("artifactUpdate") or {}
+        task_id = str(event.get("taskId") or "")
+        record = _require_simulation_task(simulation_id, task_id)
+        expected = str(record.get("callback", {}).get("token") or "")
+        received = request.headers.get("X-A2A-Notification-Token", "")
+        if expected and not secrets.compare_digest(received, expected):
+            raise HTTPException(status_code=401, detail="invalid callback token")
+        task = simulation_comm.receive_task_event(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    orchestration.logger.system(
+        "simulation_task_callback_received",
+        agent_id="srv",
+        details={
+            "simulation_id": simulation_id,
+            "task_id": task_id,
+            "state": (task.get("status") or {}).get("state", ""),
+        },
+    )
+    return JSONResponse(
+        content={"received": True, "task": task},
+        media_type=A2A_MEDIA_TYPE,
+    )
 
 
 @router.get("/scenes")

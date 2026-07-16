@@ -8,7 +8,7 @@
 - Agent 后端必须主动读取 Skill 入口及其引用的模板、规则和辅助文件。
 - Skill 不是可执行 Tool，不注册成函数。
 - 场景原子 Tool 来自 `tools.py`，由容器内 MCP server 按 `allowed_tools` 暴露。
-- Agent 间通信使用 MCP 的 `send_message` / `broadcast`，底层为 DirectBus 直连 HTTP。
+- Agent 间通信使用 MCP 的 `send_message`，底层由统一 `CommManager` 使用 A2A 1.0 点对点 HTTP；不提供广播。
 
 ## 2. Skill 形态
 
@@ -43,7 +43,7 @@ Agent 容器
   -> Claude Code 通过 skill_mcp_server 查询和读取允许的 Skill
   -> OpenCLAW 使用后端本地文件能力读取允许的 Skill
   -> MCP server 从当前 scene 的 tools.py 注册允许的原子 Tool
-  -> send_message / broadcast 通过 DirectBus 直连目标 /message
+  -> send_message 通过 CommManager 调用目标 A2A message:send
 ```
 
 ## 4. `srv` 的边界
@@ -108,7 +108,7 @@ Skill 访问必须同时满足：
 - `allowed_tools` 控制“能执行什么”。
 - Skill 文档提到 Tool，不自动授予执行权限。
 - Tool allowlist 之外的场景 Tool 不注册到 MCP。
-- `send_message` 和 `broadcast` 是平台系统原子 Tool，仍受通信矩阵约束。
+- `send_message` 是平台系统原子 Tool，仍受通信矩阵约束；多目标操作由 `CommManager` 按顺序逐个发送。
 
 ## 8. 容器复用
 
