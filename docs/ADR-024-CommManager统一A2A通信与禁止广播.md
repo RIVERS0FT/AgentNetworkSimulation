@@ -253,7 +253,7 @@ Content-Type: application/a2a+json
 
 以下改动未经新 ADR 明确替代时禁止：
 
-- 恢复 `DirectBus`；
+- 不得恢复 `DirectBus`；
 - 恢复 MCP 或系统级 `broadcast`；
 - 并发发送多个目标；
 - 恢复中心 relay；
