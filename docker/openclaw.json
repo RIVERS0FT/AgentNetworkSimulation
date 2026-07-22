@@ -1,4 +1,8 @@
 {
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback"
+  },
   "plugins": {
     "load": {
       "paths": ["./docker/openclaw-audit-plugin"]

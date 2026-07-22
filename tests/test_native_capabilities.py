@@ -145,6 +145,7 @@ def test_openclaw_audit_plugin_is_fail_closed_and_tracks_subagents():
     assert "event.childAgentId" not in source
     assert 'new Set(["timeout", "killed", "reset", "deleted"])' in source
     assert config["tools"]["agentToAgent"]["enabled"] is False
+    assert config["gateway"] == {"mode": "local", "bind": "loopback"}
     assert config["agents"]["defaults"]["subagents"]["maxConcurrent"] == 32
     assert config["plugins"]["load"]["paths"] == [
         "./docker/openclaw-audit-plugin"
@@ -167,3 +168,17 @@ def test_backend_versions_are_exactly_pinned():
     )
     assert "@latest" not in compose
     assert "agentnetwork-native-audit" not in compose
+
+
+def test_openclaw_start_script_uses_pinned_cli_gateway_contract():
+    source = (ROOT / "docker" / "start-openclaw-agent.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "openclaw gateway run --bind loopback --port ${OPENCLAW_GATEWAY_PORT}"
+        in source
+    )
+    assert "openclaw gateway --host" not in source
+    assert "--allow-unconfigured" not in source
+    assert "Set OPENCLAW_GATEWAY_CMD for a custom bind address" in source

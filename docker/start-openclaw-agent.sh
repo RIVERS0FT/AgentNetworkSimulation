@@ -84,7 +84,11 @@ if [ "${OPENCLAW_START_GATEWAY}" = "1" ]; then
     if [ -n "${OPENCLAW_GATEWAY_CMD:-}" ]; then
         gateway_cmd="${OPENCLAW_GATEWAY_CMD}"
     elif command -v openclaw >/dev/null 2>&1; then
-        gateway_cmd="openclaw gateway --host ${OPENCLAW_GATEWAY_HOST} --port ${OPENCLAW_GATEWAY_PORT}"
+        case "${OPENCLAW_GATEWAY_HOST}" in
+            127.0.0.1|localhost) ;;
+            *) fail "The built-in OpenClaw gateway command supports loopback only. Set OPENCLAW_GATEWAY_CMD for a custom bind address." ;;
+        esac
+        gateway_cmd="openclaw gateway run --bind loopback --port ${OPENCLAW_GATEWAY_PORT}"
     fi
 
     if [ -z "${gateway_cmd}" ]; then

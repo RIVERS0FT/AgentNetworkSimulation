@@ -40,8 +40,17 @@ export OPENCLAW_GATEWAY_NPM_PACKAGE='<real-openclaw-gateway-package>'
 若安装后没有 `openclaw gateway` 命令，显式设置：
 
 ```bash
-export OPENCLAW_GATEWAY_CMD='<gateway start command --host 127.0.0.1 --port 18789>'
+export OPENCLAW_GATEWAY_CMD='<custom gateway foreground command>'
 ```
+
+固定版本 `openclaw@2026.7.1-2` 的默认命令为：
+
+```bash
+openclaw gateway run --bind loopback --port 18789
+```
+
+默认命令只支持容器内 loopback。需要其他绑定方式时必须显式设置 `OPENCLAW_GATEWAY_CMD`。
+`docker/openclaw.json` 必须同时声明 `gateway.mode=local` 和 `gateway.bind=loopback`；不要使用 `--allow-unconfigured` 绕过缺失配置。
 
 ### Python SDK
 
@@ -192,6 +201,8 @@ PY
 | 构建提示 Gateway 包缺失 | `OPENCLAW_GATEWAY_NPM_PACKAGE` 无效 | 设置真实 npm 包后重建 |
 | 构建提示 SDK 安装失败 | PyPI/镜像不可达或版本不存在 | 检查网络并确认 `OPENCLAW_SDK_VERSION=2.1.0` |
 | 启动提示无 Gateway 命令 | npm 包未提供 CLI | 设置 `OPENCLAW_GATEWAY_CMD` |
+| 启动提示不识别 `--host` | 使用了与 `2026.7.1-2` 不兼容的旧 CLI 参数 | 使用 `openclaw gateway run --bind loopback --port <port>` 后重建 |
+| 启动提示缺少 `gateway.mode` | `openclaw.json` 未声明本地 Gateway 模式 | 设置 `gateway.mode=local`、`gateway.bind=loopback` 后重建 |
 | Gateway 未在超时内就绪 | 命令、端口、API key 或依赖错误 | 查看 `docker compose logs ag-o1` |
 | Adapter 返回 SDK 不可导入 | 镜像构建或 wheel 错误 | 重新构建并执行手动导入检查 |
 | 不同逻辑 Agent 串 session | session 前缀或 trace 传递错误 | 检查 `OPENCLAW_SESSION_PREFIX` 与 `/run` trace |
