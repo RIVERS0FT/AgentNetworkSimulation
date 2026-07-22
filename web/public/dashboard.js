@@ -1669,12 +1669,11 @@ async function loadSceneList() {
     const sel = document.getElementById('scene-selector');
     if (sel) sel.innerHTML = '';
     data.scenes.forEach(s => {
-      const val = typeof s === 'string' ? s : s.name;
-      const label = typeof s === 'string' ? val.replace('.json', '') : val;
+      const val = s.scene_key;
+      const label = s.title;
       if (sel) {
         const opt = document.createElement('option');
         opt.value = val; opt.textContent = label;
-        if (typeof s !== 'string') opt.dataset.format = s.format;
         sel.appendChild(opt);
       }
     });
