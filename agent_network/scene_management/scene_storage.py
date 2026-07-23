@@ -24,15 +24,9 @@ from agent_network.scene_management.models import (
     ValidationResult,
 )
 from agent_network.scene_management.scene_def import AgentDef, SceneDefinition
-from agent_network.scene_management.validator import SceneValidator
 from agent_network.scene_management.validator_v2 import SceneValidatorV2
 
 REQUIRED_SCENE_FILES = ("Agents.json", "topology.json", "env.py")
-LEGACY_SCENE_FILES = (
-    "meta_and_roles.json",
-    "instances_and_skills.json",
-    "network_topology.json",
-)
 _TOPOLOGY_NETWORK_FIELDS = ("delay_ms", "jitter_ms", "loss_pct", "rate_mbit")
 _TOPOLOGY_LINK_FIELDS = {
     "endpoint_a",
@@ -44,11 +38,10 @@ _SCENE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class SceneStorage:
-    """Static scene storage backed by the unified FileManager."""
+    """Static v2 scene storage backed by the unified FileManager."""
 
     def __init__(self, file_manager: Optional[FileManager] = None) -> None:
         self.files = file_manager or get_file_manager()
-        self.validator = SceneValidator()
         self.validator_v2 = SceneValidatorV2()
 
     @staticmethod
@@ -68,18 +61,14 @@ class SceneStorage:
 
     @classmethod
     def _scene_format(cls, root: Path) -> str:
-        if cls._contains(root, REQUIRED_SCENE_FILES):
-            return "v2"
-        if cls._contains(root, LEGACY_SCENE_FILES):
-            return "v1"
-        return ""
+        return "v2" if cls._contains(root, REQUIRED_SCENE_FILES) else ""
 
     def _discover(self) -> None:
         root = self.files.root_path("scenes")
         for directory in sorted(root.iterdir(), key=lambda item: item.name.lower()):
             if directory.is_symlink() or not directory.is_dir():
                 continue
-            if not self._scene_format(directory):
+            if not self._contains(directory, REQUIRED_SCENE_FILES):
                 continue
             scene_key = directory.name
             existing = self.files.find_resource(
@@ -113,7 +102,7 @@ class SceneStorage:
         )
         if resource is None:
             path = self.files.resolve_path("scenes", scene_key)
-            if not path.is_dir():
+            if not path.is_dir() or not self._contains(path, REQUIRED_SCENE_FILES):
                 raise ResourceNotFoundError(f"Scene '{scene_key}' not found")
             resource = self.files.register_existing(
                 owner_type="scene",
@@ -126,6 +115,9 @@ class SceneStorage:
                 resource_id=self.resource_id(scene_key),
                 upsert=True,
             )
+        root = self.files.resolve_resource_path(resource.resource_id)
+        if not self._contains(root, REQUIRED_SCENE_FILES):
+            raise ResourceNotFoundError(f"Scene '{scene_key}' not found")
         if not allow_hidden and not resource.visible:
             raise ResourceNotReadyError(f"Scene '{scene_key}' is hidden")
         return resource
@@ -219,26 +211,14 @@ class SceneStorage:
             include_hidden=False,
         )
         for resource in sorted(resources, key=lambda item: item.created_at):
-            title = resource.owner_id
             root = self.files.resolve_resource_path(resource.resource_id)
-            scene_format = self._scene_format(root)
+            if not self._contains(root, REQUIRED_SCENE_FILES):
+                continue
+            title = resource.owner_id
             try:
-                if scene_format == "v2":
-                    env = self._read_env(resource.owner_id, root)
-                    metadata = env.get("metadata", {}) if isinstance(env, dict) else {}
-                    title = metadata.get("title") or title
-                elif scene_format == "v1":
-                    meta = self.files.read_child_json(
-                        resource.resource_id,
-                        "meta_and_roles.json",
-                        allow_hidden=True,
-                    )
-                    metadata = (
-                        meta.get("scenario_metadata", {})
-                        if isinstance(meta, dict)
-                        else {}
-                    )
-                    title = metadata.get("title") or title
+                env = self._read_env(resource.owner_id, root)
+                metadata = env.get("metadata", {}) if isinstance(env, dict) else {}
+                title = metadata.get("title") or title
             except (OSError, ValueError, ResourceNotFoundError, SceneValidationError):
                 pass
             result.append(
@@ -257,10 +237,11 @@ class SceneStorage:
             value = asdict(agent)
             value["native_capabilities"] = agent.native_capabilities.to_dict()
             agents.append(value)
-        details = SceneSummary(
+        return SceneSummary(
             scene_key=definition.scene_key,
             title=definition.title,
             description=definition.description,
+            environment=definition.environment,
             agents=agents,
             skills=definition.skills,
             tools=definition.tools,
@@ -268,22 +249,20 @@ class SceneStorage:
             topology=definition.topology,
             validation=definition.validation,
         ).to_dict()
-        if definition.validation.schema_version == "agentnetwork-scene.v2":
-            details["environment"] = definition.environment
-        return details
 
     def build_definition(self, scene_key: str) -> SceneDefinition:
         scene_key = self.validate_scene_key(scene_key)
         resource = self.get_resource(scene_key)
         root = self.files.resolve_resource_path(resource.resource_id)
-        scene_format = self._scene_format(root)
-        if scene_format == "v2":
-            return self._build_v2(scene_key, resource.resource_id, root)
-        if scene_format == "v1":
-            return self._build_v1(scene_key, resource.resource_id, root)
-        raise ValueError(
-            f"Scene '{scene_key}' does not contain required scene definition files"
-        )
+        missing = [
+            filename for filename in REQUIRED_SCENE_FILES
+            if not (root / filename).is_file()
+        ]
+        if missing:
+            raise ValueError(
+                f"Scene '{scene_key}' is missing required v2 files: {', '.join(missing)}"
+            )
+        return self._build_v2(scene_key, resource.resource_id, root)
 
     def _build_v2(
         self,
@@ -296,7 +275,7 @@ class SceneStorage:
         env = self._read_env(scene_key, root)
         validated = self.validator_v2.validate(
             scene_key,
-            root,
+            root.resolve(),
             agents_config,
             env,
             topology_config,
@@ -347,91 +326,6 @@ class SceneStorage:
             title=title,
             description=description,
             environment=environment,
-            agents=agents,
-            skills=validated.skills,
-            tools=validated.tools,
-            tasks=validated.tasks,
-            topology=topology_edges,
-            validation=validated.validation,
-        )
-
-    def _build_v1(
-        self,
-        scene_key: str,
-        resource_id: str,
-        root: Path,
-    ) -> SceneDefinition:
-        meta = self.files.read_child_json(resource_id, "meta_and_roles.json")
-        instances = self.files.read_child_json(resource_id, "instances_and_skills.json")
-        topology_config = self.files.read_child_json(resource_id, "network_topology.json")
-        validated = self.validator.validate(
-            scene_key,
-            root,
-            meta,
-            instances,
-            topology_config,
-        )
-        if not validated.validation.valid:
-            raise SceneValidationError(validated.validation)
-        scenario_metadata = meta.get("scenario_metadata", {})
-        title = scenario_metadata.get("title", scene_key)
-        description = scenario_metadata.get("global_rules", "")
-        roles = meta.get("roles", {})
-        containers = instances.get("container_instances", {})
-        normalized_containers = {
-            str(key).lower(): value for key, value in containers.items()
-        }
-        agents: List[AgentDef] = []
-        for role_id, role in roles.items():
-            instance = normalized_containers.get(str(role_id).lower(), {})
-            skill_refs = list(instance.get("skill_refs") or [])
-            if not all(isinstance(item, str) and item for item in skill_refs):
-                raise ValueError(
-                    f"Scene '{scene_key}' role '{role_id}' skill_refs must contain non-empty strings."
-                )
-            allowed_tools = list(instance.get("tool_refs") or [])
-            backend = str(role.get("model_backbone", "openclaw") or "openclaw").strip()
-            if backend not in {"openclaw", "claude-code", "direct_llm"}:
-                raise ValueError(
-                    f"Scene '{scene_key}' role '{role_id}' uses unsupported backend '{backend}'."
-                )
-            identity = role.get("identity", "") or role.get("name", role_id)
-            task_values = []
-            for task in instance.get("tasks") or []:
-                task_values.append(
-                    task
-                    if isinstance(task, str)
-                    else str(task.get("goal") or task.get("name") or "")
-                )
-            native_capabilities = NativeCapabilityPolicy.from_dict(
-                instance.get("native_capabilities"),
-                backend=backend,
-            )
-            agents.append(
-                AgentDef(
-                    agent_id=role_id.lower(),
-                    role=identity,
-                    name=role.get("name", role_id),
-                    background=role.get("background", ""),
-                    core_goal=role.get("core_goal", ""),
-                    backend=backend,
-                    skill_refs=list(dict.fromkeys(skill_refs)),
-                    allowed_tools=list(dict.fromkeys(allowed_tools)),
-                    native_capabilities=native_capabilities,
-                    tasks=[task for task in task_values if task],
-                )
-            )
-        topology_edges = self._build_topology(
-            scene_key,
-            topology_config,
-            agents,
-            "network_topology.json",
-        )
-        return SceneDefinition(
-            scene_key=scene_key,
-            title=title,
-            description=description,
-            environment={"global_rules": description},
             agents=agents,
             skills=validated.skills,
             tools=validated.tools,
@@ -557,11 +451,13 @@ class SceneStorage:
             resolved_key = self.validate_scene_key(
                 scene_key or source.name or Path(filename).stem
             )
-            if not self._scene_format(source):
+            if not self._contains(source, REQUIRED_SCENE_FILES):
                 raise ValueError(
                     "archive does not contain Agents.json, topology.json and env.py"
                 )
-            source_relative = source.relative_to(self.files.root_path("temp")).as_posix()
+            source_relative = source.relative_to(
+                self.files.root_path("temp")
+            ).as_posix()
             resource = self.files.promote_directory(
                 source_root_name="temp",
                 source_relative_path=source_relative,
