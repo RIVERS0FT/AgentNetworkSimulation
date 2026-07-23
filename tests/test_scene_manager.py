@@ -8,36 +8,42 @@ from agent_network.file_management import FileManager, ResourceNotFoundError
 from agent_network.scene_management import SceneManager, SceneStorage
 
 
-def _scene_zip(title: str, role_id: str = "planner") -> bytes:
+def _scene_zip(title: str, agent_id: str = "planner") -> bytes:
     payload = io.BytesIO()
-    meta = {
-        "scenario_metadata": {
-            "title": title,
-            "global_rules": f"{title} rules",
-        },
-        "roles": {
-            role_id: {
-                "name": role_id.title(),
-                "identity": f"{role_id} identity",
+    agents = {
+        "agents": {
+            agent_id: {
+                "name": agent_id.title(),
+                "role": f"{agent_id} identity",
+                "background": "",
                 "core_goal": "Complete assigned work",
-                "model_backbone": "openclaw",
-            }
-        },
-    }
-    instances = {
-        "container_instances": {
-            role_id: {
+                "backend": "openclaw",
                 "skill_refs": [],
                 "tool_refs": [],
-                "tasks": ["execute task"],
+                "tasks": [
+                    {
+                        "task_id": f"{agent_id}-task",
+                        "goal": "execute task",
+                        "input": {},
+                        "depends_on": [],
+                    }
+                ],
             }
         }
     }
     topology = {"topology": []}
+    env = f"""ENV = {{
+    'metadata': {{'title': {title!r}, 'description': {f'{title} description'!r}}},
+    'environment': {{'global_rules': [{f'{title} rules'!r}], 'initial_state': {{}}, 'shared_data': {{}}}},
+    'scene_tasks': [
+        {{'task_id': 'scene-complete', 'goal': 'Complete scene', 'input': {{}}, 'depends_on': [{f'{agent_id}-task'!r}]}}
+    ],
+}}
+"""
     with zipfile.ZipFile(payload, "w") as archive:
-        archive.writestr("meta_and_roles.json", json.dumps(meta))
-        archive.writestr("instances_and_skills.json", json.dumps(instances))
-        archive.writestr("network_topology.json", json.dumps(topology))
+        archive.writestr("Agents.json", json.dumps(agents))
+        archive.writestr("topology.json", json.dumps(topology))
+        archive.writestr("env.py", env)
     return payload.getvalue()
 
 
@@ -96,10 +102,11 @@ def test_batch_parse_returns_each_definition(manager):
     definition = result.items[0].details["definition"]
     assert definition["scene_key"] == "alpha"
     assert definition["agents"][0]["agent_id"] == "planner"
+    assert definition["environment"]["global_rules"] == ["Alpha rules"]
     assert result.items[1].error_code == "scene_not_found"
 
 
-def test_scene_list_and_details_use_the_domain_contract(manager):
+def test_scene_list_and_details_use_the_v2_domain_contract(manager):
     manager.upload_one(
         filename="alpha.zip",
         scene_key="alpha",
@@ -112,6 +119,7 @@ def test_scene_list_and_details_use_the_domain_contract(manager):
         "scene_key",
         "title",
         "description",
+        "environment",
         "agents",
         "skills",
         "tools",
@@ -119,24 +127,22 @@ def test_scene_list_and_details_use_the_domain_contract(manager):
         "topology",
         "validation",
     }
+    assert details["environment"]["global_rules"] == ["Alpha rules"]
     assert details["validation"]["validation_status"] == "fully_validated"
-    assert details["validation"]["schema_version"] == "agentnetwork-scene.v1"
+    assert details["validation"]["schema_version"] == "agentnetwork-scene.v2"
     assert "raw" not in details
     assert "resource_id" not in details
 
 
 def test_invalid_scene_upload_is_rolled_back(manager):
     payload = io.BytesIO()
-    meta = {
-        "scenario_metadata": {"title": "Invalid", "max_rounds": 3},
-        "roles": {},
-    }
     with zipfile.ZipFile(payload, "w") as archive:
-        archive.writestr("meta_and_roles.json", json.dumps(meta))
+        archive.writestr("Agents.json", json.dumps({"agents": {}}))
+        archive.writestr("topology.json", json.dumps({"topology": []}))
         archive.writestr(
-            "instances_and_skills.json", json.dumps({"container_instances": {}})
+            "env.py",
+            "ENV = {'metadata': {'title': 'Invalid', 'description': ''}, 'environment': {}, 'scene_tasks': []}\n",
         )
-        archive.writestr("network_topology.json", json.dumps({"topology": []}))
 
     result = manager.upload_many(
         [{"filename": "invalid.zip", "scene_key": "invalid", "content": payload.getvalue()}]
@@ -155,7 +161,7 @@ def test_batch_download_creates_one_managed_archive(manager):
     manager.upload_one(
         filename="beta.zip",
         scene_key="beta",
-        content=_scene_zip("Beta", role_id="operator"),
+        content=_scene_zip("Beta", agent_id="operator"),
     )
 
     result = manager.download_many(["alpha", "beta", "missing"])
@@ -166,8 +172,9 @@ def test_batch_download_creates_one_managed_archive(manager):
     descriptor = manager.prepare_batch_download(result.archive_resource_id)
     with zipfile.ZipFile(descriptor.internal_path) as archive:
         names = set(archive.namelist())
-    assert "alpha/meta_and_roles.json" in names
-    assert "beta/meta_and_roles.json" in names
+    assert "alpha/Agents.json" in names
+    assert "alpha/env.py" in names
+    assert "beta/topology.json" in names
 
 
 def test_batch_delete_checks_occupancy_per_item(manager):
