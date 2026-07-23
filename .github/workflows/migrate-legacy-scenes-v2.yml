@@ -36,7 +36,7 @@ jobs:
         run: |
           mkdir -p migration-artifact docs/records
           set -o pipefail
-          python scripts/migrate_scenes_v2.py \
+          PYTHONPATH=. python scripts/migrate_scenes_v2.py \
             --root scenes \
             --delete-legacy \
             --report docs/records/实施记录-旧剧本迁移到v2.md \
@@ -48,7 +48,7 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          python - <<'PY' 2>&1 | tee migration-artifact/validation.log
+          PYTHONPATH=. python - <<'PY' 2>&1 | tee migration-artifact/validation.log
           from pathlib import Path
 
           from agent_network.scene_management.validator_v2 import SceneValidatorV2
@@ -58,9 +58,10 @@ jobs:
           failures = []
           scenes = v2_scene_dirs(Path('scenes'))
           for scene in scenes:
+              scene_root = scene.resolve()
               validated = validator.validate(
                   scene.relative_to(Path('scenes')).as_posix(),
-                  scene,
+                  scene_root,
                   read_json(scene / 'Agents.json'),
                   parse_env(scene / 'env.py'),
                   read_json(scene / 'topology.json'),
@@ -85,8 +86,8 @@ jobs:
         run: |
           set -o pipefail
           {
-            pytest -q tests/test_scene_v2_migration.py tests/test_scene_env_contract.py
-            python -m compileall -q scripts agent_network scenes
+            PYTHONPATH=. pytest -q tests/test_scene_v2_migration.py tests/test_scene_env_contract.py
+            PYTHONPATH=. python -m compileall -q scripts agent_network scenes
           } 2>&1 | tee migration-artifact/tests.log
 
       - name: Prepare migration artifact
