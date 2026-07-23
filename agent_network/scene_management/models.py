@@ -50,7 +50,7 @@ class ValidationIssue:
 class ValidationResult:
     scene_key: str
     validation_status: str = "fully_validated"
-    schema_version: str = "agentnetwork-scene.v1"
+    schema_version: str = "agentnetwork-scene.v2"
     validated_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc)
         .isoformat(timespec="milliseconds")
@@ -112,6 +112,7 @@ class SceneSummary:
     scene_key: str
     title: str
     description: str
+    environment: dict[str, Any]
     agents: list[dict[str, Any]]
     skills: list[SkillDefinition]
     tools: list[ToolDefinition]
@@ -124,6 +125,7 @@ class SceneSummary:
             "scene_key": self.scene_key,
             "title": self.title,
             "description": self.description,
+            "environment": self.environment,
             "agents": self.agents,
             "skills": [asdict(item) for item in self.skills],
             "tools": [asdict(item) for item in self.tools],
